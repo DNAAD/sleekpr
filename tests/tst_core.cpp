@@ -29,6 +29,7 @@
 #include "sleekpr/core/templates/TemplateDocumentJson.h"
 #include "sleekpr/core/templates/TemplateDocumentRenderer.h"
 #include "sleekpr/infrastructure/preview/LabelPreviewImageRenderer.h"
+#include "sleekpr/infrastructure/preview/LabelPreviewService.h"
 #include "sleekpr/infrastructure/preview/PreviewLabelFactory.h"
 #include "sleekpr/infrastructure/preview/QrCodeMatrixRenderer.h"
 
@@ -66,10 +67,12 @@ private slots:
     void nativeDrawingPlannerEmitsMillimeterCommandsAndOffsets();
     void nativeDrawingPlannerAppendsTemplateElements();
     void nativeDrawingPlannerUsesSilverTemplateForFactory25003();
+    void nativeDrawingPlannerUsesStableDefaultRenderDpi();
     void qrCodeMatrixRendererEncodesPayloadAsRealQrCode();
     void qrCodeMatrixRendererSupportsVersion2Payloads();
     void labelPreviewImageRendererRendersPngCanvas();
     void labelPreviewImageRendererRendersQtImage();
+    void labelPreviewServiceUsesTemplateDocumentDeviceProfile();
     void nativePlanJsonSerializerExportsPaperAndCommands();
 };
 
@@ -1066,6 +1069,17 @@ void CoreTests::nativeDrawingPlannerUsesSilverTemplateForFactory25003()
     QCOMPARE(priceText->bold, true);
 }
 
+void CoreTests::nativeDrawingPlannerUsesStableDefaultRenderDpi()
+{
+    const auto defaultPlan = LabelRenderPlanner().createPlan(sleekpr::infrastructure::PreviewLabelFactory::createDemoLabel());
+    QCOMPARE(NativeLabelDrawingPlanner().createPlan(defaultPlan).renderDpi, 300.0);
+
+    auto silverItem = sleekpr::infrastructure::PreviewLabelFactory::createDemoLabel(LabelTemplateKey::Silver80x30);
+    silverItem.factoryNo = 25003;
+    const auto silverPlan = LabelRenderPlanner().createPlan(silverItem);
+    QCOMPARE(NativeLabelDrawingPlanner().createPlan(silverPlan).renderDpi, 300.0);
+}
+
 void CoreTests::qrCodeMatrixRendererEncodesPayloadAsRealQrCode()
 {
     const sleekpr::infrastructure::QrCodeMatrixRenderer renderer;
@@ -1128,6 +1142,28 @@ void CoreTests::labelPreviewImageRendererRendersQtImage()
     QVERIFY(!image.isNull());
     QCOMPARE(image.width(), 945);
     QCOMPARE(image.height(), 354);
+}
+
+void CoreTests::labelPreviewServiceUsesTemplateDocumentDeviceProfile()
+{
+    const auto demoLabelPlan = LabelRenderPlanner().createPlan(sleekpr::infrastructure::PreviewLabelFactory::createDemoLabel());
+    auto document = TemplateDocumentFactory::fromDrawingPlan(
+        "default",
+        QString::fromUtf8("默认标签"),
+        NativeLabelDrawingPlanner().createPlan(demoLabelPlan),
+        QList<TemplateElement>{});
+
+    DeviceProfile profile;
+    profile.dpi = 203.0;
+    document.deviceProfiles = {profile};
+
+    PrintClientSettings settings;
+    settings.templateDocuments["default"] = document;
+
+    const auto image = sleekpr::infrastructure::LabelPreviewService().renderDemoPreview(settings);
+
+    QVERIFY(!image.isNull());
+    QVERIFY(image.width() < 945);
 }
 
 void CoreTests::nativePlanJsonSerializerExportsPaperAndCommands()

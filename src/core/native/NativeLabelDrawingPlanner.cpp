@@ -94,6 +94,7 @@ NativeLabelDrawingPlan NativeLabelDrawingPlanner::createPlan(
     return NativeLabelDrawingPlan{
         labelPlan.paperSize,
         appendTemplateElements(overriddenCommands, labelPlan, templateElements, offsetX, offsetY),
+        300.0,
     };
 }
 

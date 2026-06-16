@@ -12,6 +12,11 @@ double usableScale(double value)
     return value > 0.0 ? value : 1.0;
 }
 
+double usableRenderDpi(double value)
+{
+    return value > 0.0 ? value : 300.0;
+}
+
 QList<TemplateElement> visibleElementsInRenderOrder(const TemplateDocument& document)
 {
     QList<TemplateElement> result;
@@ -67,6 +72,7 @@ NativeLabelDrawingPlan TemplateDocumentRenderer::render(
 {
     NativeLabelDrawingPlan drawingPlan;
     drawingPlan.paperSize = labelPlan.paperSize;
+    drawingPlan.renderDpi = usableRenderDpi(profile.dpi);
 
     const auto renderElements = visibleElementsInRenderOrder(document);
     const auto offsetX = labelOffset.x + profile.offsetX;

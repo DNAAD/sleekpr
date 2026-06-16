@@ -5,6 +5,8 @@
 #include <QTcpSocket>
 #include <QTemporaryDir>
 
+#include <algorithm>
+
 #include "sleekpr/core/settings/FileSettingsStore.h"
 #include "sleekpr/http/LocalHttpRouter.h"
 #include "sleekpr/http/LocalHttpServer.h"
@@ -22,12 +24,14 @@ public:
         ++printCount;
         lastPrinterName = printerName;
         lastPlanCommandCount = plan.commands.size();
+        lastPlan = plan;
         return true;
     }
 
     int printCount = 0;
     int lastPlanCommandCount = 0;
     QString lastPrinterName;
+    NativeLabelDrawingPlan lastPlan;
 };
 
 class HttpTests final : public QObject
@@ -112,6 +116,30 @@ void HttpTests::postPrintTagCreatesAcceptedJobAndUsesConfiguredPrinter()
 
     PrintClientSettings settings;
     settings.defaultPrinter = "Configured Printer";
+    TemplateElement configuredText;
+    configuredText.id = "configuredText";
+    configuredText.type = TemplateElementType::FixedText;
+    configuredText.text = "PROFILED";
+    configuredText.x = 1.0;
+    configuredText.y = 1.0;
+    configuredText.width = 10.0;
+    configuredText.height = 3.0;
+
+    TemplateLayer layer;
+    layer.id = "base";
+    layer.elements = {configuredText};
+
+    DeviceProfile profile;
+    profile.printerName = "Configured Printer";
+    profile.offsetX = 2.0;
+    profile.offsetY = 3.0;
+    profile.dpi = 203.0;
+
+    TemplateDocument document;
+    document.templateKey = "default";
+    document.layers = {layer};
+    document.deviceProfiles = {profile};
+    settings.templateDocuments["default"] = document;
     QVERIFY(FileSettingsStore(dir.filePath("settings.json")).save(settings));
 
     RecordingLabelPrintEngine printEngine;
@@ -144,6 +172,16 @@ void HttpTests::postPrintTagCreatesAcceptedJobAndUsesConfiguredPrinter()
     QCOMPARE(printEngine.printCount, 1);
     QCOMPARE(printEngine.lastPrinterName, QString("Configured Printer"));
     QVERIFY(printEngine.lastPlanCommandCount > 0);
+    const auto configuredCommand = std::find_if(
+        printEngine.lastPlan.commands.cbegin(),
+        printEngine.lastPlan.commands.cend(),
+        [](const NativeDrawCommand& command) {
+            return command.elementKey == QStringLiteral("configuredText");
+        });
+    QVERIFY(configuredCommand != printEngine.lastPlan.commands.cend());
+    QCOMPARE(configuredCommand->x, 3.0);
+    QCOMPARE(configuredCommand->y, 4.0);
+    QCOMPARE(printEngine.lastPlan.renderDpi, 203.0);
 
     const auto payload = QJsonDocument::fromJson(response.body).object();
     QVERIFY(payload["success"].toBool());

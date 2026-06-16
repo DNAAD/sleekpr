@@ -8,6 +8,8 @@
 #include "sleekpr/core/settings/FileSettingsStore.h"
 #include "sleekpr/core/settings/PrintClientSettingsJson.h"
 #include "sleekpr/core/settings/PrinterSelectionResolver.h"
+#include "sleekpr/core/templates/DeviceProfileResolver.h"
+#include "sleekpr/core/templates/TemplateDocumentRenderer.h"
 
 #include <QDateTime>
 #include <QJsonArray>
@@ -25,10 +27,13 @@ using sleekpr::core::LabelItem;
 using sleekpr::core::LabelPartItem;
 using sleekpr::core::LabelRenderPlanner;
 using sleekpr::core::NativeLabelDrawingPlanner;
+using sleekpr::core::NativeLabelDrawingPlan;
 using sleekpr::core::PrintClientSettings;
 using sleekpr::core::PrintClientSettingsJson;
 using sleekpr::core::PrinterSelectionResolver;
 using sleekpr::core::PrivateNetworkAccessPolicy;
+using sleekpr::core::DeviceProfileResolver;
+using sleekpr::core::TemplateDocumentRenderer;
 using sleekpr::core::templateOverrideKey;
 
 namespace {
@@ -237,6 +242,26 @@ QJsonObject printResultJson(const QString& requestId, int total, int printed, in
     };
 }
 
+NativeLabelDrawingPlan createDrawingPlan(
+    const sleekpr::core::LabelRenderPlan& labelPlan,
+    const PrintClientSettings& settings,
+    const QString& printerName)
+{
+    const auto templateKey = templateOverrideKey(labelPlan.templateKey);
+    const auto documentIt = settings.templateDocuments.constFind(templateKey);
+    if (documentIt != settings.templateDocuments.cend()) {
+        // HTTP 打印只接收已解析出的本机打印机名；设备 profile 按该名称选择，避免请求参数绕过本机配置。
+        const auto profile = DeviceProfileResolver::resolve(documentIt.value().deviceProfiles, printerName);
+        return TemplateDocumentRenderer().render(documentIt.value(), labelPlan, settings.labelOffset, profile);
+    }
+
+    return NativeLabelDrawingPlanner().createPlan(
+        labelPlan,
+        settings.labelOffset,
+        settings.templateOverrides.value(templateKey),
+        settings.templateElements.value(templateKey));
+}
+
 } // 匿名命名空间
 
 LocalHttpRouter::LocalHttpRouter(QString settingsPath, sleekpr::infrastructure::LabelPrintEngine* printEngine)
@@ -312,11 +337,7 @@ LocalHttpResponse LocalHttpRouter::route(const LocalHttpRequest& request) const
 
         for (const auto& item : items) {
             const auto labelPlan = LabelRenderPlanner().createPlan(item);
-            const auto drawingPlan = NativeLabelDrawingPlanner().createPlan(
-                labelPlan,
-                settings.labelOffset,
-                settings.templateOverrides.value(templateOverrideKey(labelPlan.templateKey)),
-                settings.templateElements.value(templateOverrideKey(labelPlan.templateKey)));
+            const auto drawingPlan = createDrawingPlan(labelPlan, settings, selectedPrinter);
             if (!executePrint) {
                 continue;
             }

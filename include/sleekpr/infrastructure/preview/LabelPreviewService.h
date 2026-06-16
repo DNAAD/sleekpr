@@ -5,6 +5,7 @@
 #include "sleekpr/core/settings/PrintClientSettings.h"
 
 #include <QImage>
+#include <QString>
 
 namespace sleekpr::infrastructure {
 
@@ -19,6 +20,11 @@ public:
     QImage renderPreview(
         const sleekpr::core::LabelItem& item,
         const sleekpr::core::PrintClientSettings& settings) const;
+
+    QImage renderPreview(
+        const sleekpr::core::LabelItem& item,
+        const sleekpr::core::PrintClientSettings& settings,
+        const QString& printerName) const;
 };
 
 } // 命名空间 sleekpr::infrastructure
