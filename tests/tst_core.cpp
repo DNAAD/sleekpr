@@ -73,6 +73,7 @@ private slots:
     void labelPreviewImageRendererRendersPngCanvas();
     void labelPreviewImageRendererRendersQtImage();
     void labelPreviewServiceUsesTemplateDocumentDeviceProfile();
+    void labelPreviewServiceRenderPreviewUsesDefaultPrinterDeviceProfile();
     void nativePlanJsonSerializerExportsPaperAndCommands();
 };
 
@@ -1161,6 +1162,34 @@ void CoreTests::labelPreviewServiceUsesTemplateDocumentDeviceProfile()
     settings.templateDocuments["default"] = document;
 
     const auto image = sleekpr::infrastructure::LabelPreviewService().renderDemoPreview(settings);
+
+    QVERIFY(!image.isNull());
+    QVERIFY(image.width() < 945);
+}
+
+void CoreTests::labelPreviewServiceRenderPreviewUsesDefaultPrinterDeviceProfile()
+{
+    const auto item = sleekpr::infrastructure::PreviewLabelFactory::createDemoLabel();
+    const auto demoLabelPlan = LabelRenderPlanner().createPlan(item);
+    auto document = TemplateDocumentFactory::fromDrawingPlan(
+        "default",
+        QString::fromUtf8("默认标签"),
+        NativeLabelDrawingPlanner().createPlan(demoLabelPlan),
+        QList<TemplateElement>{});
+
+    DeviceProfile defaultProfile;
+    defaultProfile.dpi = 300.0;
+
+    DeviceProfile printerProfile;
+    printerProfile.printerName = "Printer A";
+    printerProfile.dpi = 203.0;
+    document.deviceProfiles = {defaultProfile, printerProfile};
+
+    PrintClientSettings settings;
+    settings.defaultPrinter = "Printer A";
+    settings.templateDocuments["default"] = document;
+
+    const auto image = sleekpr::infrastructure::LabelPreviewService().renderPreview(item, settings);
 
     QVERIFY(!image.isNull());
     QVERIFY(image.width() < 945);

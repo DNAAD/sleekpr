@@ -21,7 +21,7 @@ QImage LabelPreviewService::renderPreview(
     const sleekpr::core::LabelItem& item,
     const sleekpr::core::PrintClientSettings& settings) const
 {
-    return renderPreview(item, settings, QString{});
+    return renderPreview(item, settings, settings.defaultPrinter);
 }
 
 QImage LabelPreviewService::renderPreview(
