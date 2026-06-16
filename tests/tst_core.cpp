@@ -85,6 +85,7 @@ private slots:
     void templateDocumentJsonPersistsLayerTables();
     void templateDocumentImportRejectsInvalidLayerTable();
     void templateDocumentRendererAppendsTableCommands();
+    void templateDocumentRendererBuildsMultiPagePrintPlan();
     void templateDocumentJsonPersistsPaperMetadata();
     void templateDocumentImportRequiresPaperSpecIdForGenericTemplates();
     void templateDocumentJsonPersistsFieldSchema();
@@ -1392,6 +1393,66 @@ void CoreTests::templateDocumentRendererAppendsTableCommands()
     QCOMPARE(drawingPlan.commands[1].elementKey, QString("saleItems.header.name.border"));
     QCOMPARE(drawingPlan.commands[2].text, QString::fromUtf8("品名"));
     QCOMPARE(drawingPlan.commands[4].text, QString::fromUtf8("足金戒指"));
+}
+
+void CoreTests::templateDocumentRendererBuildsMultiPagePrintPlan()
+{
+    TemplateElement title;
+    title.id = QStringLiteral("title");
+    title.layerId = QStringLiteral("main");
+    title.text = QString::fromUtf8("销售单");
+    title.x = 1.0;
+    title.y = 2.0;
+    title.width = 20.0;
+    title.height = 4.0;
+
+    TableColumn nameColumn;
+    nameColumn.id = QStringLiteral("name");
+    nameColumn.title = QString::fromUtf8("品名");
+    nameColumn.fieldKey = QStringLiteral("productName");
+    nameColumn.widthMm = 45.0;
+
+    TableElement table;
+    table.id = QStringLiteral("saleItems");
+    table.layerId = QStringLiteral("main");
+    table.zIndex = 1;
+    table.x = 5.0;
+    table.y = 8.0;
+    table.width = 45.0;
+    table.height = 15.0;
+    table.dataPath = QStringLiteral("items");
+    table.headerRowHeightMm = 5.0;
+    table.detailRowHeightMm = 5.0;
+    table.columns.append(nameColumn);
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("main");
+    layer.elements.append(title);
+    layer.tables.append(table);
+
+    TemplateDocument document;
+    document.layers.append(layer);
+
+    TemplateRenderContext context;
+    context.values["items"] = QJsonArray{
+        QJsonObject{{QStringLiteral("productName"), QString::fromUtf8("产品1")}},
+        QJsonObject{{QStringLiteral("productName"), QString::fromUtf8("产品2")}},
+        QJsonObject{{QStringLiteral("productName"), QString::fromUtf8("产品3")}},
+    };
+
+    const auto labelPlan = LabelRenderPlanner().createPlan(sleekpr::infrastructure::PreviewLabelFactory::createDemoLabel());
+    const auto printPlan = TemplateDocumentRenderer().renderPrint(document, labelPlan, LabelOffset{}, DeviceProfile{}, context);
+
+    QCOMPARE(printPlan.pages.size(), 2);
+    QCOMPARE(printPlan.pages[0].commands[0].elementKey, QString("title"));
+    QCOMPARE(printPlan.pages[0].commands[6].text, QString::fromUtf8("产品2"));
+    QCOMPARE(printPlan.pages[1].commands[0].elementKey, QString("title"));
+    QCOMPARE(printPlan.pages[1].commands[2].text, QString::fromUtf8("品名"));
+    QCOMPARE(printPlan.pages[1].commands[4].text, QString::fromUtf8("产品3"));
+
+    const auto firstPage = TemplateDocumentRenderer().render(document, labelPlan, LabelOffset{}, DeviceProfile{}, context);
+    QCOMPARE(firstPage.commands.size(), printPlan.pages.first().commands.size());
+    QCOMPARE(firstPage.commands.last().text, QString::fromUtf8("产品2"));
 }
 
 void CoreTests::templateDocumentJsonPersistsPaperMetadata()

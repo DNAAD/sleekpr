@@ -80,17 +80,29 @@ QList<TableElement> visibleTablesInRenderOrder(const TemplateDocument& document)
     return result;
 }
 
-void applyDeviceScale(NativeLabelDrawingPlan& drawingPlan, const DeviceProfile& profile)
+void applyDeviceScaleToCommands(QList<NativeDrawCommand>& commands, const DeviceProfile& profile)
 {
     const auto scaleX = usableScale(profile.scaleX);
     const auto scaleY = usableScale(profile.scaleY);
 
-    for (auto& command : drawingPlan.commands) {
+    for (auto& command : commands) {
         // profile 缩放只处理毫米坐标和区域尺寸，不触碰文本、二维码载荷或字体语义。
         command.x *= scaleX;
         command.y *= scaleY;
         command.width *= scaleX;
         command.height *= scaleY;
+    }
+}
+
+void applyDeviceScale(NativeLabelDrawingPlan& drawingPlan, const DeviceProfile& profile)
+{
+    applyDeviceScaleToCommands(drawingPlan.commands, profile);
+}
+
+void applyDeviceScale(NativePrintDrawingPlan& printPlan, const DeviceProfile& profile)
+{
+    for (auto& page : printPlan.pages) {
+        applyDeviceScaleToCommands(page.commands, profile);
     }
 }
 
@@ -102,7 +114,7 @@ NativeLabelDrawingPlan TemplateDocumentRenderer::render(
     const LabelOffset& labelOffset,
     const DeviceProfile& profile) const
 {
-    return render(document, labelPlan, labelOffset, profile, TemplateRenderContext{});
+    return renderPrint(document, labelPlan, labelOffset, profile, TemplateRenderContext{}).firstPageAsLabelPlan();
 }
 
 NativeLabelDrawingPlan TemplateDocumentRenderer::render(
@@ -112,27 +124,53 @@ NativeLabelDrawingPlan TemplateDocumentRenderer::render(
     const DeviceProfile& profile,
     const TemplateRenderContext& context) const
 {
-    NativeLabelDrawingPlan drawingPlan;
-    drawingPlan.paperSize = labelPlan.paperSize;
-    drawingPlan.renderDpi = usableRenderDpi(profile.dpi);
+    return renderPrint(document, labelPlan, labelOffset, profile, context).firstPageAsLabelPlan();
+}
+
+NativePrintDrawingPlan TemplateDocumentRenderer::renderPrint(
+    const TemplateDocument& document,
+    const LabelRenderPlan& labelPlan,
+    const LabelOffset& labelOffset,
+    const DeviceProfile& profile,
+    const TemplateRenderContext& context) const
+{
+    NativePrintDrawingPlan printPlan;
+    printPlan.paperSize = labelPlan.paperSize;
+    printPlan.renderDpi = usableRenderDpi(profile.dpi);
 
     const auto renderElements = visibleElementsInRenderOrder(document);
     const auto offsetX = labelOffset.x + profile.offsetX;
     const auto offsetY = labelOffset.y + profile.offsetY;
-    drawingPlan.commands = NativeLabelDrawingPlanner::appendTemplateElements({}, labelPlan, renderElements, offsetX, offsetY);
+    const auto baseCommands = NativeLabelDrawingPlanner::appendTemplateElements({}, labelPlan, renderElements, offsetX, offsetY);
+
+    NativePrintPage firstPage;
+    firstPage.pageNumber = 1;
+    firstPage.commands = baseCommands;
+    printPlan.pages.append(firstPage);
 
     const auto renderTables = visibleTablesInRenderOrder(document);
     for (const auto& table : renderTables) {
-        const auto tableResult = TableElementRenderer::renderSinglePage(table, context, offsetX, offsetY);
+        const auto tableResult = TableElementRenderer::renderPages(table, context, offsetX, offsetY);
         if (!tableResult.success()) {
             // 当前渲染计划没有错误通道；表格入口校验会在后续打印流程统一阻止异常模板。
             continue;
         }
-        drawingPlan.commands.append(tableResult.commands);
+
+        while (printPlan.pages.size() < tableResult.pages.size()) {
+            NativePrintPage page;
+            page.pageNumber = printPlan.pages.size() + 1;
+            // 当前模型还没有元素的首页/每页/末页作用域配置，非表格元素先按每页固定内容重复。
+            page.commands = baseCommands;
+            printPlan.pages.append(page);
+        }
+
+        for (int pageIndex = 0; pageIndex < tableResult.pages.size(); ++pageIndex) {
+            printPlan.pages[pageIndex].commands.append(tableResult.pages[pageIndex].commands);
+        }
     }
 
-    applyDeviceScale(drawingPlan, profile);
-    return drawingPlan;
+    applyDeviceScale(printPlan, profile);
+    return printPlan;
 }
 
 } // 命名空间 sleekpr::core
