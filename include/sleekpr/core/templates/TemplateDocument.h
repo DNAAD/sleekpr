@@ -47,6 +47,13 @@ struct TemplateDocument
     QString id;
     QString name;
     QString templateKey = QStringLiteral("default");
+
+    // 模板分类决定设计器默认工具集合；旧标签模板默认保持 label。
+    QString category = QStringLiteral("label");
+
+    // 纸张规格独立保存，模板通过 paperSpecId 引用；旧标签模板读取时可补默认规格。
+    QString paperSpecId;
+
     QString activeVersionId;
     QList<TemplateLayer> layers;
     QList<TemplateVersion> versions;

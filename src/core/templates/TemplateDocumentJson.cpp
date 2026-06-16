@@ -35,6 +35,13 @@ bool isKnownElementType(const QString& value)
         || value == QStringLiteral("rectangle");
 }
 
+bool isKnownTemplateCategory(const QString& value)
+{
+    return value == QStringLiteral("label")
+        || value == QStringLiteral("document")
+        || value == QStringLiteral("table");
+}
+
 TemplateElementType elementTypeFromString(const QString& value)
 {
     if (value == QStringLiteral("boundField")) {
@@ -355,6 +362,8 @@ QJsonObject TemplateDocumentJson::toJson(const TemplateDocument& document)
     json["id"] = document.id;
     json["name"] = document.name;
     json["templateKey"] = document.templateKey;
+    json["category"] = document.category;
+    json["paperSpecId"] = document.paperSpecId;
     json["activeVersionId"] = document.activeVersionId;
     json["layers"] = layersToJson(document.layers);
     json["versions"] = versionsToJson(document.versions);
@@ -369,6 +378,12 @@ TemplateDocument TemplateDocumentJson::fromJson(const QJsonObject& json)
     document.id = json["id"].toString();
     document.name = json["name"].toString();
     document.templateKey = json["templateKey"].toString(document.templateKey);
+    document.category = json["category"].toString(document.category);
+    document.paperSpecId = json["paperSpecId"].toString();
+    if (document.category == QStringLiteral("label") && document.paperSpecId.trimmed().isEmpty()) {
+        // 旧版标签模板没有独立纸张规格字段，读取时补默认 80x30 规格以便后续模板库迁移。
+        document.paperSpecId = QStringLiteral("label-80x30");
+    }
     document.activeVersionId = json["activeVersionId"].toString();
     document.layers = layersFromJson(json["layers"].toArray());
     document.versions = versionsFromJson(json["versions"].toArray());
@@ -397,6 +412,17 @@ bool TemplateDocumentJson::validateForImport(const QJsonObject& json, QString* e
         setError(errorMessage, QStringLiteral("模板 templateKey 不能为空"));
         return false;
     }
+
+    const auto category = json["category"].toString(QStringLiteral("label"));
+    if (!isKnownTemplateCategory(category)) {
+        setError(errorMessage, QStringLiteral("模板 category 不受支持"));
+        return false;
+    }
+    if (category != QStringLiteral("label") && json["paperSpecId"].toString().trimmed().isEmpty()) {
+        setError(errorMessage, QStringLiteral("非标签模板 paperSpecId 不能为空"));
+        return false;
+    }
+
     if (!json.contains("layers") || !json["layers"].isArray() || json["layers"].toArray().isEmpty()) {
         setError(errorMessage, QStringLiteral("模板图层 layers 必须是非空数组"));
         return false;

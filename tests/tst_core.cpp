@@ -61,6 +61,8 @@ private slots:
     void settingsJsonKeepsOldTemplateElementsWhenTemplateDocumentsMissing();
     void paperSpecJsonPersistsLabelAndSheetGrid();
     void paperSpecJsonRejectsInvalidDimensions();
+    void templateDocumentJsonPersistsPaperMetadata();
+    void templateDocumentImportRequiresPaperSpecIdForGenericTemplates();
     void allowedOriginParserNormalizesValidOrigins();
     void corsAndPrivateNetworkPoliciesKeepLocalContract();
     void printerSelectionUsesConfiguredDefaultOnly();
@@ -823,6 +825,57 @@ void CoreTests::paperSpecJsonRejectsInvalidDimensions()
     QString errorMessage;
     QVERIFY(!PaperSpecJson::validate(json, &errorMessage));
     QVERIFY(errorMessage.contains(QString::fromUtf8("宽高")));
+}
+
+void CoreTests::templateDocumentJsonPersistsPaperMetadata()
+{
+    TemplateDocument document;
+    document.schemaVersion = 1;
+    document.id = QStringLiteral("sale-order");
+    document.name = QString::fromUtf8("销售单");
+    document.templateKey = QStringLiteral("saleOrder");
+    document.category = QStringLiteral("document");
+    document.paperSpecId = QStringLiteral("a4");
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("main");
+    layer.name = QString::fromUtf8("主图层");
+    TemplateElement element;
+    element.id = QStringLiteral("title");
+    element.layerId = layer.id;
+    element.text = QString::fromUtf8("销售单");
+    layer.elements.append(element);
+    document.layers.append(layer);
+
+    const auto json = TemplateDocumentJson::toJson(document);
+    QCOMPARE(json["category"].toString(), QString("document"));
+    QCOMPARE(json["paperSpecId"].toString(), QString("a4"));
+
+    const auto actual = TemplateDocumentJson::fromJson(json);
+    QCOMPARE(actual.category, QString("document"));
+    QCOMPARE(actual.paperSpecId, QString("a4"));
+}
+
+void CoreTests::templateDocumentImportRequiresPaperSpecIdForGenericTemplates()
+{
+    TemplateDocument document;
+    document.schemaVersion = 1;
+    document.id = QStringLiteral("sale-order");
+    document.name = QString::fromUtf8("销售单");
+    document.templateKey = QStringLiteral("saleOrder");
+    document.category = QStringLiteral("document");
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("main");
+    TemplateElement element;
+    element.id = QStringLiteral("title");
+    element.layerId = layer.id;
+    layer.elements.append(element);
+    document.layers.append(layer);
+
+    QString errorMessage;
+    QVERIFY(!TemplateDocumentJson::validateForImport(TemplateDocumentJson::toJson(document), &errorMessage));
+    QVERIFY(errorMessage.contains(QStringLiteral("paperSpecId")));
 }
 
 void CoreTests::allowedOriginParserNormalizesValidOrigins()
