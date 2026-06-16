@@ -76,6 +76,8 @@ private slots:
     void postSettingsPersistsFullSettingsShape();
     void labelPrintEngineDispatchesPrintPlanPagesInOrder();
     void postPrintTagCreatesAcceptedJobAndUsesConfiguredPrinter();
+    void postPrintTemplateUsesRequestValuesAndConfiguredPrinter();
+    void postPrintTemplateRejectsMissingRequiredFields();
     void localServerWaitsForFullPostBody();
 };
 
@@ -295,6 +297,134 @@ void HttpTests::postPrintTagCreatesAcceptedJobAndUsesConfiguredPrinter()
     QCOMPARE(data["total"].toInt(), 1);
     QCOMPARE(data["printed"].toInt(), 1);
     QCOMPARE(data["failed"].toInt(), 0);
+}
+
+void HttpTests::postPrintTemplateUsesRequestValuesAndConfiguredPrinter()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    PrintClientSettings settings;
+    settings.defaultPrinter = "Configured Printer";
+
+    FieldDefinition customerName;
+    customerName.key = "customerName";
+    customerName.displayName = QString::fromUtf8("客户名称");
+    customerName.required = true;
+
+    TemplateElement customerText;
+    customerText.id = "customerNameText";
+    customerText.type = TemplateElementType::BoundField;
+    customerText.fieldKey = "customerName";
+    customerText.x = 1.0;
+    customerText.y = 2.0;
+    customerText.width = 30.0;
+    customerText.height = 5.0;
+    customerText.fontSizePt = 9.0;
+
+    TemplateLayer layer;
+    layer.id = "base";
+    layer.elements = {customerText};
+
+    TemplateDocument document;
+    document.id = "template-invoice";
+    document.templateKey = "invoice";
+    document.fieldSchema = {customerName};
+    document.layers = {layer};
+    settings.templateDocuments["invoice"] = document;
+    QVERIFY(FileSettingsStore(dir.filePath("settings.json")).save(settings));
+
+    RecordingLabelPrintEngine printEngine;
+    LocalHttpRouter router(dir.filePath("settings.json"), &printEngine);
+
+    LocalHttpRequest request;
+    request.method = "POST";
+    request.path = "/print/template";
+    request.body = R"json({
+        "requestId": "template-request-1",
+        "templateKey": "invoice",
+        "printerName": "Ignored Printer",
+        "executePrint": true,
+        "values": {
+            "customerName": "张三"
+        }
+    })json";
+
+    const auto response = router.route(request);
+    QCOMPARE(response.statusCode, 200);
+    QCOMPARE(printEngine.printCount, 1);
+    QVERIFY(printEngine.usedPrintPlanEntry);
+    QVERIFY(!printEngine.usedSinglePageEntry);
+    QCOMPARE(printEngine.lastPrinterName, QString("Configured Printer"));
+
+    const auto command = std::find_if(
+        printEngine.lastPlan.commands.cbegin(),
+        printEngine.lastPlan.commands.cend(),
+        [](const NativeDrawCommand& item) {
+            return item.elementKey == QStringLiteral("customerNameText");
+        });
+    QVERIFY(command != printEngine.lastPlan.commands.cend());
+    QCOMPARE(command->text, QString::fromUtf8("张三"));
+
+    const auto payload = QJsonDocument::fromJson(response.body).object();
+    QVERIFY(payload["success"].toBool());
+    const auto data = payload["data"].toObject();
+    QCOMPARE(data["requestId"].toString(), QString("template-request-1"));
+    QCOMPARE(data["accepted"].toInt(), 1);
+    QCOMPARE(data["printed"].toInt(), 1);
+    QCOMPARE(data["failed"].toInt(), 0);
+}
+
+void HttpTests::postPrintTemplateRejectsMissingRequiredFields()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    PrintClientSettings settings;
+    settings.defaultPrinter = "Configured Printer";
+
+    FieldDefinition customerName;
+    customerName.key = "customerName";
+    customerName.displayName = QString::fromUtf8("客户名称");
+    customerName.required = true;
+
+    TemplateElement customerText;
+    customerText.id = "customerNameText";
+    customerText.type = TemplateElementType::BoundField;
+    customerText.fieldKey = "customerName";
+
+    TemplateLayer layer;
+    layer.id = "base";
+    layer.elements = {customerText};
+
+    TemplateDocument document;
+    document.id = "template-invoice";
+    document.templateKey = "invoice";
+    document.fieldSchema = {customerName};
+    document.layers = {layer};
+    settings.templateDocuments["invoice"] = document;
+    QVERIFY(FileSettingsStore(dir.filePath("settings.json")).save(settings));
+
+    RecordingLabelPrintEngine printEngine;
+    LocalHttpRouter router(dir.filePath("settings.json"), &printEngine);
+
+    LocalHttpRequest request;
+    request.method = "POST";
+    request.path = "/print/template";
+    request.body = R"json({
+        "requestId": "template-request-2",
+        "templateKey": "invoice",
+        "executePrint": true,
+        "values": {}
+    })json";
+
+    const auto response = router.route(request);
+    QCOMPARE(response.statusCode, 400);
+    QCOMPARE(printEngine.printCount, 0);
+
+    const auto payload = QJsonDocument::fromJson(response.body).object();
+    QVERIFY(!payload["success"].toBool());
+    QVERIFY(payload["message"].toString().contains(QString::fromUtf8("客户名称")));
 }
 
 void HttpTests::localServerWaitsForFullPostBody()

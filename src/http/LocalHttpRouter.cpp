@@ -10,6 +10,7 @@
 #include "sleekpr/core/settings/PrinterSelectionResolver.h"
 #include "sleekpr/core/templates/DeviceProfileResolver.h"
 #include "sleekpr/core/templates/TemplateDocumentRenderer.h"
+#include "sleekpr/core/templates/TemplateRenderContextBuilder.h"
 
 #include <QDateTime>
 #include <QJsonArray>
@@ -35,6 +36,7 @@ using sleekpr::core::PrivateNetworkAccessPolicy;
 using sleekpr::core::DeviceProfileResolver;
 using sleekpr::core::TemplateDocumentRenderer;
 using sleekpr::core::TemplateRenderContext;
+using sleekpr::core::TemplateRenderContextBuilder;
 using sleekpr::core::templateOverrideKey;
 
 namespace {
@@ -243,6 +245,44 @@ QJsonObject printResultJson(const QString& requestId, int total, int printed, in
     };
 }
 
+const sleekpr::core::TemplateDocument* findTemplateDocument(
+    const PrintClientSettings& settings,
+    const QString& requestedTemplate)
+{
+    const auto templateName = requestedTemplate.trimmed().isEmpty()
+        ? QStringLiteral("default")
+        : requestedTemplate.trimmed();
+
+    const auto directIt = settings.templateDocuments.constFind(templateName);
+    if (directIt != settings.templateDocuments.cend()) {
+        return &directIt.value();
+    }
+
+    for (auto it = settings.templateDocuments.cbegin(); it != settings.templateDocuments.cend(); ++it) {
+        const auto& document = it.value();
+        if (document.id.compare(templateName, Qt::CaseInsensitive) == 0
+            || document.templateKey.compare(templateName, Qt::CaseInsensitive) == 0) {
+            return &document;
+        }
+    }
+
+    return nullptr;
+}
+
+sleekpr::core::LabelRenderPlan templateLabelPlan(const sleekpr::core::TemplateDocument& document)
+{
+    sleekpr::core::LabelRenderPlan plan;
+    plan.templateKey = document.templateKey.compare(QStringLiteral("silver"), Qt::CaseInsensitive) == 0
+        ? sleekpr::core::LabelTemplateKey::Silver80x30
+        : sleekpr::core::LabelTemplateKey::Default80x30;
+    return plan;
+}
+
+QString missingRequiredFieldsMessage(const TemplateRenderContext& context)
+{
+    return QString::fromUtf8("缺少必填字段：%1").arg(context.missingRequiredFieldNames.join(QString::fromUtf8("、")));
+}
+
 NativePrintDrawingPlan createPrintPlan(
     const sleekpr::core::LabelRenderPlan& labelPlan,
     const PrintClientSettings& settings,
@@ -351,6 +391,58 @@ LocalHttpResponse LocalHttpRouter::route(const LocalHttpRequest& request) const
 
         const auto requestId = requestIdOrFallback(stringFor(root, {"requestId", "RequestId"}));
         return jsonResponse(okEnvelope(printResultJson(requestId, items.size(), printed, failed, executePrint)), 200, extraHeaders);
+    }
+
+    if (path == "/print/template" && method == "POST") {
+        QJsonParseError parseError;
+        const auto parsedDocument = QJsonDocument::fromJson(request.body, &parseError);
+        if (parseError.error != QJsonParseError::NoError || !parsedDocument.isObject()) {
+            return jsonResponse(failEnvelope("BAD_REQUEST", "Invalid template print request JSON"), 400, extraHeaders);
+        }
+
+        const auto root = parsedDocument.object();
+        const auto templateDocument = findTemplateDocument(
+            settings,
+            stringFor(root, {"templateKey", "TemplateKey", "templateId", "TemplateId"}));
+        if (templateDocument == nullptr) {
+            return jsonResponse(failEnvelope("TEMPLATE_NOT_FOUND", QString::fromUtf8("未找到指定模板。")), 404, extraHeaders);
+        }
+
+        const auto valuesValue = valueFor(root, {"values", "Values", "fieldValues", "FieldValues"});
+        if (!valuesValue.isUndefined() && !valuesValue.isObject()) {
+            return jsonResponse(failEnvelope("BAD_REQUEST", QString::fromUtf8("字段值 values 必须是对象。")), 400, extraHeaders);
+        }
+
+        const auto context = TemplateRenderContextBuilder::build(
+            templateDocument->fieldSchema,
+            QJsonObject{},
+            valuesValue.toObject());
+        if (context.hasMissingRequiredFields()) {
+            return jsonResponse(failEnvelope("BAD_REQUEST", missingRequiredFieldsMessage(context)), 400, extraHeaders);
+        }
+
+        const auto executePrint = valueFor(root, {"executePrint", "ExecutePrint"}).toBool();
+        const auto selectedPrinter = PrinterSelectionResolver().resolve(settings, stringFor(root, {"printerName", "PrinterName"}));
+        const auto profile = DeviceProfileResolver::resolve(templateDocument->deviceProfiles, selectedPrinter);
+        const auto printPlan = TemplateDocumentRenderer().renderPrint(
+            *templateDocument,
+            templateLabelPlan(*templateDocument),
+            settings.labelOffset,
+            profile,
+            context);
+
+        int printed = 0;
+        int failed = 0;
+        if (executePrint) {
+            if (m_printEngine != nullptr && m_printEngine->print(printPlan, selectedPrinter)) {
+                printed = 1;
+            } else {
+                failed = 1;
+            }
+        }
+
+        const auto requestId = requestIdOrFallback(stringFor(root, {"requestId", "RequestId"}));
+        return jsonResponse(okEnvelope(printResultJson(requestId, 1, printed, failed, executePrint)), 200, extraHeaders);
     }
 
     return jsonResponse(failEnvelope("NOT_FOUND", "Route not implemented in native migration yet"), 404, extraHeaders);
