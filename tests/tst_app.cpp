@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QDoubleSpinBox>
+#include <QFile>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
@@ -45,6 +46,9 @@ private slots:
     void templateDesignerWindowDeletesSelectedEmptyLayer();
     void templateDesignerWindowDoesNotEditLockedLayer();
     void templateDesignerWindowShowsDesignerPreview();
+    void templateDesignerWindowSavesAndRestoresVersion();
+    void templateDesignerWindowExportsAndImportsTemplateFile();
+    void templateDesignerWindowSavesAndReplacesDeviceProfile();
 };
 
 void AppTests::openingAndSavingSettingsDoesNotCreateImplicitElementOverride()
@@ -549,6 +553,104 @@ void AppTests::templateDesignerWindowShowsDesignerPreview()
     }
     QVERIFY(previewLabel != nullptr);
     QVERIFY(!previewLabel->pixmap().isNull());
+}
+
+void AppTests::templateDesignerWindowSavesAndRestoresVersion()
+{
+    PrintClientSettings settings;
+    TemplateDesignerWindow window(settings, nullptr);
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* saveVersionButton = window.findChild<QPushButton*>(QStringLiteral("saveTemplateVersionButton"));
+    auto* restoreVersionButton = window.findChild<QPushButton*>(QStringLiteral("restoreTemplateVersionButton"));
+    auto* layerList = window.findChild<QListWidget*>(QStringLiteral("templateLayerList"));
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(saveVersionButton != nullptr);
+    QVERIFY(restoreVersionButton != nullptr);
+    QVERIFY(layerList != nullptr);
+
+    const auto initialCount = layerList->count();
+    QVERIFY(initialCount >= 1);
+    addLayerButton->click();
+    saveVersionButton->click();
+    addLayerButton->click();
+    restoreVersionButton->click();
+
+    QCOMPARE(layerList->count(), initialCount + 1);
+}
+
+void AppTests::templateDesignerWindowExportsAndImportsTemplateFile()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    PrintClientSettings importedSettings;
+    TemplateDesignerWindow source(PrintClientSettings{}, nullptr);
+    TemplateDesignerWindow target(PrintClientSettings{}, [&importedSettings](const PrintClientSettings& nextSettings) {
+        importedSettings = nextSettings;
+    });
+
+    auto* addLayerButton = source.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* targetLayerList = target.findChild<QListWidget*>(QStringLiteral("templateLayerList"));
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(targetLayerList != nullptr);
+
+    addLayerButton->click();
+    const auto exportPath = dir.filePath(QStringLiteral("default.sleekpr-template.json"));
+
+    QVERIFY(source.exportTemplateToFile(exportPath));
+    QVERIFY(QFile::exists(exportPath));
+    QVERIFY(target.importTemplateFromFile(exportPath));
+
+    QCOMPARE(targetLayerList->count(), 2);
+    QCOMPARE(importedSettings.templateDocuments.value("default").layers.size(), 2);
+}
+
+void AppTests::templateDesignerWindowSavesAndReplacesDeviceProfile()
+{
+    PrintClientSettings changedSettings;
+    TemplateDesignerWindow window(PrintClientSettings{}, [&changedSettings](const PrintClientSettings& nextSettings) {
+        changedSettings = nextSettings;
+    });
+
+    auto* printerEdit = window.findChild<QLineEdit*>(QStringLiteral("deviceProfilePrinterEdit"));
+    auto* dpiSpin = window.findChild<QDoubleSpinBox*>(QStringLiteral("deviceProfileDpiSpin"));
+    auto* scaleXSpin = window.findChild<QDoubleSpinBox*>(QStringLiteral("deviceProfileScaleXSpin"));
+    auto* scaleYSpin = window.findChild<QDoubleSpinBox*>(QStringLiteral("deviceProfileScaleYSpin"));
+    auto* offsetXSpin = window.findChild<QDoubleSpinBox*>(QStringLiteral("deviceProfileOffsetXSpin"));
+    auto* offsetYSpin = window.findChild<QDoubleSpinBox*>(QStringLiteral("deviceProfileOffsetYSpin"));
+    auto* saveProfileButton = window.findChild<QPushButton*>(QStringLiteral("saveDeviceProfileButton"));
+    QVERIFY(printerEdit != nullptr);
+    QVERIFY(dpiSpin != nullptr);
+    QVERIFY(scaleXSpin != nullptr);
+    QVERIFY(scaleYSpin != nullptr);
+    QVERIFY(offsetXSpin != nullptr);
+    QVERIFY(offsetYSpin != nullptr);
+    QVERIFY(saveProfileButton != nullptr);
+
+    printerEdit->setText(QStringLiteral("Zebra ZD888"));
+    dpiSpin->setValue(203.0);
+    scaleXSpin->setValue(1.02);
+    scaleYSpin->setValue(0.98);
+    offsetXSpin->setValue(0.30);
+    offsetYSpin->setValue(-0.20);
+    saveProfileButton->click();
+
+    auto profiles = changedSettings.templateDocuments.value("default").deviceProfiles;
+    QCOMPARE(profiles.size(), 1);
+    QCOMPARE(profiles.first().printerName, QString("Zebra ZD888"));
+    QCOMPARE(profiles.first().dpi, 203.0);
+    QCOMPARE(profiles.first().scaleX, 1.02);
+    QCOMPARE(profiles.first().scaleY, 0.98);
+    QCOMPARE(profiles.first().offsetX, 0.30);
+    QCOMPARE(profiles.first().offsetY, -0.20);
+
+    scaleXSpin->setValue(1.05);
+    saveProfileButton->click();
+
+    profiles = changedSettings.templateDocuments.value("default").deviceProfiles;
+    QCOMPARE(profiles.size(), 1);
+    QCOMPARE(profiles.first().scaleX, 1.05);
 }
 
 int main(int argc, char* argv[])

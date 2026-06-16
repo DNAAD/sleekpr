@@ -6,19 +6,29 @@
 #include "sleekpr/core/labels/LabelRenderPlanner.h"
 #include "sleekpr/core/native/NativeLabelDrawingPlanner.h"
 #include "sleekpr/core/settings/TemplateElement.h"
+#include "sleekpr/core/templates/DeviceProfileResolver.h"
 #include "sleekpr/core/templates/TemplateDocumentFactory.h"
 #include "sleekpr/core/templates/TemplateDocumentEditModel.h"
+#include "sleekpr/core/templates/TemplateDocumentJson.h"
 #include "sleekpr/core/templates/TemplateDocumentRenderer.h"
 #include "sleekpr/infrastructure/preview/LabelPreviewImageRenderer.h"
 #include "sleekpr/infrastructure/preview/PreviewLabelFactory.h"
 
+#include <QDateTime>
+#include <QDoubleSpinBox>
+#include <QFile>
+#include <QFileDialog>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QJsonDocument>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QMessageBox>
 #include <QPixmap>
 #include <QPushButton>
+#include <QSaveFile>
 #include <QSizePolicy>
 #include <QUuid>
 #include <QVBoxLayout>
@@ -97,6 +107,22 @@ QPushButton* createButton(const QString& text, const QString& objectName, QWidge
     return button;
 }
 
+QDoubleSpinBox* createProfileSpinBox(
+    const QString& objectName,
+    double minimum,
+    double maximum,
+    double value,
+    QWidget* parent)
+{
+    auto* spinBox = new QDoubleSpinBox(parent);
+    spinBox->setObjectName(objectName);
+    spinBox->setRange(minimum, maximum);
+    spinBox->setDecimals(3);
+    spinBox->setSingleStep(0.01);
+    spinBox->setValue(value);
+    return spinBox;
+}
+
 sleekpr::core::TemplateElement createDefaultElement(sleekpr::core::TemplateElementType type)
 {
     sleekpr::core::TemplateElement element;
@@ -158,6 +184,45 @@ TemplateDesignerWindow::TemplateDesignerWindow(
     refreshPreview();
 }
 
+bool TemplateDesignerWindow::exportTemplateToFile(const QString& path) const
+{
+    if (path.trimmed().isEmpty()) {
+        return false;
+    }
+
+    const auto documentIt = m_settings.templateDocuments.constFind(m_templateKey);
+    if (documentIt == m_settings.templateDocuments.constEnd()) {
+        return false;
+    }
+
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        return false;
+    }
+
+    const auto json = sleekpr::core::TemplateDocumentJson::toJson(documentIt.value());
+    const auto payload = QJsonDocument(json).toJson(QJsonDocument::Indented);
+    if (file.write(payload) != payload.size()) {
+        return false;
+    }
+    return file.commit();
+}
+
+bool TemplateDesignerWindow::importTemplateFromFile(const QString& path)
+{
+    sleekpr::core::TemplateDocument document;
+    QString errorMessage;
+    if (!loadTemplateDocumentFromFile(path, &document, &errorMessage)) {
+        m_statusLabel->setText(errorMessage.isEmpty() ? QString::fromUtf8("导入模板失败") : errorMessage);
+        return false;
+    }
+
+    applyImportedTemplateDocument(document);
+    m_statusLabel->setText(QString::fromUtf8("已导入模板"));
+    notifySettingsChanged();
+    return true;
+}
+
 void TemplateDesignerWindow::buildUi()
 {
     auto* rootLayout = new QHBoxLayout(this);
@@ -175,6 +240,10 @@ void TemplateDesignerWindow::buildUi()
     auto* hideLayerButton = createButton(QString::fromUtf8("隐藏图层"), QStringLiteral("hideLayerButton"), layerPanel);
     auto* moveLayerUpButton = createButton(QString::fromUtf8("上移图层"), QStringLiteral("moveLayerUpButton"), layerPanel);
     auto* moveLayerDownButton = createButton(QString::fromUtf8("下移图层"), QStringLiteral("moveLayerDownButton"), layerPanel);
+    auto* saveVersionButton = createButton(QString::fromUtf8("保存版本"), QStringLiteral("saveTemplateVersionButton"), layerPanel);
+    auto* restoreVersionButton = createButton(QString::fromUtf8("恢复版本"), QStringLiteral("restoreTemplateVersionButton"), layerPanel);
+    auto* importTemplateButton = createButton(QString::fromUtf8("导入模板"), QStringLiteral("importTemplateButton"), layerPanel);
+    auto* exportTemplateButton = createButton(QString::fromUtf8("导出模板"), QStringLiteral("exportTemplateButton"), layerPanel);
 
     m_layerList = new QListWidget(layerPanel);
     m_layerList->setObjectName(QStringLiteral("templateLayerList"));
@@ -188,9 +257,17 @@ void TemplateDesignerWindow::buildUi()
     layerButtonGrid->addWidget(moveLayerUpButton, 2, 0);
     layerButtonGrid->addWidget(moveLayerDownButton, 2, 1);
 
+    auto* documentButtonGrid = new QGridLayout();
+    documentButtonGrid->setContentsMargins(0, 0, 0, 0);
+    documentButtonGrid->addWidget(saveVersionButton, 0, 0);
+    documentButtonGrid->addWidget(restoreVersionButton, 0, 1);
+    documentButtonGrid->addWidget(importTemplateButton, 1, 0);
+    documentButtonGrid->addWidget(exportTemplateButton, 1, 1);
+
     layerLayout->addWidget(titleLabel);
     layerLayout->addWidget(m_layerList, 1);
     layerLayout->addLayout(layerButtonGrid);
+    layerLayout->addLayout(documentButtonGrid);
 
     auto* workspacePanel = new QWidget(this);
     auto* workspaceLayout = new QVBoxLayout(workspacePanel);
@@ -224,6 +301,17 @@ void TemplateDesignerWindow::buildUi()
     auto* moveElementUpButton = createButton(QString::fromUtf8("上移元素"), QStringLiteral("moveElementUpButton"), elementPanel);
     auto* moveElementDownButton = createButton(QString::fromUtf8("下移元素"), QStringLiteral("moveElementDownButton"), elementPanel);
 
+    auto* deviceProfileTitleLabel = new QLabel(QString::fromUtf8("设备校准"), elementPanel);
+    m_deviceProfilePrinterEdit = new QLineEdit(elementPanel);
+    m_deviceProfilePrinterEdit->setObjectName(QStringLiteral("deviceProfilePrinterEdit"));
+    m_deviceProfilePrinterEdit->setPlaceholderText(QString::fromUtf8("打印机名称"));
+    m_deviceProfileDpiSpin = createProfileSpinBox(QStringLiteral("deviceProfileDpiSpin"), 72.0, 1200.0, 300.0, elementPanel);
+    m_deviceProfileScaleXSpin = createProfileSpinBox(QStringLiteral("deviceProfileScaleXSpin"), 0.5, 2.0, 1.0, elementPanel);
+    m_deviceProfileScaleYSpin = createProfileSpinBox(QStringLiteral("deviceProfileScaleYSpin"), 0.5, 2.0, 1.0, elementPanel);
+    m_deviceProfileOffsetXSpin = createProfileSpinBox(QStringLiteral("deviceProfileOffsetXSpin"), -50.0, 50.0, 0.0, elementPanel);
+    m_deviceProfileOffsetYSpin = createProfileSpinBox(QStringLiteral("deviceProfileOffsetYSpin"), -50.0, 50.0, 0.0, elementPanel);
+    auto* saveDeviceProfileButton = createButton(QString::fromUtf8("保存校准"), QStringLiteral("saveDeviceProfileButton"), elementPanel);
+
     auto* addElementGrid = new QGridLayout();
     addElementGrid->setContentsMargins(0, 0, 0, 0);
     addElementGrid->addWidget(addFixedTextButton, 0, 0);
@@ -239,10 +327,28 @@ void TemplateDesignerWindow::buildUi()
     editElementGrid->addWidget(moveElementUpButton, 1, 1);
     editElementGrid->addWidget(moveElementDownButton, 2, 0, 1, 2);
 
+    auto* deviceProfileGrid = new QGridLayout();
+    deviceProfileGrid->setContentsMargins(0, 0, 0, 0);
+    deviceProfileGrid->addWidget(new QLabel(QString::fromUtf8("打印机"), elementPanel), 0, 0);
+    deviceProfileGrid->addWidget(m_deviceProfilePrinterEdit, 0, 1);
+    deviceProfileGrid->addWidget(new QLabel(QStringLiteral("DPI"), elementPanel), 1, 0);
+    deviceProfileGrid->addWidget(m_deviceProfileDpiSpin, 1, 1);
+    deviceProfileGrid->addWidget(new QLabel(QString::fromUtf8("横向缩放"), elementPanel), 2, 0);
+    deviceProfileGrid->addWidget(m_deviceProfileScaleXSpin, 2, 1);
+    deviceProfileGrid->addWidget(new QLabel(QString::fromUtf8("纵向缩放"), elementPanel), 3, 0);
+    deviceProfileGrid->addWidget(m_deviceProfileScaleYSpin, 3, 1);
+    deviceProfileGrid->addWidget(new QLabel(QString::fromUtf8("横向偏移"), elementPanel), 4, 0);
+    deviceProfileGrid->addWidget(m_deviceProfileOffsetXSpin, 4, 1);
+    deviceProfileGrid->addWidget(new QLabel(QString::fromUtf8("纵向偏移"), elementPanel), 5, 0);
+    deviceProfileGrid->addWidget(m_deviceProfileOffsetYSpin, 5, 1);
+
     elementLayout->addWidget(elementTitleLabel);
     elementLayout->addWidget(m_elementList, 1);
     elementLayout->addLayout(addElementGrid);
     elementLayout->addLayout(editElementGrid);
+    elementLayout->addWidget(deviceProfileTitleLabel);
+    elementLayout->addLayout(deviceProfileGrid);
+    elementLayout->addWidget(saveDeviceProfileButton);
 
     rootLayout->addWidget(layerPanel, 0);
     rootLayout->addWidget(workspacePanel, 1);
@@ -254,6 +360,10 @@ void TemplateDesignerWindow::buildUi()
     connect(hideLayerButton, &QPushButton::clicked, this, [this] { toggleCurrentLayerVisible(); });
     connect(moveLayerUpButton, &QPushButton::clicked, this, [this] { moveCurrentLayerUp(); });
     connect(moveLayerDownButton, &QPushButton::clicked, this, [this] { moveCurrentLayerDown(); });
+    connect(saveVersionButton, &QPushButton::clicked, this, [this] { saveTemplateVersion(); });
+    connect(restoreVersionButton, &QPushButton::clicked, this, [this] { restoreActiveTemplateVersion(); });
+    connect(importTemplateButton, &QPushButton::clicked, this, [this] { importTemplateWithDialog(); });
+    connect(exportTemplateButton, &QPushButton::clicked, this, [this] { exportTemplateWithDialog(); });
     connect(addFixedTextButton, &QPushButton::clicked, this, [this] { addFixedTextElement(); });
     connect(addBoundFieldButton, &QPushButton::clicked, this, [this] { addBoundFieldElement(); });
     connect(addQrCodeButton, &QPushButton::clicked, this, [this] { addQrCodeElement(); });
@@ -263,6 +373,7 @@ void TemplateDesignerWindow::buildUi()
     connect(hideElementButton, &QPushButton::clicked, this, [this] { toggleCurrentElementVisible(); });
     connect(moveElementUpButton, &QPushButton::clicked, this, [this] { moveCurrentElementUp(); });
     connect(moveElementDownButton, &QPushButton::clicked, this, [this] { moveCurrentElementDown(); });
+    connect(saveDeviceProfileButton, &QPushButton::clicked, this, [this] { saveDeviceProfile(); });
     connect(m_layerList, &QListWidget::currentRowChanged, this, [this] {
         refreshElementList();
         refreshPreview();
@@ -493,6 +604,135 @@ void TemplateDesignerWindow::moveCurrentElementDown()
     }
 }
 
+void TemplateDesignerWindow::saveTemplateVersion()
+{
+    ensureCurrentTemplateDocument();
+    auto& document = m_settings.templateDocuments[m_templateKey];
+    const auto now = QDateTime::currentDateTime();
+    const auto baseId = now.toMSecsSinceEpoch();
+
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        const auto versionId = QStringLiteral("version-%1").arg(baseId + attempt);
+        if (sleekpr::core::TemplateDocumentEditModel::saveVersion(
+                document,
+                versionId,
+                now.toString(QString::fromUtf8("yyyy-MM-dd HH:mm:ss")),
+                now.toString(Qt::ISODateWithMs),
+                QString::fromUtf8("设计器保存"))) {
+            m_statusLabel->setText(QString::fromUtf8("已保存模板版本"));
+            notifySettingsChanged();
+            return;
+        }
+    }
+
+    m_statusLabel->setText(QString::fromUtf8("保存模板版本失败"));
+}
+
+void TemplateDesignerWindow::restoreActiveTemplateVersion()
+{
+    ensureCurrentTemplateDocument();
+    auto& document = m_settings.templateDocuments[m_templateKey];
+    auto versionId = document.activeVersionId;
+    if (versionId.isEmpty() && !document.versions.isEmpty()) {
+        versionId = document.versions.last().id;
+    }
+
+    if (sleekpr::core::TemplateDocumentEditModel::restoreVersion(document, versionId)) {
+        refreshAll();
+        m_statusLabel->setText(QString::fromUtf8("已恢复模板版本"));
+        notifySettingsChanged();
+        return;
+    }
+
+    m_statusLabel->setText(QString::fromUtf8("没有可恢复的模板版本"));
+}
+
+void TemplateDesignerWindow::importTemplateWithDialog()
+{
+    QFileDialog dialog(this, QString::fromUtf8("导入模板"));
+    dialog.setAcceptMode(QFileDialog::AcceptOpen);
+    dialog.setFileMode(QFileDialog::ExistingFile);
+    dialog.setNameFilter(QString::fromUtf8("sleekpr 模板 (*.sleekpr-template.json *.json)"));
+    if (dialog.exec() != QDialog::Accepted || dialog.selectedFiles().isEmpty()) {
+        return;
+    }
+
+    sleekpr::core::TemplateDocument document;
+    QString errorMessage;
+    if (!loadTemplateDocumentFromFile(dialog.selectedFiles().first(), &document, &errorMessage)) {
+        QMessageBox::warning(this, QString::fromUtf8("导入模板失败"), errorMessage);
+        m_statusLabel->setText(errorMessage);
+        return;
+    }
+
+    const auto summary = QString::fromUtf8("模板：%1\n图层：%2\n版本：%3\n\n是否替换当前模板？")
+        .arg(document.name.trimmed().isEmpty() ? document.id : document.name)
+        .arg(document.layers.size())
+        .arg(document.versions.size());
+    if (QMessageBox::question(this, QString::fromUtf8("确认导入模板"), summary) != QMessageBox::Yes) {
+        return;
+    }
+
+    applyImportedTemplateDocument(document);
+    m_statusLabel->setText(QString::fromUtf8("已导入模板"));
+    notifySettingsChanged();
+}
+
+void TemplateDesignerWindow::exportTemplateWithDialog()
+{
+    ensureCurrentTemplateDocument();
+    QFileDialog dialog(this, QString::fromUtf8("导出模板"));
+    dialog.setAcceptMode(QFileDialog::AcceptSave);
+    dialog.setDefaultSuffix(QStringLiteral("sleekpr-template.json"));
+    dialog.setNameFilter(QString::fromUtf8("sleekpr 模板 (*.sleekpr-template.json *.json)"));
+    dialog.selectFile(QStringLiteral("%1.sleekpr-template.json").arg(m_templateKey));
+    if (dialog.exec() != QDialog::Accepted || dialog.selectedFiles().isEmpty()) {
+        return;
+    }
+
+    if (exportTemplateToFile(dialog.selectedFiles().first())) {
+        m_statusLabel->setText(QString::fromUtf8("已导出模板"));
+        return;
+    }
+
+    QMessageBox::warning(this, QString::fromUtf8("导出模板失败"), QString::fromUtf8("模板文件写入失败，请检查路径权限。"));
+    m_statusLabel->setText(QString::fromUtf8("导出模板失败"));
+}
+
+void TemplateDesignerWindow::saveDeviceProfile()
+{
+    ensureCurrentTemplateDocument();
+    auto& document = m_settings.templateDocuments[m_templateKey];
+    const auto printerName = m_deviceProfilePrinterEdit->text().trimmed();
+
+    sleekpr::core::DeviceProfile profile;
+    profile.id = printerName.isEmpty()
+        ? QStringLiteral("profile-default")
+        : QStringLiteral("profile-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    profile.printerName = printerName;
+    profile.dpi = m_deviceProfileDpiSpin->value();
+    profile.scaleX = m_deviceProfileScaleXSpin->value();
+    profile.scaleY = m_deviceProfileScaleYSpin->value();
+    profile.offsetX = m_deviceProfileOffsetXSpin->value();
+    profile.offsetY = m_deviceProfileOffsetYSpin->value();
+    profile.notes = QString::fromUtf8("模板设计器校准");
+
+    auto profileIt = std::find_if(document.deviceProfiles.begin(), document.deviceProfiles.end(), [&printerName](const auto& item) {
+        return item.printerName.trimmed().compare(printerName, Qt::CaseInsensitive) == 0;
+    });
+    if (profileIt != document.deviceProfiles.end()) {
+        // 同一打印机的校准只能保留一份；替换时保留原 id，避免 settings.json 中 profile 标识抖动。
+        profile.id = profileIt->id;
+        *profileIt = profile;
+    } else {
+        document.deviceProfiles.append(profile);
+    }
+
+    refreshPreview();
+    m_statusLabel->setText(QString::fromUtf8("已保存设备校准"));
+    notifySettingsChanged();
+}
+
 void TemplateDesignerWindow::refreshLayerList()
 {
     ensureCurrentTemplateDocument();
@@ -576,7 +816,8 @@ void TemplateDesignerWindow::refreshPreview()
         sleekpr::core::LabelTemplateKey::Default80x30);
     const auto labelPlan = sleekpr::core::LabelRenderPlanner().createPlan(labelItem);
     const auto& document = m_settings.templateDocuments[m_templateKey];
-    const sleekpr::core::DeviceProfile profile;
+    const auto printerName = m_deviceProfilePrinterEdit == nullptr ? QString() : m_deviceProfilePrinterEdit->text();
+    const auto profile = sleekpr::core::DeviceProfileResolver::resolve(document.deviceProfiles, printerName);
     const auto drawingPlan = sleekpr::core::TemplateDocumentRenderer().render(document, labelPlan, m_settings.labelOffset, profile);
     m_previewCommands = drawingPlan.commands;
 
@@ -600,6 +841,56 @@ void TemplateDesignerWindow::notifySettingsChanged()
     if (m_onSettingsChanged) {
         m_onSettingsChanged(m_settings);
     }
+}
+
+bool TemplateDesignerWindow::loadTemplateDocumentFromFile(
+    const QString& path,
+    sleekpr::core::TemplateDocument* document,
+    QString* errorMessage) const
+{
+    if (document == nullptr || path.trimmed().isEmpty()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QString::fromUtf8("模板路径不能为空");
+        }
+        return false;
+    }
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QString::fromUtf8("模板文件读取失败");
+        }
+        return false;
+    }
+
+    QJsonParseError parseError;
+    const auto json = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !json.isObject()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QString::fromUtf8("模板 JSON 格式无效");
+        }
+        return false;
+    }
+
+    QString validationError;
+    if (!sleekpr::core::TemplateDocumentJson::validateForImport(json.object(), &validationError)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = validationError;
+        }
+        return false;
+    }
+
+    *document = sleekpr::core::TemplateDocumentJson::fromJson(json.object());
+    return true;
+}
+
+void TemplateDesignerWindow::applyImportedTemplateDocument(const sleekpr::core::TemplateDocument& document)
+{
+    auto documentToApply = document;
+    // 设计器总是编辑当前模板槽位，导入文件的 templateKey 只作为来源信息校验，不改变 settings 的映射键。
+    documentToApply.templateKey = m_templateKey;
+    m_settings.templateDocuments[m_templateKey] = documentToApply;
+    refreshAll();
 }
 
 bool TemplateDesignerWindow::selectLayer(const QString& layerId)

@@ -12,6 +12,8 @@
 #include <functional>
 
 class QLabel;
+class QDoubleSpinBox;
+class QLineEdit;
 class QListWidget;
 class QPushButton;
 
@@ -34,6 +36,9 @@ public:
         SettingsChangedCallback onSettingsChanged,
         QWidget* parent = nullptr);
 
+    bool exportTemplateToFile(const QString& path) const;
+    bool importTemplateFromFile(const QString& path);
+
 private:
     void buildUi();
     void ensureCurrentTemplateDocument();
@@ -52,6 +57,11 @@ private:
     void toggleCurrentElementVisible();
     void moveCurrentElementUp();
     void moveCurrentElementDown();
+    void saveTemplateVersion();
+    void restoreActiveTemplateVersion();
+    void importTemplateWithDialog();
+    void exportTemplateWithDialog();
+    void saveDeviceProfile();
     void refreshLayerList();
     void refreshElementList();
     void refreshPreview();
@@ -61,6 +71,8 @@ private:
     bool selectElement(const QString& elementId);
     bool selectElementInCurrentList(const QString& elementId);
     bool canEditElement(const QString& elementId) const;
+    bool loadTemplateDocumentFromFile(const QString& path, sleekpr::core::TemplateDocument* document, QString* errorMessage) const;
+    void applyImportedTemplateDocument(const sleekpr::core::TemplateDocument& document);
     QString currentLayerId() const;
     QString currentElementId() const;
     sleekpr::core::TemplateLayer* currentLayer();
@@ -77,6 +89,12 @@ private:
     QListWidget* m_elementList = nullptr;
     TemplatePreviewLabel* m_previewLabel = nullptr;
     QLabel* m_statusLabel = nullptr;
+    QLineEdit* m_deviceProfilePrinterEdit = nullptr;
+    QDoubleSpinBox* m_deviceProfileDpiSpin = nullptr;
+    QDoubleSpinBox* m_deviceProfileScaleXSpin = nullptr;
+    QDoubleSpinBox* m_deviceProfileScaleYSpin = nullptr;
+    QDoubleSpinBox* m_deviceProfileOffsetXSpin = nullptr;
+    QDoubleSpinBox* m_deviceProfileOffsetYSpin = nullptr;
     QList<sleekpr::core::NativeDrawCommand> m_previewCommands;
 };
 
