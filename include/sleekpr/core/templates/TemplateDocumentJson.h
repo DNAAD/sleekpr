@@ -16,4 +16,4 @@ public:
     static bool validateForImport(const QJsonObject& json, QString* errorMessage);
 };
 
-} // namespace sleekpr::core
+} // 命名空间 sleekpr::core

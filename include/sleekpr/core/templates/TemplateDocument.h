@@ -53,4 +53,4 @@ struct TemplateDocument
     QList<DeviceProfile> deviceProfiles;
 };
 
-} // namespace sleekpr::core
+} // 命名空间 sleekpr::core

@@ -235,6 +235,7 @@ void CoreTests::templateDocumentJsonPersistsLayersVersionsAndProfiles()
     QCOMPARE(actual.layers.first().elements.first().rotationDegrees, 90.0);
     QCOMPARE(actual.layers.first().elements.first().maxLines, 2);
     QCOMPARE(actual.layers.first().elements.first().ellipsis, true);
+    QCOMPARE(actual.layers.first().elements.first().layerId, QString("layer-main"));
     QCOMPARE(actual.versions.size(), 1);
     QCOMPARE(actual.versions.first().layersSnapshot.first().id, QString("layer-main"));
     QCOMPARE(actual.deviceProfiles.size(), 1);
@@ -243,6 +244,15 @@ void CoreTests::templateDocumentJsonPersistsLayersVersionsAndProfiles()
 
 void CoreTests::templateDocumentJsonRejectsInvalidImportDocument()
 {
+    QJsonObject missingLayers;
+    missingLayers["schemaVersion"] = 1;
+    missingLayers["id"] = "template-missing-layers";
+    missingLayers["templateKey"] = "default";
+
+    QString missingLayersError;
+    QVERIFY(!TemplateDocumentJson::validateForImport(missingLayers, &missingLayersError));
+    QVERIFY(missingLayersError.contains(QString::fromUtf8("图层")));
+
     QJsonObject duplicateLayer;
     duplicateLayer["schemaVersion"] = 1;
     duplicateLayer["id"] = "template-invalid";
@@ -256,6 +266,58 @@ void CoreTests::templateDocumentJsonRejectsInvalidImportDocument()
     QString errorMessage;
     QVERIFY(!TemplateDocumentJson::validateForImport(duplicateLayer, &errorMessage));
     QVERIFY(errorMessage.contains(QString::fromUtf8("图层")));
+
+    QJsonObject invalidElement;
+    invalidElement["schemaVersion"] = 1;
+    invalidElement["id"] = "template-invalid-element";
+    invalidElement["templateKey"] = "default";
+    invalidElement["layers"] = QJsonArray{
+        QJsonObject{
+            {"id", "layer-main"},
+            {"elements", QJsonArray{
+                             QJsonObject{{"id", "element-title"}, {"type", "badType"}},
+                         }},
+        },
+    };
+
+    QString invalidTypeError;
+    QVERIFY(!TemplateDocumentJson::validateForImport(invalidElement, &invalidTypeError));
+    QVERIFY(invalidTypeError.contains(QString::fromUtf8("未知元素类型")));
+
+    QJsonObject duplicateElement;
+    duplicateElement["schemaVersion"] = 1;
+    duplicateElement["id"] = "template-duplicate-element";
+    duplicateElement["templateKey"] = "default";
+    duplicateElement["layers"] = QJsonArray{
+        QJsonObject{
+            {"id", "layer-main"},
+            {"elements", QJsonArray{
+                             QJsonObject{{"id", "same"}, {"type", "fixedText"}},
+                             QJsonObject{{"id", "same"}, {"type", "rectangle"}},
+                         }},
+        },
+    };
+
+    QString duplicateElementError;
+    QVERIFY(!TemplateDocumentJson::validateForImport(duplicateElement, &duplicateElementError));
+    QVERIFY(duplicateElementError.contains(QString::fromUtf8("元素")));
+
+    QJsonObject mismatchedLayerId;
+    mismatchedLayerId["schemaVersion"] = 1;
+    mismatchedLayerId["id"] = "template-mismatched-layer";
+    mismatchedLayerId["templateKey"] = "default";
+    mismatchedLayerId["layers"] = QJsonArray{
+        QJsonObject{
+            {"id", "layer-main"},
+            {"elements", QJsonArray{
+                             QJsonObject{{"id", "title"}, {"type", "fixedText"}, {"layerId", "other-layer"}},
+                         }},
+        },
+    };
+
+    QString layerIdError;
+    QVERIFY(!TemplateDocumentJson::validateForImport(mismatchedLayerId, &layerIdError));
+    QVERIFY(layerIdError.contains(QStringLiteral("layerId")));
 }
 
 void CoreTests::settingsStorePersistsTemplateDocuments()
@@ -493,6 +555,10 @@ void CoreTests::nativeDrawingPlannerAppendsTemplateElements()
     fixedText.text = "HELLO";
     fixedText.fontSizePt = 5.0;
     fixedText.bold = true;
+    fixedText.zIndex = 2;
+    fixedText.rotationDegrees = 90.0;
+    fixedText.maxLines = 1;
+    fixedText.ellipsis = true;
 
     TemplateElement boundField;
     boundField.id = "custom_bound";
@@ -503,6 +569,7 @@ void CoreTests::nativeDrawingPlannerAppendsTemplateElements()
     boundField.height = 3.0;
     boundField.fieldKey = "productName";
     boundField.fontSizePt = 4.0;
+    boundField.zIndex = 1;
 
     TemplateElement qrCode;
     qrCode.id = "custom_qr";
@@ -512,6 +579,7 @@ void CoreTests::nativeDrawingPlannerAppendsTemplateElements()
     qrCode.width = 6.0;
     qrCode.height = 6.0;
     qrCode.fieldKey = "identifierText";
+    qrCode.zIndex = 0;
 
     TemplateElement rectangle;
     rectangle.id = "custom_rect";
@@ -520,6 +588,7 @@ void CoreTests::nativeDrawingPlannerAppendsTemplateElements()
     rectangle.y = 4.0;
     rectangle.width = 12.0;
     rectangle.height = 5.0;
+    rectangle.visible = false;
 
     const auto labelPlan = LabelRenderPlanner().createPlan(item);
     const QList<TemplateElement> customElements{fixedText, boundField, qrCode, rectangle};
@@ -546,6 +615,9 @@ void CoreTests::nativeDrawingPlannerAppendsTemplateElements()
     QCOMPARE(fixedCommand->text, QString("HELLO"));
     QCOMPARE(fixedCommand->fontSizePt, 5.0);
     QCOMPARE(fixedCommand->bold, true);
+    QCOMPARE(fixedCommand->rotationDegrees, 90.0);
+    QCOMPARE(fixedCommand->maxLines, 1);
+    QCOMPARE(fixedCommand->ellipsis, true);
 
     const auto boundCommand = findCommand("custom_bound");
     QVERIFY(boundCommand.has_value());
@@ -559,10 +631,11 @@ void CoreTests::nativeDrawingPlannerAppendsTemplateElements()
     QCOMPARE(qrCommand->width, 6.0);
 
     const auto rectangleCommand = findCommand("custom_rect");
-    QVERIFY(rectangleCommand.has_value());
-    QCOMPARE(rectangleCommand->type, NativeDrawCommandType::Rectangle);
-    QCOMPARE(rectangleCommand->width, 12.0);
-    QCOMPARE(rectangleCommand->height, 5.0);
+    QVERIFY(!rectangleCommand.has_value());
+
+    QCOMPARE(drawingPlan.commands[drawingPlan.commands.size() - 3].elementKey, QString("custom_qr"));
+    QCOMPARE(drawingPlan.commands[drawingPlan.commands.size() - 2].elementKey, QString("custom_bound"));
+    QCOMPARE(drawingPlan.commands[drawingPlan.commands.size() - 1].elementKey, QString("custom_fixed"));
 }
 
 void CoreTests::nativeDrawingPlannerUsesSilverTemplateForFactory25003()

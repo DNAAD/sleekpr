@@ -62,4 +62,4 @@ struct TemplateElement
     bool ellipsis = false;
 };
 
-} // namespace sleekpr::core
+} // 命名空间 sleekpr::core

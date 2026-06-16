@@ -33,4 +33,4 @@ struct PrintClientSettings
     QHash<QString, TemplateDocument> templateDocuments;
 };
 
-} // namespace sleekpr::core
+} // 命名空间 sleekpr::core

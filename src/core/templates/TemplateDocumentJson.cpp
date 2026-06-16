@@ -74,13 +74,16 @@ QJsonObject elementToJson(const TemplateElement& element)
     return json;
 }
 
-TemplateElement elementFromJson(const QJsonObject& json)
+TemplateElement elementFromJson(const QJsonObject& json, const QString& parentLayerId = QString())
 {
     TemplateElement element;
     element.id = json["id"].toString();
     element.type = elementTypeFromString(json["type"].toString());
     element.displayName = json["displayName"].toString();
     element.layerId = json["layerId"].toString();
+    if (element.layerId.trimmed().isEmpty() && !parentLayerId.trimmed().isEmpty()) {
+        element.layerId = parentLayerId;
+    }
     element.zIndex = json["zIndex"].toInt(element.zIndex);
     element.visible = json["visible"].toBool(element.visible);
     element.locked = json["locked"].toBool(element.locked);
@@ -108,11 +111,11 @@ QJsonArray elementsToJson(const QList<TemplateElement>& elements)
     return result;
 }
 
-QList<TemplateElement> elementsFromJson(const QJsonArray& json)
+QList<TemplateElement> elementsFromJson(const QJsonArray& json, const QString& parentLayerId = QString())
 {
     QList<TemplateElement> result;
     for (const auto& value : json) {
-        result.append(elementFromJson(value.toObject()));
+        result.append(elementFromJson(value.toObject(), parentLayerId));
     }
     return result;
 }
@@ -135,7 +138,7 @@ TemplateLayer layerFromJson(const QJsonObject& json)
     layer.name = json["name"].toString();
     layer.visible = json["visible"].toBool(layer.visible);
     layer.locked = json["locked"].toBool(layer.locked);
-    layer.elements = elementsFromJson(json["elements"].toArray());
+    layer.elements = elementsFromJson(json["elements"].toArray(), layer.id);
     return layer;
 }
 
@@ -257,17 +260,32 @@ bool validateLayerCollection(const QJsonArray& layers, const QString& context, Q
     QSet<QString> elementIds;
 
     for (const auto& layerValue : layers) {
+        if (!layerValue.isObject()) {
+            setError(errorMessage, QStringLiteral("%1图层必须是对象").arg(context));
+            return false;
+        }
         const auto layer = layerValue.toObject();
         const auto layerId = layer["id"].toString();
-        if (!layerId.isEmpty()) {
-            if (layerIds.contains(layerId)) {
-                setError(errorMessage, QStringLiteral("%1图层 id 重复：%2").arg(context, layerId));
-                return false;
-            }
-            layerIds.insert(layerId);
+        if (layerId.trimmed().isEmpty()) {
+            setError(errorMessage, QStringLiteral("%1图层 id 不能为空").arg(context));
+            return false;
+        }
+        if (layerIds.contains(layerId)) {
+            setError(errorMessage, QStringLiteral("%1图层 id 重复：%2").arg(context, layerId));
+            return false;
+        }
+        layerIds.insert(layerId);
+
+        if (!layer.contains("elements") || !layer["elements"].isArray()) {
+            setError(errorMessage, QStringLiteral("%1图层 elements 必须是数组：%2").arg(context, layerId));
+            return false;
         }
 
         for (const auto& elementValue : layer["elements"].toArray()) {
+            if (!elementValue.isObject()) {
+                setError(errorMessage, QStringLiteral("%1元素必须是对象：%2").arg(context, layerId));
+                return false;
+            }
             const auto element = elementValue.toObject();
             const auto type = element["type"].toString();
             if (!isKnownElementType(type)) {
@@ -276,12 +294,20 @@ bool validateLayerCollection(const QJsonArray& layers, const QString& context, Q
             }
 
             const auto elementId = element["id"].toString();
-            if (!elementId.isEmpty()) {
-                if (elementIds.contains(elementId)) {
-                    setError(errorMessage, QStringLiteral("%1元素 id 重复：%2").arg(context, elementId));
-                    return false;
-                }
-                elementIds.insert(elementId);
+            if (elementId.trimmed().isEmpty()) {
+                setError(errorMessage, QStringLiteral("%1元素 id 不能为空").arg(context));
+                return false;
+            }
+            if (elementIds.contains(elementId)) {
+                setError(errorMessage, QStringLiteral("%1元素 id 重复：%2").arg(context, elementId));
+                return false;
+            }
+            elementIds.insert(elementId);
+
+            const auto elementLayerId = element["layerId"].toString();
+            if (!elementLayerId.trimmed().isEmpty() && elementLayerId != layerId) {
+                setError(errorMessage, QStringLiteral("%1元素 layerId 与所在图层不一致：%2").arg(context, elementId));
+                return false;
             }
         }
     }
@@ -289,7 +315,7 @@ bool validateLayerCollection(const QJsonArray& layers, const QString& context, Q
     return true;
 }
 
-} // namespace
+} // 命名空间
 
 QJsonObject TemplateDocumentJson::toJson(const TemplateDocument& document)
 {
@@ -332,12 +358,37 @@ bool TemplateDocumentJson::validateForImport(const QJsonObject& json, QString* e
         return false;
     }
 
+    if (json["id"].toString().trimmed().isEmpty()) {
+        setError(errorMessage, QStringLiteral("模板 id 不能为空"));
+        return false;
+    }
+    if (json["templateKey"].toString().trimmed().isEmpty()) {
+        setError(errorMessage, QStringLiteral("模板 templateKey 不能为空"));
+        return false;
+    }
+    if (!json.contains("layers") || !json["layers"].isArray() || json["layers"].toArray().isEmpty()) {
+        setError(errorMessage, QStringLiteral("模板图层 layers 必须是非空数组"));
+        return false;
+    }
+
     // 导入入口严格检查结构，避免未知元素类型或重复 id 写入 settings.json。
     if (!validateLayerCollection(json["layers"].toArray(), QStringLiteral("模板"), errorMessage)) {
         return false;
     }
 
+    if (json.contains("versions") && !json["versions"].isArray()) {
+        setError(errorMessage, QStringLiteral("模板版本 versions 必须是数组"));
+        return false;
+    }
     for (const auto& versionValue : json["versions"].toArray()) {
+        if (!versionValue.isObject()) {
+            setError(errorMessage, QStringLiteral("版本快照必须是对象"));
+            return false;
+        }
+        if (!versionValue.toObject()["layersSnapshot"].isArray()) {
+            setError(errorMessage, QStringLiteral("版本快照 layersSnapshot 必须是数组"));
+            return false;
+        }
         if (!validateLayerCollection(
                 versionValue.toObject()["layersSnapshot"].toArray(),
                 QStringLiteral("版本快照"),
@@ -349,4 +400,4 @@ bool TemplateDocumentJson::validateForImport(const QJsonObject& json, QString* e
     return true;
 }
 
-} // namespace sleekpr::core
+} // 命名空间 sleekpr::core

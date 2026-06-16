@@ -149,7 +149,7 @@ TemplateElement templateElementFromJson(const QJsonObject& json)
     return element;
 }
 
-} // namespace
+} // 命名空间
 
 QJsonObject PrintClientSettingsJson::toJson(const PrintClientSettings& settings)
 {
@@ -242,4 +242,4 @@ PrintClientSettings PrintClientSettingsJson::fromJson(const QJsonObject& json)
     return settings;
 }
 
-} // namespace sleekpr::core
+} // 命名空间 sleekpr::core

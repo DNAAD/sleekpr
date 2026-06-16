@@ -223,10 +223,19 @@ QList<NativeDrawCommand> NativeLabelDrawingPlanner::appendTemplateElements(
         return commands;
     }
 
-    QList<NativeDrawCommand> result = commands;
-    result.reserve(commands.size() + templateElements.size());
+    QList<TemplateElement> sortedElements = templateElements;
+    std::stable_sort(sortedElements.begin(), sortedElements.end(), [](const TemplateElement& left, const TemplateElement& right) {
+        return left.zIndex < right.zIndex;
+    });
 
-    for (const auto& element : templateElements) {
+    QList<NativeDrawCommand> result = commands;
+    result.reserve(commands.size() + sortedElements.size());
+
+    for (const auto& element : sortedElements) {
+        if (!element.visible) {
+            continue;
+        }
+
         const auto elementKey = element.id.trimmed();
         if (elementKey.isEmpty()) {
             continue;
@@ -236,11 +245,33 @@ QList<NativeDrawCommand> NativeLabelDrawingPlanner::appendTemplateElements(
         const double y = element.y + offsetY;
         switch (element.type) {
         case TemplateElementType::FixedText:
-            result.append(text(x, y, element.width, element.height, element.text, element.fontSizePt, element.bold, elementKey));
+            result.append(text(
+                x,
+                y,
+                element.width,
+                element.height,
+                element.text,
+                element.fontSizePt,
+                element.bold,
+                elementKey,
+                element.rotationDegrees,
+                element.maxLines,
+                element.ellipsis));
             break;
         case TemplateElementType::BoundField:
             // 绑定字段只读取渲染计划中的展示文本，避免自定义模板元素反向依赖原始业务对象。
-            result.append(text(x, y, element.width, element.height, valueForField(labelPlan, element.fieldKey), element.fontSizePt, element.bold, elementKey));
+            result.append(text(
+                x,
+                y,
+                element.width,
+                element.height,
+                valueForField(labelPlan, element.fieldKey),
+                element.fontSizePt,
+                element.bold,
+                elementKey,
+                element.rotationDegrees,
+                element.maxLines,
+                element.ellipsis));
             break;
         case TemplateElementType::QrCode: {
             const auto payload = element.payload.trimmed().isEmpty()
@@ -315,4 +346,4 @@ QString NativeLabelDrawingPlanner::valueForField(const LabelRenderPlan& labelPla
     return QString();
 }
 
-} // namespace sleekpr::core
+} // 命名空间 sleekpr::core
