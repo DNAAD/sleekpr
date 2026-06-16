@@ -68,6 +68,8 @@ private slots:
     void fieldSchemaJsonRejectsInvalidFieldDefinitions();
     void templateDocumentJsonPersistsPaperMetadata();
     void templateDocumentImportRequiresPaperSpecIdForGenericTemplates();
+    void templateDocumentJsonPersistsFieldSchema();
+    void templateDocumentImportRejectsInvalidFieldSchema();
     void templateLibraryStoreSavesListsAndLoadsTemplates();
     void templateLibraryStoreRemovesSavedTemplates();
     void templateLibraryStoreRejectsInvalidTemplateImport();
@@ -958,6 +960,73 @@ void CoreTests::templateDocumentImportRequiresPaperSpecIdForGenericTemplates()
     QString errorMessage;
     QVERIFY(!TemplateDocumentJson::validateForImport(TemplateDocumentJson::toJson(document), &errorMessage));
     QVERIFY(errorMessage.contains(QStringLiteral("paperSpecId")));
+}
+
+void CoreTests::templateDocumentJsonPersistsFieldSchema()
+{
+    TemplateDocument document;
+    document.schemaVersion = 1;
+    document.id = QStringLiteral("sale-order");
+    document.name = QString::fromUtf8("销售单");
+    document.templateKey = QStringLiteral("saleOrder");
+    document.category = QStringLiteral("document");
+    document.paperSpecId = QStringLiteral("a4");
+
+    FieldDefinition customerName;
+    customerName.key = QStringLiteral("customerName");
+    customerName.displayName = QString::fromUtf8("客户名称");
+    customerName.required = true;
+    customerName.defaultValue = QString::fromUtf8("散客");
+    document.fieldSchema.append(customerName);
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("main");
+    TemplateElement element;
+    element.id = QStringLiteral("title");
+    element.layerId = layer.id;
+    layer.elements.append(element);
+    document.layers.append(layer);
+
+    const auto json = TemplateDocumentJson::toJson(document);
+    const auto fields = json["fieldSchema"].toObject()["fields"].toArray();
+    QCOMPARE(fields.size(), 1);
+    QCOMPARE(fields.first().toObject()["key"].toString(), QString("customerName"));
+
+    const auto actual = TemplateDocumentJson::fromJson(json);
+    QCOMPARE(actual.fieldSchema.size(), 1);
+    QCOMPARE(actual.fieldSchema.first().displayName, QString::fromUtf8("客户名称"));
+    QVERIFY(actual.fieldSchema.first().required);
+}
+
+void CoreTests::templateDocumentImportRejectsInvalidFieldSchema()
+{
+    TemplateDocument document;
+    document.schemaVersion = 1;
+    document.id = QStringLiteral("sale-order");
+    document.name = QString::fromUtf8("销售单");
+    document.templateKey = QStringLiteral("saleOrder");
+    document.category = QStringLiteral("document");
+    document.paperSpecId = QStringLiteral("a4");
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("main");
+    TemplateElement element;
+    element.id = QStringLiteral("title");
+    element.layerId = layer.id;
+    layer.elements.append(element);
+    document.layers.append(layer);
+
+    QJsonObject invalidField;
+    invalidField["key"] = QStringLiteral(" ");
+    invalidField["type"] = QStringLiteral("text");
+    invalidField["source"] = QStringLiteral("custom");
+
+    auto json = TemplateDocumentJson::toJson(document);
+    json["fieldSchema"] = QJsonObject{{QStringLiteral("fields"), QJsonArray{invalidField}}};
+
+    QString errorMessage;
+    QVERIFY(!TemplateDocumentJson::validateForImport(json, &errorMessage));
+    QVERIFY(errorMessage.contains(QString::fromUtf8("字段")));
 }
 
 void CoreTests::templateLibraryStoreSavesListsAndLoadsTemplates()

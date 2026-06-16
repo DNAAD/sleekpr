@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sleekpr/core/settings/TemplateElement.h"
+#include "sleekpr/core/templates/FieldSchema.h"
 
 #include <QList>
 #include <QString>
@@ -56,6 +57,10 @@ struct TemplateDocument
 
     QString activeVersionId;
     QList<TemplateLayer> layers;
+
+    // 模板只保存字段定义，不保存某次业务打印值；字段值由方案和本次请求合并生成。
+    QList<FieldDefinition> fieldSchema;
+
     QList<TemplateVersion> versions;
     QList<DeviceProfile> deviceProfiles;
 };

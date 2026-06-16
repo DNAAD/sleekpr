@@ -1,5 +1,7 @@
 #include "sleekpr/core/templates/TemplateDocumentJson.h"
 
+#include "sleekpr/core/templates/FieldSchemaJson.h"
+
 #include <QJsonArray>
 #include <QSet>
 
@@ -366,6 +368,7 @@ QJsonObject TemplateDocumentJson::toJson(const TemplateDocument& document)
     json["paperSpecId"] = document.paperSpecId;
     json["activeVersionId"] = document.activeVersionId;
     json["layers"] = layersToJson(document.layers);
+    json["fieldSchema"] = FieldSchemaJson::toJson(document.fieldSchema);
     json["versions"] = versionsToJson(document.versions);
     json["deviceProfiles"] = profilesToJson(document.deviceProfiles);
     return json;
@@ -386,6 +389,7 @@ TemplateDocument TemplateDocumentJson::fromJson(const QJsonObject& json)
     }
     document.activeVersionId = json["activeVersionId"].toString();
     document.layers = layersFromJson(json["layers"].toArray());
+    document.fieldSchema = FieldSchemaJson::fromJson(json["fieldSchema"].toObject());
     document.versions = versionsFromJson(json["versions"].toArray());
     document.deviceProfiles = profilesFromJson(json["deviceProfiles"].toArray());
     return document;
@@ -431,6 +435,17 @@ bool TemplateDocumentJson::validateForImport(const QJsonObject& json, QString* e
     // 导入入口严格检查结构，避免未知元素类型或重复 id 写入 settings.json。
     if (!validateLayerCollection(json["layers"].toArray(), QStringLiteral("模板"), errorMessage, true)) {
         return false;
+    }
+
+    if (json.contains("fieldSchema")) {
+        if (!json["fieldSchema"].isObject()) {
+            setError(errorMessage, QStringLiteral("模板 fieldSchema 必须是对象"));
+            return false;
+        }
+        // 字段定义由独立校验器维护，模板导入只负责把错误向上返回。
+        if (!FieldSchemaJson::validate(json["fieldSchema"].toObject(), errorMessage)) {
+            return false;
+        }
     }
 
     if (json.contains("versions") && !json["versions"].isArray()) {
