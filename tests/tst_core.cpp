@@ -5,6 +5,7 @@
 #include <QJsonObject>
 #include <QTemporaryDir>
 
+#include <algorithm>
 #include <stdexcept>
 
 #include "sleekpr/core/labels/LabelItem.h"
@@ -21,9 +22,12 @@
 #include "sleekpr/core/settings/SettingsEditModel.h"
 #include "sleekpr/core/settings/TemplateElement.h"
 #include "sleekpr/core/settings/TemplateElementCatalog.h"
+#include "sleekpr/core/templates/DeviceProfileResolver.h"
 #include "sleekpr/core/templates/TemplateDocument.h"
 #include "sleekpr/core/templates/TemplateDocumentEditModel.h"
+#include "sleekpr/core/templates/TemplateDocumentFactory.h"
 #include "sleekpr/core/templates/TemplateDocumentJson.h"
+#include "sleekpr/core/templates/TemplateDocumentRenderer.h"
 #include "sleekpr/infrastructure/preview/LabelPreviewImageRenderer.h"
 #include "sleekpr/infrastructure/preview/PreviewLabelFactory.h"
 #include "sleekpr/infrastructure/preview/QrCodeMatrixRenderer.h"
@@ -45,6 +49,9 @@ private slots:
     void templateDocumentEditModelReordersElements();
     void templateDocumentEditModelRestoresVersionsWithoutProfiles();
     void templateDocumentEditModelRejectsLockedLayerElementMove();
+    void deviceProfileResolverUsesPrinterSpecificProfile();
+    void templateDocumentFactoryBootstrapsExistingDrawingPlan();
+    void templateDocumentRendererSkipsHiddenLayersAndSortsElements();
     void settingsStorePersistsTemplateDocuments();
     void allowedOriginParserNormalizesValidOrigins();
     void corsAndPrivateNetworkPoliciesKeepLocalContract();
@@ -501,6 +508,94 @@ void CoreTests::templateDocumentEditModelRejectsLockedLayerElementMove()
     QVERIFY(!TemplateDocumentEditModel::moveElement(document, "locked-element", 9.0, 10.0));
     QCOMPARE(document.layers.first().elements.first().x, 3.0);
     QCOMPARE(document.layers.first().elements.first().y, 4.0);
+}
+
+void CoreTests::deviceProfileResolverUsesPrinterSpecificProfile()
+{
+    DeviceProfile defaultProfile;
+    defaultProfile.id = "profile-default";
+    defaultProfile.printerName = "";
+    defaultProfile.offsetX = 0.2;
+
+    DeviceProfile printerProfile;
+    printerProfile.id = "profile-printer-a";
+    printerProfile.printerName = "Printer A";
+    printerProfile.offsetX = 1.5;
+
+    const QList<DeviceProfile> profiles{defaultProfile, printerProfile};
+
+    QCOMPARE(DeviceProfileResolver::resolve(profiles, "printer a").id, QString("profile-printer-a"));
+    QCOMPARE(DeviceProfileResolver::resolve(profiles, "Printer B").id, QString("profile-default"));
+}
+
+void CoreTests::templateDocumentFactoryBootstrapsExistingDrawingPlan()
+{
+    const auto labelPlan = LabelRenderPlanner().createPlan(sleekpr::infrastructure::PreviewLabelFactory::createDemoLabel());
+    const auto baseDrawingPlan = NativeLabelDrawingPlanner().createPlan(labelPlan);
+    const auto document = TemplateDocumentFactory::fromDrawingPlan(
+        "default",
+        QString::fromUtf8("默认标签"),
+        baseDrawingPlan,
+        QList<TemplateElement>{});
+
+    QCOMPARE(document.templateKey, QString("default"));
+    QCOMPARE(document.layers.size(), 1);
+    QVERIFY(document.layers.first().elements.size() >= baseDrawingPlan.commands.size());
+    QCOMPARE(document.layers.first().elements.first().zIndex, 0);
+
+    const auto elements = document.layers.first().elements;
+    const auto verticalIdentifier = std::find_if(elements.cbegin(), elements.cend(), [](const TemplateElement& element) {
+        return element.id == QString("verticalIdentifier");
+    });
+
+    QVERIFY(verticalIdentifier != elements.cend());
+    QCOMPARE(verticalIdentifier->rotationDegrees, 90.0);
+}
+
+void CoreTests::templateDocumentRendererSkipsHiddenLayersAndSortsElements()
+{
+    TemplateElement back;
+    back.id = "back";
+    back.type = TemplateElementType::Rectangle;
+    back.x = 1.0;
+    back.y = 2.0;
+    back.width = 12.0;
+    back.height = 5.0;
+    back.zIndex = 2;
+
+    TemplateElement front;
+    front.id = "front";
+    front.type = TemplateElementType::FixedText;
+    front.text = "FRONT";
+    front.x = 3.0;
+    front.y = 4.0;
+    front.width = 10.0;
+    front.height = 2.0;
+    front.zIndex = 1;
+
+    TemplateElement hidden;
+    hidden.id = "hidden";
+    hidden.type = TemplateElementType::FixedText;
+    hidden.text = "HIDDEN";
+
+    TemplateLayer visibleLayer;
+    visibleLayer.id = "visible";
+    visibleLayer.elements = {back, front};
+
+    TemplateLayer hiddenLayer;
+    hiddenLayer.id = "hidden-layer";
+    hiddenLayer.visible = false;
+    hiddenLayer.elements = {hidden};
+
+    TemplateDocument document;
+    document.layers = {hiddenLayer, visibleLayer};
+
+    const auto labelPlan = LabelRenderPlanner().createPlan(sleekpr::infrastructure::PreviewLabelFactory::createDemoLabel());
+    const auto drawingPlan = TemplateDocumentRenderer().render(document, labelPlan, LabelOffset{}, DeviceProfile{});
+
+    QCOMPARE(drawingPlan.commands.size(), 2);
+    QCOMPARE(drawingPlan.commands[0].elementKey, QString("front"));
+    QCOMPARE(drawingPlan.commands[1].elementKey, QString("back"));
 }
 
 void CoreTests::settingsStorePersistsTemplateDocuments()

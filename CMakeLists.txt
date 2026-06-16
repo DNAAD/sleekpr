@@ -25,8 +25,11 @@ add_library(sleekpr_core
     src/core/settings/PrintClientSettingsJson.cpp
     src/core/settings/SettingsEditModel.cpp
     src/core/settings/TemplateElementCatalog.cpp
+    src/core/templates/DeviceProfileResolver.cpp
     src/core/templates/TemplateDocumentEditModel.cpp
+    src/core/templates/TemplateDocumentFactory.cpp
     src/core/templates/TemplateDocumentJson.cpp
+    src/core/templates/TemplateDocumentRenderer.cpp
     src/infrastructure/preview/LabelPreviewImageRenderer.cpp
     src/infrastructure/preview/LabelPreviewService.cpp
     src/infrastructure/preview/PreviewLabelFactory.cpp
