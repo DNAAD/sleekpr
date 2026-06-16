@@ -9,6 +9,8 @@
 namespace sleekpr::core {
 namespace {
 
+constexpr int MaximumTemplatePartRows = 9;
+
 QString fieldKeyForCommand(const QString& elementKey)
 {
     static const QHash<QString, QString> fieldKeys{
@@ -105,6 +107,53 @@ TemplateElement elementFromCommand(
     return element;
 }
 
+bool isPartRowElement(const TemplateElement& element)
+{
+    return element.type == TemplateElementType::BoundField
+        && element.fieldKey.startsWith(QStringLiteral("partRow:"));
+}
+
+void renumberZIndexes(QList<TemplateElement>& elements)
+{
+    for (int index = 0; index < elements.size(); ++index) {
+        elements[index].zIndex = index;
+    }
+}
+
+void appendMissingPartRows(QList<TemplateElement>& elements, const QString& layerId, QSet<QString>& usedIds)
+{
+    QList<TemplateElement> partRows;
+    int insertIndex = -1;
+    for (int index = 0; index < elements.size(); ++index) {
+        if (isPartRowElement(elements[index])) {
+            partRows.append(elements[index]);
+            insertIndex = index;
+        }
+    }
+
+    if (partRows.isEmpty() || partRows.size() >= MaximumTemplatePartRows) {
+        return;
+    }
+
+    const auto firstRow = partRows.first();
+    const auto leftX = firstRow.x;
+    const auto rightX = partRows.size() > 1 ? partRows[1].x : firstRow.x + 11.5;
+    const auto detectedRowSpacing = partRows.size() > 2 ? partRows[2].y - firstRow.y : 2.05;
+    const auto rowSpacing = detectedRowSpacing > 0.0 ? detectedRowSpacing : 2.05;
+
+    for (int rowIndex = partRows.size(); rowIndex < MaximumTemplatePartRows; ++rowIndex) {
+        auto element = firstRow;
+        element.id = uniqueElementId(QStringLiteral("partRow"), usedIds);
+        element.layerId = layerId;
+        element.fieldKey = QStringLiteral("partRow:%1").arg(rowIndex);
+        // 补齐的明细槽只保留动态绑定，显示内容在渲染当前业务数据时再生成。
+        element.text = QString();
+        element.x = rowIndex % 2 == 0 ? leftX : rightX;
+        element.y = firstRow.y + (rowIndex / 2) * rowSpacing;
+        elements.insert(++insertIndex, element);
+    }
+}
+
 } // 匿名命名空间
 
 TemplateDocument TemplateDocumentFactory::fromDrawingPlan(
@@ -127,6 +176,8 @@ TemplateDocument TemplateDocumentFactory::fromDrawingPlan(
     for (int index = 0; index < drawingPlan.commands.size(); ++index) {
         baseLayer.elements.append(elementFromCommand(drawingPlan.commands[index], index, baseLayerId, usedIds, commandOccurrences));
     }
+    appendMissingPartRows(baseLayer.elements, baseLayerId, usedIds);
+    renumberZIndexes(baseLayer.elements);
 
     QList<TemplateElement> sortedCustomElements = customElements;
     std::stable_sort(sortedCustomElements.begin(), sortedCustomElements.end(), [](const TemplateElement& left, const TemplateElement& right) {

@@ -576,6 +576,13 @@ void CoreTests::templateDocumentFactoryKeepsDynamicFieldsWhenRendered()
     liveItem.finishedProductParts = {
         LabelPartItem{"Ring", 1.23},
         LabelPartItem{"Chain", 2.34},
+        LabelPartItem{"Pendant", 3.45},
+        LabelPartItem{"Bead", 4.56},
+        LabelPartItem{"Hook", 5.67},
+        LabelPartItem{"Clasp", 6.78},
+        LabelPartItem{"Seal", 7.89},
+        LabelPartItem{"Tag", 8.9},
+        LabelPartItem{"Charm", 9.99},
     };
     const auto liveLabelPlan = LabelRenderPlanner().createPlan(liveItem);
     const auto drawingPlan = TemplateDocumentRenderer().render(document, liveLabelPlan, LabelOffset{}, DeviceProfile{});
@@ -589,9 +596,17 @@ void CoreTests::templateDocumentFactoryKeepsDynamicFieldsWhenRendered()
         return std::nullopt;
     };
 
+    const auto finishedWeightLabel = findCommand("finishedWeightLabel");
+    QVERIFY(finishedWeightLabel.has_value());
+    QCOMPARE(finishedWeightLabel->text, QString("Finished(g): "));
+
     const auto finishedWeightValue = findCommand("finishedWeightValue");
     QVERIFY(finishedWeightValue.has_value());
     QCOMPARE(finishedWeightValue->text, QString("3.20"));
+
+    const auto roughWeightLabel = findCommand("roughWeightLabel");
+    QVERIFY(roughWeightLabel.has_value());
+    QCOMPARE(roughWeightLabel->text, QString::fromUtf8("总件重(g): "));
 
     const auto roughWeightValue = findCommand("roughWeightValue");
     QVERIFY(roughWeightValue.has_value());
@@ -607,9 +622,10 @@ void CoreTests::templateDocumentFactoryKeepsDynamicFieldsWhenRendered()
             partRows.append(command);
         }
     }
-    QVERIFY(partRows.size() >= 2);
+    QCOMPARE(partRows.size(), 9);
     QCOMPARE(partRows[0].text, QString("Ring:1.23g"));
     QCOMPARE(partRows[1].text, QString("Chain:2.34g"));
+    QCOMPARE(partRows[8].text, QString("Charm:9.99g"));
 }
 
 void CoreTests::templateDocumentFactoryNormalizesCustomElements()
