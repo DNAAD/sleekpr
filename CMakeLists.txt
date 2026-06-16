@@ -66,6 +66,7 @@ target_link_libraries(sleekpr_http
 add_executable(sleekpr
     src/app/PreviewWindow.cpp
     src/app/SettingsWindow.cpp
+    src/app/TemplateDesignerWindow.cpp
     src/app/TemplateDragCoordinateMapper.cpp
     src/app/TemplateElementHitTester.cpp
     src/app/TemplatePreviewLabel.cpp

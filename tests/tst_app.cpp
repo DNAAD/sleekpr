@@ -11,6 +11,7 @@
 #include "sleekpr/app/TemplateDragCoordinateMapper.h"
 #include "sleekpr/app/TemplateElementHitTester.h"
 #include "sleekpr/app/TemplatePreviewLabel.h"
+#include "sleekpr/app/TemplateDesignerWindow.h"
 #include "sleekpr/app/WindowActivation.h"
 #include "sleekpr/app/SettingsWindow.h"
 #include "sleekpr/core/native/NativeDrawCommand.h"
@@ -38,6 +39,8 @@ private slots:
     void settingsWindowNudgesSelectedElementWithArrowKeys();
     void settingsWindowSnapsPreviewDragToGridWhenEnabled();
     void settingsWindowAddsFixedTextTemplateElement();
+    void templateDesignerWindowAddsLayer();
+    void templateDesignerWindowPreservesLegacyDynamicElements();
 };
 
 void AppTests::openingAndSavingSettingsDoesNotCreateImplicitElementOverride()
@@ -386,6 +389,87 @@ void AppTests::settingsWindowAddsFixedTextTemplateElement()
     QCOMPARE(elements.first().type, TemplateElementType::FixedText);
     QCOMPARE(elements.first().text, QString("STATIC TEXT"));
     QVERIFY(!elements.first().id.isEmpty());
+}
+
+void AppTests::templateDesignerWindowAddsLayer()
+{
+    PrintClientSettings settings;
+    PrintClientSettings changedSettings;
+    int changedCount = 0;
+    TemplateDesignerWindow window(settings, [&changedSettings, &changedCount](const PrintClientSettings& nextSettings) {
+        changedSettings = nextSettings;
+        ++changedCount;
+    });
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* layerList = window.findChild<QListWidget*>(QStringLiteral("templateLayerList"));
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(layerList != nullptr);
+
+    const auto initialCount = layerList->count();
+    QVERIFY(initialCount >= 1);
+    addLayerButton->click();
+
+    QCOMPARE(layerList->count(), initialCount + 1);
+    QCOMPARE(changedCount, 1);
+    QVERIFY(changedSettings.templateDocuments.contains("default"));
+    QCOMPARE(changedSettings.templateDocuments.value("default").layers.size(), initialCount + 1);
+}
+
+void AppTests::templateDesignerWindowPreservesLegacyDynamicElements()
+{
+    PrintClientSettings settings;
+    TemplateElement boundField;
+    boundField.id = QStringLiteral("legacyBoundField");
+    boundField.type = TemplateElementType::BoundField;
+    boundField.fieldKey = QStringLiteral("productName");
+    boundField.x = 30.0;
+    boundField.y = 2.0;
+    boundField.width = 10.0;
+    boundField.height = 3.0;
+
+    TemplateElement dynamicQrCode;
+    dynamicQrCode.id = QStringLiteral("legacyDynamicQr");
+    dynamicQrCode.type = TemplateElementType::QrCode;
+    dynamicQrCode.fieldKey = QStringLiteral("qrPayload");
+    dynamicQrCode.payload = QString();
+    dynamicQrCode.x = 42.0;
+    dynamicQrCode.y = 2.0;
+    dynamicQrCode.width = 6.0;
+    dynamicQrCode.height = 6.0;
+
+    settings.templateElements["default"] = {boundField, dynamicQrCode};
+
+    PrintClientSettings changedSettings;
+    TemplateDesignerWindow window(settings, [&changedSettings](const PrintClientSettings& nextSettings) {
+        changedSettings = nextSettings;
+    });
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    QVERIFY(addLayerButton != nullptr);
+    addLayerButton->click();
+
+    const auto document = changedSettings.templateDocuments.value("default");
+    QVERIFY(!document.layers.isEmpty());
+
+    const auto& elements = document.layers.first().elements;
+    auto findElement = [&elements](const QString& id) {
+        for (const auto& element : elements) {
+            if (element.id == id) {
+                return element;
+            }
+        }
+        return TemplateElement{};
+    };
+
+    const auto migratedBoundField = findElement(QStringLiteral("legacyBoundField"));
+    QCOMPARE(migratedBoundField.type, TemplateElementType::BoundField);
+    QCOMPARE(migratedBoundField.fieldKey, QString("productName"));
+
+    const auto migratedQrCode = findElement(QStringLiteral("legacyDynamicQr"));
+    QCOMPARE(migratedQrCode.type, TemplateElementType::QrCode);
+    QCOMPARE(migratedQrCode.fieldKey, QString("qrPayload"));
+    QVERIFY(migratedQrCode.payload.isEmpty());
 }
 
 int main(int argc, char* argv[])
