@@ -254,10 +254,20 @@ void setError(QString* errorMessage, const QString& message)
     }
 }
 
-bool validateLayerCollection(const QJsonArray& layers, const QString& context, QString* errorMessage)
+QString normalizedIdentifier(const QString& value)
+{
+    return value.trimmed();
+}
+
+bool validateLayerCollection(
+    const QJsonArray& layers,
+    const QString& context,
+    QString* errorMessage,
+    bool requireAnyElement = false)
 {
     QSet<QString> layerIds;
     QSet<QString> elementIds;
+    int totalElementCount = 0;
 
     for (const auto& layerValue : layers) {
         if (!layerValue.isObject()) {
@@ -266,24 +276,30 @@ bool validateLayerCollection(const QJsonArray& layers, const QString& context, Q
         }
         const auto layer = layerValue.toObject();
         const auto layerId = layer["id"].toString();
-        if (layerId.trimmed().isEmpty()) {
+        const auto normalizedLayerId = normalizedIdentifier(layerId);
+        if (normalizedLayerId.isEmpty()) {
             setError(errorMessage, QStringLiteral("%1图层 id 不能为空").arg(context));
             return false;
         }
-        if (layerIds.contains(layerId)) {
-            setError(errorMessage, QStringLiteral("%1图层 id 重复：%2").arg(context, layerId));
+        if (layerId != normalizedLayerId) {
+            setError(errorMessage, QStringLiteral("%1图层 id 不能包含首尾空白：%2").arg(context, normalizedLayerId));
             return false;
         }
-        layerIds.insert(layerId);
+        if (layerIds.contains(normalizedLayerId)) {
+            setError(errorMessage, QStringLiteral("%1图层 id 重复：%2").arg(context, normalizedLayerId));
+            return false;
+        }
+        layerIds.insert(normalizedLayerId);
 
         if (!layer.contains("elements") || !layer["elements"].isArray()) {
-            setError(errorMessage, QStringLiteral("%1图层 elements 必须是数组：%2").arg(context, layerId));
+            setError(errorMessage, QStringLiteral("%1图层 elements 必须是数组：%2").arg(context, normalizedLayerId));
             return false;
         }
 
         for (const auto& elementValue : layer["elements"].toArray()) {
+            ++totalElementCount;
             if (!elementValue.isObject()) {
-                setError(errorMessage, QStringLiteral("%1元素必须是对象：%2").arg(context, layerId));
+                setError(errorMessage, QStringLiteral("%1元素必须是对象：%2").arg(context, normalizedLayerId));
                 return false;
             }
             const auto element = elementValue.toObject();
@@ -294,22 +310,37 @@ bool validateLayerCollection(const QJsonArray& layers, const QString& context, Q
             }
 
             const auto elementId = element["id"].toString();
-            if (elementId.trimmed().isEmpty()) {
+            const auto normalizedElementId = normalizedIdentifier(elementId);
+            if (normalizedElementId.isEmpty()) {
                 setError(errorMessage, QStringLiteral("%1元素 id 不能为空").arg(context));
                 return false;
             }
-            if (elementIds.contains(elementId)) {
-                setError(errorMessage, QStringLiteral("%1元素 id 重复：%2").arg(context, elementId));
+            if (elementId != normalizedElementId) {
+                setError(errorMessage, QStringLiteral("%1元素 id 不能包含首尾空白：%2").arg(context, normalizedElementId));
                 return false;
             }
-            elementIds.insert(elementId);
+            if (elementIds.contains(normalizedElementId)) {
+                setError(errorMessage, QStringLiteral("%1元素 id 重复：%2").arg(context, normalizedElementId));
+                return false;
+            }
+            elementIds.insert(normalizedElementId);
 
             const auto elementLayerId = element["layerId"].toString();
-            if (!elementLayerId.trimmed().isEmpty() && elementLayerId != layerId) {
-                setError(errorMessage, QStringLiteral("%1元素 layerId 与所在图层不一致：%2").arg(context, elementId));
+            const auto normalizedElementLayerId = normalizedIdentifier(elementLayerId);
+            if (!elementLayerId.isEmpty() && elementLayerId != normalizedElementLayerId) {
+                setError(errorMessage, QStringLiteral("%1元素 layerId 不能包含首尾空白：%2").arg(context, normalizedElementId));
+                return false;
+            }
+            if (!normalizedElementLayerId.isEmpty() && normalizedElementLayerId != normalizedLayerId) {
+                setError(errorMessage, QStringLiteral("%1元素 layerId 与所在图层不一致：%2").arg(context, normalizedElementId));
                 return false;
             }
         }
+    }
+
+    if (requireAnyElement && totalElementCount == 0) {
+        setError(errorMessage, QStringLiteral("%1至少需要一个元素").arg(context));
+        return false;
     }
 
     return true;
@@ -372,7 +403,7 @@ bool TemplateDocumentJson::validateForImport(const QJsonObject& json, QString* e
     }
 
     // 导入入口严格检查结构，避免未知元素类型或重复 id 写入 settings.json。
-    if (!validateLayerCollection(json["layers"].toArray(), QStringLiteral("模板"), errorMessage)) {
+    if (!validateLayerCollection(json["layers"].toArray(), QStringLiteral("模板"), errorMessage, true)) {
         return false;
     }
 

@@ -259,13 +259,63 @@ void CoreTests::templateDocumentJsonRejectsInvalidImportDocument()
     duplicateLayer["templateKey"] = "default";
 
     QJsonArray layers;
-    layers.append(QJsonObject{{"id", "same"}, {"name", "A"}});
-    layers.append(QJsonObject{{"id", "same"}, {"name", "B"}});
+    layers.append(QJsonObject{
+        {"id", "same"},
+        {"name", "A"},
+        {"elements", QJsonArray{
+                         QJsonObject{{"id", "title-a"}, {"type", "fixedText"}},
+                     }},
+    });
+    layers.append(QJsonObject{
+        {"id", "same"},
+        {"name", "B"},
+        {"elements", QJsonArray{
+                         QJsonObject{{"id", "title-b"}, {"type", "fixedText"}},
+                     }},
+    });
     duplicateLayer["layers"] = layers;
 
     QString errorMessage;
     QVERIFY(!TemplateDocumentJson::validateForImport(duplicateLayer, &errorMessage));
     QVERIFY(errorMessage.contains(QString::fromUtf8("图层")));
+
+    QJsonObject whitespaceDuplicateLayer;
+    whitespaceDuplicateLayer["schemaVersion"] = 1;
+    whitespaceDuplicateLayer["id"] = "template-whitespace-layer";
+    whitespaceDuplicateLayer["templateKey"] = "default";
+    whitespaceDuplicateLayer["layers"] = QJsonArray{
+        QJsonObject{
+            {"id", "same"},
+            {"elements", QJsonArray{
+                             QJsonObject{{"id", "title-a"}, {"type", "fixedText"}},
+                         }},
+        },
+        QJsonObject{
+            {"id", " same "},
+            {"elements", QJsonArray{
+                             QJsonObject{{"id", "title-b"}, {"type", "fixedText"}},
+                         }},
+        },
+    };
+
+    QString whitespaceLayerError;
+    QVERIFY(!TemplateDocumentJson::validateForImport(whitespaceDuplicateLayer, &whitespaceLayerError));
+    QVERIFY(whitespaceLayerError.contains(QString::fromUtf8("图层")));
+
+    QJsonObject emptyTemplate;
+    emptyTemplate["schemaVersion"] = 1;
+    emptyTemplate["id"] = "template-empty";
+    emptyTemplate["templateKey"] = "default";
+    emptyTemplate["layers"] = QJsonArray{
+        QJsonObject{
+            {"id", "layer-empty"},
+            {"elements", QJsonArray{}},
+        },
+    };
+
+    QString emptyTemplateError;
+    QVERIFY(!TemplateDocumentJson::validateForImport(emptyTemplate, &emptyTemplateError));
+    QVERIFY(emptyTemplateError.contains(QString::fromUtf8("元素")));
 
     QJsonObject invalidElement;
     invalidElement["schemaVersion"] = 1;
@@ -301,6 +351,24 @@ void CoreTests::templateDocumentJsonRejectsInvalidImportDocument()
     QString duplicateElementError;
     QVERIFY(!TemplateDocumentJson::validateForImport(duplicateElement, &duplicateElementError));
     QVERIFY(duplicateElementError.contains(QString::fromUtf8("元素")));
+
+    QJsonObject whitespaceDuplicateElement;
+    whitespaceDuplicateElement["schemaVersion"] = 1;
+    whitespaceDuplicateElement["id"] = "template-whitespace-element";
+    whitespaceDuplicateElement["templateKey"] = "default";
+    whitespaceDuplicateElement["layers"] = QJsonArray{
+        QJsonObject{
+            {"id", "layer-main"},
+            {"elements", QJsonArray{
+                             QJsonObject{{"id", "same"}, {"type", "fixedText"}},
+                             QJsonObject{{"id", " same "}, {"type", "rectangle"}},
+                         }},
+        },
+    };
+
+    QString whitespaceElementError;
+    QVERIFY(!TemplateDocumentJson::validateForImport(whitespaceDuplicateElement, &whitespaceElementError));
+    QVERIFY(whitespaceElementError.contains(QString::fromUtf8("元素")));
 
     QJsonObject mismatchedLayerId;
     mismatchedLayerId["schemaVersion"] = 1;
