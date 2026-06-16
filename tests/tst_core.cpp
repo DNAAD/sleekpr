@@ -410,6 +410,10 @@ void CoreTests::templateDocumentEditModelManagesLayers()
 
     QVERIFY(TemplateDocumentEditModel::setLayerVisible(document, "base", false));
     QCOMPARE(document.layers[1].visible, false);
+
+    QVERIFY(TemplateDocumentEditModel::setLayerLocked(document, "base", true));
+    QVERIFY(!TemplateDocumentEditModel::moveLayerUp(document, "base"));
+    QCOMPARE(document.layers[1].id, QString("base"));
 }
 
 void CoreTests::templateDocumentEditModelReordersElements()
@@ -471,6 +475,11 @@ void CoreTests::templateDocumentEditModelRestoresVersionsWithoutProfiles()
     QCOMPARE(document.deviceProfiles.size(), 1);
     QCOMPARE(document.deviceProfiles.first().id, QString("profile-default"));
     QCOMPARE(document.deviceProfiles.first().scaleX, 1.05);
+
+    QVERIFY(!TemplateDocumentEditModel::saveVersion(document, " version-2 ", "Bad", "2026-06-16T10:00:00+08:00", "bad"));
+    QVERIFY(TemplateDocumentEditModel::saveVersion(document, "version-2", "Second", "2026-06-16T10:01:00+08:00", "second"));
+    QVERIFY(!TemplateDocumentEditModel::saveVersion(document, "version-2", "Duplicate", "2026-06-16T10:02:00+08:00", "duplicate"));
+    QCOMPARE(document.activeVersionId, QString("version-2"));
 }
 
 void CoreTests::templateDocumentEditModelRejectsLockedLayerElementMove()

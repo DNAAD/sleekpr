@@ -108,7 +108,7 @@ bool TemplateDocumentEditModel::deleteLayer(TemplateDocument& document, const QS
 bool TemplateDocumentEditModel::moveLayerUp(TemplateDocument& document, const QString& layerId)
 {
     const auto index = layerIndexOf(document, layerId);
-    if (index <= 0) {
+    if (index <= 0 || document.layers[index].locked) {
         return false;
     }
 
@@ -119,7 +119,7 @@ bool TemplateDocumentEditModel::moveLayerUp(TemplateDocument& document, const QS
 bool TemplateDocumentEditModel::moveLayerDown(TemplateDocument& document, const QString& layerId)
 {
     const auto index = layerIndexOf(document, layerId);
-    if (index < 0 || index >= document.layers.size() - 1) {
+    if (index < 0 || document.layers[index].locked || index >= document.layers.size() - 1) {
         return false;
     }
 
@@ -248,7 +248,7 @@ bool TemplateDocumentEditModel::saveVersion(
     const QString& createdAt,
     const QString& note)
 {
-    if (versionId.isEmpty() || versionIndexOf(document, versionId) >= 0) {
+    if (!hasCleanId(versionId) || versionIndexOf(document, versionId) >= 0) {
         return false;
     }
 
