@@ -23,16 +23,47 @@ public:
     bool print(const NativeLabelDrawingPlan& plan, const QString& printerName) override
     {
         ++printCount;
+        usedSinglePageEntry = true;
         lastPrinterName = printerName;
         lastPlanCommandCount = plan.commands.size();
         lastPlan = plan;
         return true;
     }
 
+    bool print(const NativePrintDrawingPlan& plan, const QString& printerName) override
+    {
+        ++printCount;
+        usedPrintPlanEntry = true;
+        lastPrinterName = printerName;
+        lastPrintPlanPageCount = plan.pages.size();
+        lastPlan = plan.firstPageAsLabelPlan();
+        lastPlanCommandCount = lastPlan.commands.size();
+        return true;
+    }
+
     int printCount = 0;
     int lastPlanCommandCount = 0;
+    int lastPrintPlanPageCount = 0;
+    bool usedSinglePageEntry = false;
+    bool usedPrintPlanEntry = false;
     QString lastPrinterName;
     NativeLabelDrawingPlan lastPlan;
+};
+
+class PageCollectingPrintEngine final : public LabelPrintEngine
+{
+public:
+    using LabelPrintEngine::print;
+
+    bool print(const NativeLabelDrawingPlan& plan, const QString& printerName) override
+    {
+        printerNames.append(printerName);
+        printedPages.append(plan);
+        return true;
+    }
+
+    QStringList printerNames;
+    QList<NativeLabelDrawingPlan> printedPages;
 };
 
 class HttpTests final : public QObject
@@ -43,6 +74,7 @@ private slots:
     void optionsUsesTrustedCorsPolicy();
     void getSettingsReturnsTemplateCompatibilityFields();
     void postSettingsPersistsFullSettingsShape();
+    void labelPrintEngineDispatchesPrintPlanPagesInOrder();
     void postPrintTagCreatesAcceptedJobAndUsesConfiguredPrinter();
     void localServerWaitsForFullPostBody();
 };
@@ -149,6 +181,35 @@ void HttpTests::postSettingsPersistsFullSettingsShape()
     QCOMPARE(priceText.bold.value(), true);
 }
 
+void HttpTests::labelPrintEngineDispatchesPrintPlanPagesInOrder()
+{
+    NativePrintDrawingPlan printPlan;
+    printPlan.paperSize = LabelPaperSize::create80x30();
+    printPlan.renderDpi = 203.0;
+
+    NativeDrawCommand firstCommand;
+    firstCommand.text = QStringLiteral("第一页");
+    NativePrintPage firstPage;
+    firstPage.pageNumber = 1;
+    firstPage.commands.append(firstCommand);
+    printPlan.pages.append(firstPage);
+
+    NativeDrawCommand secondCommand;
+    secondCommand.text = QStringLiteral("第二页");
+    NativePrintPage secondPage;
+    secondPage.pageNumber = 2;
+    secondPage.commands.append(secondCommand);
+    printPlan.pages.append(secondPage);
+
+    PageCollectingPrintEngine printEngine;
+    QVERIFY(printEngine.print(printPlan, QStringLiteral("Printer A")));
+    QCOMPARE(printEngine.printedPages.size(), 2);
+    QCOMPARE(printEngine.printedPages[0].renderDpi, 203.0);
+    QCOMPARE(printEngine.printedPages[0].commands.first().text, QStringLiteral("第一页"));
+    QCOMPARE(printEngine.printedPages[1].commands.first().text, QStringLiteral("第二页"));
+    QCOMPARE(printEngine.printerNames, QStringList({QStringLiteral("Printer A"), QStringLiteral("Printer A")}));
+}
+
 void HttpTests::postPrintTagCreatesAcceptedJobAndUsesConfiguredPrinter()
 {
     QTemporaryDir dir;
@@ -210,6 +271,9 @@ void HttpTests::postPrintTagCreatesAcceptedJobAndUsesConfiguredPrinter()
     const auto response = router.route(request);
     QCOMPARE(response.statusCode, 200);
     QCOMPARE(printEngine.printCount, 1);
+    QVERIFY(printEngine.usedPrintPlanEntry);
+    QVERIFY(!printEngine.usedSinglePageEntry);
+    QCOMPARE(printEngine.lastPrintPlanPageCount, 1);
     QCOMPARE(printEngine.lastPrinterName, QString("Configured Printer"));
     QVERIFY(printEngine.lastPlanCommandCount > 0);
     const auto configuredCommand = std::find_if(

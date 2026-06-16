@@ -8,6 +8,7 @@ class QtLabelPrintEngine final : public LabelPrintEngine
 {
 public:
     bool print(const sleekpr::core::NativeLabelDrawingPlan& plan, const QString& printerName) override;
+    bool print(const sleekpr::core::NativePrintDrawingPlan& plan, const QString& printerName) override;
 };
 
 } // 命名空间 sleekpr::infrastructure

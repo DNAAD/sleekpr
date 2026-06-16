@@ -27,13 +27,14 @@ using sleekpr::core::LabelItem;
 using sleekpr::core::LabelPartItem;
 using sleekpr::core::LabelRenderPlanner;
 using sleekpr::core::NativeLabelDrawingPlanner;
-using sleekpr::core::NativeLabelDrawingPlan;
+using sleekpr::core::NativePrintDrawingPlan;
 using sleekpr::core::PrintClientSettings;
 using sleekpr::core::PrintClientSettingsJson;
 using sleekpr::core::PrinterSelectionResolver;
 using sleekpr::core::PrivateNetworkAccessPolicy;
 using sleekpr::core::DeviceProfileResolver;
 using sleekpr::core::TemplateDocumentRenderer;
+using sleekpr::core::TemplateRenderContext;
 using sleekpr::core::templateOverrideKey;
 
 namespace {
@@ -242,7 +243,7 @@ QJsonObject printResultJson(const QString& requestId, int total, int printed, in
     };
 }
 
-NativeLabelDrawingPlan createDrawingPlan(
+NativePrintDrawingPlan createPrintPlan(
     const sleekpr::core::LabelRenderPlan& labelPlan,
     const PrintClientSettings& settings,
     const QString& printerName)
@@ -252,14 +253,14 @@ NativeLabelDrawingPlan createDrawingPlan(
     if (documentIt != settings.templateDocuments.cend()) {
         // HTTP 打印只接收已解析出的本机打印机名；设备 profile 按该名称选择，避免请求参数绕过本机配置。
         const auto profile = DeviceProfileResolver::resolve(documentIt.value().deviceProfiles, printerName);
-        return TemplateDocumentRenderer().render(documentIt.value(), labelPlan, settings.labelOffset, profile);
+        return TemplateDocumentRenderer().renderPrint(documentIt.value(), labelPlan, settings.labelOffset, profile, TemplateRenderContext{});
     }
 
-    return NativeLabelDrawingPlanner().createPlan(
+    return NativePrintDrawingPlan::fromSinglePage(NativeLabelDrawingPlanner().createPlan(
         labelPlan,
         settings.labelOffset,
         settings.templateOverrides.value(templateKey),
-        settings.templateElements.value(templateKey));
+        settings.templateElements.value(templateKey)));
 }
 
 } // 匿名命名空间
@@ -337,11 +338,11 @@ LocalHttpResponse LocalHttpRouter::route(const LocalHttpRequest& request) const
 
         for (const auto& item : items) {
             const auto labelPlan = LabelRenderPlanner().createPlan(item);
-            const auto drawingPlan = createDrawingPlan(labelPlan, settings, selectedPrinter);
+            const auto printPlan = createPrintPlan(labelPlan, settings, selectedPrinter);
             if (!executePrint) {
                 continue;
             }
-            if (m_printEngine != nullptr && m_printEngine->print(drawingPlan, selectedPrinter)) {
+            if (m_printEngine != nullptr && m_printEngine->print(printPlan, selectedPrinter)) {
                 ++printed;
             } else {
                 ++failed;
