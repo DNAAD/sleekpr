@@ -62,6 +62,8 @@ private:
     void restoreActiveTemplateVersion();
     void saveCurrentTemplateToLibrary();
     void loadCurrentTemplateFromLibrary();
+    void createTemplateInLibrary();
+    void deleteSelectedTemplateFromLibrary();
     void loadSelectedTemplateFromLibrary();
     void loadTemplateFromLibraryById(const QString& templateId);
     void importTemplateWithDialog();
@@ -92,6 +94,7 @@ private:
     SettingsChangedCallback m_onSettingsChanged;
     QString m_templateLibraryDirectoryPath;
     QString m_templateKey = QStringLiteral("default");
+    QLineEdit* m_templateLibraryNameEdit = nullptr;
     QListWidget* m_templateLibraryList = nullptr;
     QListWidget* m_layerList = nullptr;
     QListWidget* m_elementList = nullptr;

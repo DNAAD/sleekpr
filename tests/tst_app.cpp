@@ -23,6 +23,35 @@
 using namespace sleekpr::app;
 using namespace sleekpr::core;
 
+namespace {
+
+TemplateDocument createLibraryTestDocument(
+    const QString& id,
+    const QString& name,
+    const QString& templateKey,
+    const QString& layerName,
+    const QString& elementText)
+{
+    TemplateLayer layer;
+    layer.id = id + QStringLiteral("-layer");
+    layer.name = layerName;
+
+    TemplateElement element;
+    element.id = id + QStringLiteral("-title");
+    element.layerId = layer.id;
+    element.text = elementText;
+    layer.elements.append(element);
+
+    TemplateDocument document;
+    document.id = id;
+    document.name = name;
+    document.templateKey = templateKey;
+    document.layers = {layer};
+    return document;
+}
+
+} // 匿名命名空间
+
 class AppTests final : public QObject
 {
     Q_OBJECT
@@ -51,6 +80,8 @@ private slots:
     void templateDesignerWindowExportsAndImportsTemplateFile();
     void templateDesignerWindowSavesAndLoadsTemplateLibraryDocument();
     void templateDesignerWindowListsAndLoadsSelectedLibraryTemplate();
+    void templateDesignerWindowCreatesTemplateLibraryDocumentFromCurrentTemplate();
+    void templateDesignerWindowDeletesSelectedTemplateLibraryDocument();
     void templateDesignerWindowSavesAndReplacesDeviceProfile();
     void settingsWindowHasTemplateDesignerEntry();
 };
@@ -654,38 +685,18 @@ void AppTests::templateDesignerWindowListsAndLoadsSelectedLibraryTemplate()
 
     const auto templateDirectoryPath = dir.filePath(QStringLiteral("templates"));
     TemplateLibraryStore store(templateDirectoryPath);
-
-    TemplateLayer invoiceLayer;
-    invoiceLayer.id = QStringLiteral("invoice-layer");
-    invoiceLayer.name = QString::fromUtf8("发货单图层");
-    TemplateElement invoiceElement;
-    invoiceElement.id = QStringLiteral("invoice-title");
-    invoiceElement.layerId = invoiceLayer.id;
-    invoiceElement.text = QString::fromUtf8("发货单");
-    invoiceLayer.elements.append(invoiceElement);
-
-    TemplateDocument invoiceDocument;
-    invoiceDocument.id = QStringLiteral("template-invoice");
-    invoiceDocument.name = QString::fromUtf8("发货单模板");
-    invoiceDocument.templateKey = QStringLiteral("invoice");
-    invoiceDocument.layers = {invoiceLayer};
-    QVERIFY(store.saveTemplate(invoiceDocument));
-
-    TemplateLayer tableLayer;
-    tableLayer.id = QStringLiteral("table-layer");
-    tableLayer.name = QString::fromUtf8("明细表图层");
-    TemplateElement tableElement;
-    tableElement.id = QStringLiteral("table-title");
-    tableElement.layerId = tableLayer.id;
-    tableElement.text = QString::fromUtf8("复杂表格");
-    tableLayer.elements.append(tableElement);
-
-    TemplateDocument tableDocument;
-    tableDocument.id = QStringLiteral("template-table");
-    tableDocument.name = QString::fromUtf8("复杂表格模板");
-    tableDocument.templateKey = QStringLiteral("table");
-    tableDocument.layers = {tableLayer};
-    QVERIFY(store.saveTemplate(tableDocument));
+    QVERIFY(store.saveTemplate(createLibraryTestDocument(
+        QStringLiteral("template-invoice"),
+        QString::fromUtf8("发货单模板"),
+        QStringLiteral("invoice"),
+        QString::fromUtf8("发货单图层"),
+        QString::fromUtf8("发货单"))));
+    QVERIFY(store.saveTemplate(createLibraryTestDocument(
+        QStringLiteral("template-table"),
+        QString::fromUtf8("复杂表格模板"),
+        QStringLiteral("table"),
+        QString::fromUtf8("明细表图层"),
+        QString::fromUtf8("复杂表格"))));
 
     PrintClientSettings importedSettings;
     TemplateDesignerWindow window(PrintClientSettings{}, [&importedSettings](const PrintClientSettings& nextSettings) {
@@ -713,6 +724,80 @@ void AppTests::templateDesignerWindowListsAndLoadsSelectedLibraryTemplate()
     QVERIFY(!importedDocument.layers.isEmpty());
     QVERIFY(!importedDocument.layers.first().elements.isEmpty());
     QCOMPARE(importedDocument.layers.first().elements.first().text, QString::fromUtf8("复杂表格"));
+}
+
+void AppTests::templateDesignerWindowCreatesTemplateLibraryDocumentFromCurrentTemplate()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const auto templateDirectoryPath = dir.filePath(QStringLiteral("templates"));
+    PrintClientSettings changedSettings;
+    TemplateDesignerWindow window(PrintClientSettings{}, [&changedSettings](const PrintClientSettings& nextSettings) {
+        changedSettings = nextSettings;
+    }, templateDirectoryPath);
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* nameEdit = window.findChild<QLineEdit*>(QStringLiteral("templateLibraryNameEdit"));
+    auto* createButton = window.findChild<QPushButton*>(QStringLiteral("createTemplateInLibraryButton"));
+    auto* libraryList = window.findChild<QListWidget*>(QStringLiteral("templateLibraryList"));
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(nameEdit != nullptr);
+    QVERIFY(createButton != nullptr);
+    QVERIFY(libraryList != nullptr);
+
+    addLayerButton->click();
+    nameEdit->setText(QString::fromUtf8("新标签模板"));
+    createButton->click();
+
+    QCOMPARE(libraryList->count(), 1);
+    const auto createdTemplateId = libraryList->item(0)->data(Qt::UserRole).toString();
+    QVERIFY(createdTemplateId.startsWith(QStringLiteral("template-")));
+    QCOMPARE(changedSettings.templateDocuments.value("default").id, createdTemplateId);
+
+    TemplateLibraryStore store(templateDirectoryPath);
+    const auto createdDocument = store.loadTemplate(createdTemplateId);
+    QVERIFY(createdDocument.has_value());
+    QCOMPARE(createdDocument->name, QString::fromUtf8("新标签模板"));
+    QCOMPARE(createdDocument->templateKey, QString("default"));
+    QCOMPARE(createdDocument->layers.size(), 2);
+}
+
+void AppTests::templateDesignerWindowDeletesSelectedTemplateLibraryDocument()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const auto templateDirectoryPath = dir.filePath(QStringLiteral("templates"));
+    TemplateLibraryStore store(templateDirectoryPath);
+    QVERIFY(store.saveTemplate(createLibraryTestDocument(
+        QStringLiteral("template-invoice"),
+        QString::fromUtf8("发货单模板"),
+        QStringLiteral("invoice"),
+        QString::fromUtf8("发货单图层"),
+        QString::fromUtf8("发货单"))));
+    QVERIFY(store.saveTemplate(createLibraryTestDocument(
+        QStringLiteral("template-table"),
+        QString::fromUtf8("复杂表格模板"),
+        QStringLiteral("table"),
+        QString::fromUtf8("明细表图层"),
+        QString::fromUtf8("复杂表格"))));
+
+    TemplateDesignerWindow window(PrintClientSettings{}, nullptr, templateDirectoryPath);
+
+    auto* libraryList = window.findChild<QListWidget*>(QStringLiteral("templateLibraryList"));
+    auto* deleteButton = window.findChild<QPushButton*>(QStringLiteral("deleteSelectedTemplateFromLibraryButton"));
+    QVERIFY(libraryList != nullptr);
+    QVERIFY(deleteButton != nullptr);
+    QCOMPARE(libraryList->count(), 2);
+
+    libraryList->setCurrentRow(0);
+    deleteButton->click();
+
+    QCOMPARE(libraryList->count(), 1);
+    QCOMPARE(libraryList->item(0)->data(Qt::UserRole).toString(), QString("template-table"));
+    QVERIFY(!store.loadTemplate(QStringLiteral("template-invoice")).has_value());
+    QVERIFY(store.loadTemplate(QStringLiteral("template-table")).has_value());
 }
 
 void AppTests::templateDesignerWindowSavesAndReplacesDeviceProfile()

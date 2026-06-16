@@ -252,6 +252,9 @@ void TemplateDesignerWindow::buildUi()
     auto* saveToLibraryButton = createButton(QString::fromUtf8("保存到模板库"), QStringLiteral("saveTemplateToLibraryButton"), layerPanel);
     auto* loadFromLibraryButton = createButton(QString::fromUtf8("从模板库加载"), QStringLiteral("loadTemplateFromLibraryButton"), layerPanel);
     auto* libraryTitleLabel = new QLabel(QString::fromUtf8("模板库"), layerPanel);
+    m_templateLibraryNameEdit = new QLineEdit(layerPanel);
+    m_templateLibraryNameEdit->setObjectName(QStringLiteral("templateLibraryNameEdit"));
+    m_templateLibraryNameEdit->setPlaceholderText(QString::fromUtf8("新模板名称"));
     m_templateLibraryList = new QListWidget(layerPanel);
     m_templateLibraryList->setObjectName(QStringLiteral("templateLibraryList"));
     m_templateLibraryList->setMinimumHeight(84);
@@ -260,6 +263,11 @@ void TemplateDesignerWindow::buildUi()
     auto* loadSelectedLibraryButton = createButton(
         QString::fromUtf8("加载选中模板"),
         QStringLiteral("loadSelectedTemplateFromLibraryButton"),
+        layerPanel);
+    auto* createLibraryButton = createButton(QString::fromUtf8("新建模板"), QStringLiteral("createTemplateInLibraryButton"), layerPanel);
+    auto* deleteLibraryButton = createButton(
+        QString::fromUtf8("删除选中模板"),
+        QStringLiteral("deleteSelectedTemplateFromLibraryButton"),
         layerPanel);
 
     m_layerList = new QListWidget(layerPanel);
@@ -288,11 +296,14 @@ void TemplateDesignerWindow::buildUi()
     layerLayout->addLayout(layerButtonGrid);
     layerLayout->addLayout(documentButtonGrid);
     layerLayout->addWidget(libraryTitleLabel);
+    layerLayout->addWidget(m_templateLibraryNameEdit);
     layerLayout->addWidget(m_templateLibraryList);
     auto* libraryButtonGrid = new QGridLayout();
     libraryButtonGrid->setContentsMargins(0, 0, 0, 0);
     libraryButtonGrid->addWidget(refreshLibraryButton, 0, 0);
     libraryButtonGrid->addWidget(loadSelectedLibraryButton, 0, 1);
+    libraryButtonGrid->addWidget(createLibraryButton, 1, 0);
+    libraryButtonGrid->addWidget(deleteLibraryButton, 1, 1);
     layerLayout->addLayout(libraryButtonGrid);
 
     auto* workspacePanel = new QWidget(this);
@@ -394,6 +405,8 @@ void TemplateDesignerWindow::buildUi()
     connect(loadFromLibraryButton, &QPushButton::clicked, this, [this] { loadCurrentTemplateFromLibrary(); });
     connect(refreshLibraryButton, &QPushButton::clicked, this, [this] { refreshTemplateLibraryList(); });
     connect(loadSelectedLibraryButton, &QPushButton::clicked, this, [this] { loadSelectedTemplateFromLibrary(); });
+    connect(createLibraryButton, &QPushButton::clicked, this, [this] { createTemplateInLibrary(); });
+    connect(deleteLibraryButton, &QPushButton::clicked, this, [this] { deleteSelectedTemplateFromLibrary(); });
     connect(m_templateLibraryList, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem*) { loadSelectedTemplateFromLibrary(); });
     connect(addFixedTextButton, &QPushButton::clicked, this, [this] { addFixedTextElement(); });
     connect(addBoundFieldButton, &QPushButton::clicked, this, [this] { addBoundFieldElement(); });
@@ -709,6 +722,73 @@ void TemplateDesignerWindow::saveCurrentTemplateToLibrary()
 void TemplateDesignerWindow::loadCurrentTemplateFromLibrary()
 {
     loadTemplateFromLibraryById(QStringLiteral("template-") + m_templateKey);
+}
+
+void TemplateDesignerWindow::createTemplateInLibrary()
+{
+    ensureCurrentTemplateDocument();
+    if (m_templateLibraryDirectoryPath.trimmed().isEmpty()) {
+        m_statusLabel->setText(QString::fromUtf8("未配置模板库目录"));
+        return;
+    }
+
+    auto document = m_settings.templateDocuments[m_templateKey];
+    const auto requestedName = m_templateLibraryNameEdit == nullptr
+        ? QString()
+        : m_templateLibraryNameEdit->text().trimmed();
+    document.id = QStringLiteral("template-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    document.name = requestedName.isEmpty() ? QString::fromUtf8("未命名模板") : requestedName;
+    document.templateKey = m_templateKey;
+
+    QString errorMessage;
+    // 新建模板复用当前画布内容，但生成独立 id，避免误覆盖已保存模板。
+    if (!sleekpr::core::TemplateLibraryStore(m_templateLibraryDirectoryPath).saveTemplate(document, &errorMessage)) {
+        m_statusLabel->setText(errorMessage.isEmpty() ? QString::fromUtf8("新建模板失败") : errorMessage);
+        return;
+    }
+
+    applyImportedTemplateDocument(document);
+    refreshTemplateLibraryList();
+    if (m_templateLibraryNameEdit != nullptr) {
+        m_templateLibraryNameEdit->clear();
+    }
+    if (m_templateLibraryList != nullptr) {
+        for (int row = 0; row < m_templateLibraryList->count(); ++row) {
+            if (m_templateLibraryList->item(row)->data(Qt::UserRole).toString() == document.id) {
+                m_templateLibraryList->setCurrentRow(row);
+                break;
+            }
+        }
+    }
+    m_statusLabel->setText(QString::fromUtf8("已新建模板：%1").arg(document.name));
+    notifySettingsChanged();
+}
+
+void TemplateDesignerWindow::deleteSelectedTemplateFromLibrary()
+{
+    if (m_templateLibraryDirectoryPath.trimmed().isEmpty()) {
+        m_statusLabel->setText(QString::fromUtf8("未配置模板库目录"));
+        return;
+    }
+    if (m_templateLibraryList == nullptr || m_templateLibraryList->currentItem() == nullptr) {
+        m_statusLabel->setText(QString::fromUtf8("请先选择模板库中的模板"));
+        return;
+    }
+
+    const auto templateId = m_templateLibraryList->currentItem()->data(Qt::UserRole).toString();
+    if (templateId.trimmed().isEmpty()) {
+        m_statusLabel->setText(QString::fromUtf8("模板 id 不能为空"));
+        return;
+    }
+
+    // 删除只影响模板库文件；当前画布内容保留，避免误删后界面立即丢失正在编辑的版式。
+    if (!sleekpr::core::TemplateLibraryStore(m_templateLibraryDirectoryPath).removeTemplate(templateId)) {
+        m_statusLabel->setText(QString::fromUtf8("删除模板失败"));
+        return;
+    }
+
+    refreshTemplateLibraryList();
+    m_statusLabel->setText(QString::fromUtf8("已删除模板：%1").arg(templateId));
 }
 
 void TemplateDesignerWindow::loadSelectedTemplateFromLibrary()
