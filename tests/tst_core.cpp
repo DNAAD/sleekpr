@@ -25,6 +25,7 @@
 #include "sleekpr/core/settings/TemplateElement.h"
 #include "sleekpr/core/settings/TemplateElementCatalog.h"
 #include "sleekpr/core/templates/DeviceProfileResolver.h"
+#include "sleekpr/core/templates/FieldPresetJson.h"
 #include "sleekpr/core/templates/FieldSchemaJson.h"
 #include "sleekpr/core/templates/PaperSpecJson.h"
 #include "sleekpr/core/templates/TemplateDocument.h"
@@ -66,6 +67,8 @@ private slots:
     void paperSpecJsonRejectsInvalidDimensions();
     void fieldSchemaJsonPersistsCustomFieldDefinitions();
     void fieldSchemaJsonRejectsInvalidFieldDefinitions();
+    void fieldPresetJsonPersistsReusableValues();
+    void fieldPresetJsonRejectsInvalidPreset();
     void templateDocumentJsonPersistsPaperMetadata();
     void templateDocumentImportRequiresPaperSpecIdForGenericTemplates();
     void templateDocumentJsonPersistsFieldSchema();
@@ -909,6 +912,49 @@ void CoreTests::fieldSchemaJsonRejectsInvalidFieldDefinitions()
 
     QVERIFY(!FieldSchemaJson::validate(unknownTypeSchema, &errorMessage));
     QVERIFY(errorMessage.contains(QString::fromUtf8("类型")));
+}
+
+void CoreTests::fieldPresetJsonPersistsReusableValues()
+{
+    FieldPreset preset;
+    preset.schemaVersion = 1;
+    preset.id = QStringLiteral("default-sale-order");
+    preset.name = QString::fromUtf8("默认销售单字段");
+    preset.templateId = QStringLiteral("sale-order");
+    preset.updatedAt = QStringLiteral("2026-06-16T10:30:00+08:00");
+    preset.values["customerName"] = QString::fromUtf8("散客");
+    preset.values["footerText"] = QString::fromUtf8("感谢惠顾");
+
+    const auto json = FieldPresetJson::toJson(preset);
+    QString errorMessage;
+    QVERIFY(FieldPresetJson::validate(json, &errorMessage));
+
+    const auto actual = FieldPresetJson::fromJson(json);
+    QCOMPARE(actual.id, QString("default-sale-order"));
+    QCOMPARE(actual.templateId, QString("sale-order"));
+    QCOMPARE(actual.values["customerName"].toString(), QString::fromUtf8("散客"));
+    QCOMPARE(actual.values["footerText"].toString(), QString::fromUtf8("感谢惠顾"));
+}
+
+void CoreTests::fieldPresetJsonRejectsInvalidPreset()
+{
+    QJsonObject missingTemplate;
+    missingTemplate["schemaVersion"] = 1;
+    missingTemplate["id"] = QStringLiteral("bad-preset");
+    missingTemplate["values"] = QJsonObject{{QStringLiteral("customerName"), QString::fromUtf8("散客")}};
+
+    QString errorMessage;
+    QVERIFY(!FieldPresetJson::validate(missingTemplate, &errorMessage));
+    QVERIFY(errorMessage.contains(QStringLiteral("templateId")));
+
+    QJsonObject invalidValues;
+    invalidValues["schemaVersion"] = 1;
+    invalidValues["id"] = QStringLiteral("bad-preset");
+    invalidValues["templateId"] = QStringLiteral("sale-order");
+    invalidValues["values"] = QStringLiteral("not-object");
+
+    QVERIFY(!FieldPresetJson::validate(invalidValues, &errorMessage));
+    QVERIFY(errorMessage.contains(QString::fromUtf8("字段值")));
 }
 
 void CoreTests::templateDocumentJsonPersistsPaperMetadata()
