@@ -59,6 +59,7 @@ private slots:
     void templateDocumentJsonRejectsInvalidImportDocument();
     void templateDocumentEditModelManagesLayers();
     void templateDocumentEditModelReordersElements();
+    void templateDocumentEditModelManagesTables();
     void templateDocumentEditModelRestoresVersionsWithoutProfiles();
     void templateDocumentEditModelRejectsLockedLayerElementMove();
     void deviceProfileResolverUsesPrinterSpecificProfile();
@@ -518,6 +519,53 @@ void CoreTests::templateDocumentEditModelReordersElements()
     QCOMPARE(elements[0].zIndex, 0);
     QCOMPARE(elements[1].id, QString("first"));
     QCOMPARE(elements[1].zIndex, 1);
+}
+
+void CoreTests::templateDocumentEditModelManagesTables()
+{
+    TemplateDocument document;
+    QVERIFY(TemplateDocumentEditModel::addLayer(document, "base", "Base"));
+
+    TableElement table;
+    table.id = "saleItems";
+    table.displayName = QString::fromUtf8("明细表");
+    table.dataPath = "items";
+    table.x = 4.0;
+    table.y = 5.0;
+
+    TableColumn column;
+    column.id = "productName";
+    column.title = QString::fromUtf8("品名");
+    column.fieldKey = "productName";
+    column.widthMm = 35.0;
+    table.columns.append(column);
+
+    QVERIFY(TemplateDocumentEditModel::addTable(document, "base", table));
+    QCOMPARE(document.layers.first().tables.size(), 1);
+    QCOMPARE(document.layers.first().tables.first().layerId, QString("base"));
+    QCOMPARE(document.layers.first().tables.first().zIndex, 0);
+
+    auto updated = document.layers.first().tables.first();
+    updated.displayName = QString::fromUtf8("销售明细");
+    updated.dataPath = "saleItems";
+    updated.width = 60.0;
+    QVERIFY(TemplateDocumentEditModel::updateTable(document, "saleItems", updated));
+    QCOMPARE(document.layers.first().tables.first().displayName, QString::fromUtf8("销售明细"));
+    QCOMPARE(document.layers.first().tables.first().dataPath, QString("saleItems"));
+    QCOMPARE(document.layers.first().tables.first().width, 60.0);
+
+    QVERIFY(TemplateDocumentEditModel::setTableLocked(document, "saleItems", true));
+    QVERIFY(!TemplateDocumentEditModel::moveTable(document, "saleItems", 10.0, 11.0));
+    QCOMPARE(document.layers.first().tables.first().x, 4.0);
+    QCOMPARE(document.layers.first().tables.first().y, 5.0);
+
+    QVERIFY(TemplateDocumentEditModel::setTableLocked(document, "saleItems", false));
+    QVERIFY(TemplateDocumentEditModel::moveTable(document, "saleItems", 10.0, 11.0));
+    QCOMPARE(document.layers.first().tables.first().x, 10.0);
+    QCOMPARE(document.layers.first().tables.first().y, 11.0);
+
+    QVERIFY(TemplateDocumentEditModel::deleteTable(document, "saleItems"));
+    QVERIFY(document.layers.first().tables.isEmpty());
 }
 
 void CoreTests::templateDocumentEditModelRestoresVersionsWithoutProfiles()

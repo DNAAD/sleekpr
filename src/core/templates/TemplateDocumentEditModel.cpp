@@ -36,6 +36,14 @@ void normalizeZIndex(TemplateLayer& layer)
     }
 }
 
+void normalizeTableZIndex(TemplateLayer& layer)
+{
+    // 表格和普通元素分别排序，避免旧版普通元素的 zIndex 被表格改动扰动。
+    for (int index = 0; index < layer.tables.size(); ++index) {
+        layer.tables[index].zIndex = index;
+    }
+}
+
 struct ElementLocation
 {
     int layerIndex = -1;
@@ -60,6 +68,35 @@ bool elementExists(const TemplateDocument& document, const QString& elementId)
     return elementLocationOf(document, elementId).elementIndex >= 0;
 }
 
+struct TableLocation
+{
+    int layerIndex = -1;
+    int tableIndex = -1;
+};
+
+TableLocation tableLocationOf(const TemplateDocument& document, const QString& tableId)
+{
+    for (int layerIndex = 0; layerIndex < document.layers.size(); ++layerIndex) {
+        const auto& tables = document.layers[layerIndex].tables;
+        for (int tableIndex = 0; tableIndex < tables.size(); ++tableIndex) {
+            if (tables[tableIndex].id == tableId) {
+                return TableLocation{layerIndex, tableIndex};
+            }
+        }
+    }
+    return {};
+}
+
+bool tableExists(const TemplateDocument& document, const QString& tableId)
+{
+    return tableLocationOf(document, tableId).tableIndex >= 0;
+}
+
+bool itemIdExists(const TemplateDocument& document, const QString& itemId)
+{
+    return elementExists(document, itemId) || tableExists(document, itemId);
+}
+
 bool canEditElement(const TemplateDocument& document, const ElementLocation& location)
 {
     if (location.layerIndex < 0 || location.elementIndex < 0) {
@@ -73,6 +110,25 @@ bool canEditElement(const TemplateDocument& document, const ElementLocation& loc
 bool canEditElementLayer(const TemplateDocument& document, const ElementLocation& location)
 {
     if (location.layerIndex < 0 || location.elementIndex < 0) {
+        return false;
+    }
+
+    return !document.layers[location.layerIndex].locked;
+}
+
+bool canEditTable(const TemplateDocument& document, const TableLocation& location)
+{
+    if (location.layerIndex < 0 || location.tableIndex < 0) {
+        return false;
+    }
+
+    const auto& layer = document.layers[location.layerIndex];
+    return !layer.locked && !layer.tables[location.tableIndex].locked;
+}
+
+bool canEditTableLayer(const TemplateDocument& document, const TableLocation& location)
+{
+    if (location.layerIndex < 0 || location.tableIndex < 0) {
         return false;
     }
 
@@ -152,7 +208,7 @@ bool TemplateDocumentEditModel::setLayerLocked(TemplateDocument& document, const
 bool TemplateDocumentEditModel::addElement(TemplateDocument& document, const QString& layerId, const TemplateElement& element)
 {
     const auto index = layerIndexOf(document, layerId);
-    if (index < 0 || document.layers[index].locked || !hasCleanId(element.id) || elementExists(document, element.id)) {
+    if (index < 0 || document.layers[index].locked || !hasCleanId(element.id) || itemIdExists(document, element.id)) {
         return false;
     }
 
@@ -238,6 +294,89 @@ bool TemplateDocumentEditModel::setElementLocked(TemplateDocument& document, con
     }
 
     document.layers[location.layerIndex].elements[location.elementIndex].locked = locked;
+    return true;
+}
+
+bool TemplateDocumentEditModel::addTable(TemplateDocument& document, const QString& layerId, const TableElement& table)
+{
+    const auto index = layerIndexOf(document, layerId);
+    if (index < 0 || document.layers[index].locked || !hasCleanId(table.id) || itemIdExists(document, table.id)) {
+        return false;
+    }
+
+    TableElement tableToAdd = table;
+    tableToAdd.layerId = layerId;
+    document.layers[index].tables.append(tableToAdd);
+    normalizeTableZIndex(document.layers[index]);
+    return true;
+}
+
+bool TemplateDocumentEditModel::updateTable(TemplateDocument& document, const QString& tableId, const TableElement& table)
+{
+    const auto location = tableLocationOf(document, tableId);
+    if (!canEditTable(document, location) || !hasCleanId(table.id) || table.id != tableId) {
+        return false;
+    }
+
+    auto& layer = document.layers[location.layerIndex];
+    if (!table.layerId.isEmpty() && table.layerId != layer.id) {
+        return false;
+    }
+
+    const auto zIndex = layer.tables[location.tableIndex].zIndex;
+    TableElement tableToUpdate = table;
+    tableToUpdate.layerId = layer.id;
+    tableToUpdate.zIndex = zIndex;
+    layer.tables[location.tableIndex] = tableToUpdate;
+    normalizeTableZIndex(layer);
+    return true;
+}
+
+bool TemplateDocumentEditModel::deleteTable(TemplateDocument& document, const QString& tableId)
+{
+    const auto location = tableLocationOf(document, tableId);
+    if (!canEditTable(document, location)) {
+        return false;
+    }
+
+    auto& layer = document.layers[location.layerIndex];
+    layer.tables.removeAt(location.tableIndex);
+    normalizeTableZIndex(layer);
+    return true;
+}
+
+bool TemplateDocumentEditModel::moveTable(TemplateDocument& document, const QString& tableId, double x, double y)
+{
+    const auto location = tableLocationOf(document, tableId);
+    if (!canEditTable(document, location)) {
+        return false;
+    }
+
+    auto& table = document.layers[location.layerIndex].tables[location.tableIndex];
+    table.x = x;
+    table.y = y;
+    return true;
+}
+
+bool TemplateDocumentEditModel::setTableVisible(TemplateDocument& document, const QString& tableId, bool visible)
+{
+    const auto location = tableLocationOf(document, tableId);
+    if (!canEditTableLayer(document, location)) {
+        return false;
+    }
+
+    document.layers[location.layerIndex].tables[location.tableIndex].visible = visible;
+    return true;
+}
+
+bool TemplateDocumentEditModel::setTableLocked(TemplateDocument& document, const QString& tableId, bool locked)
+{
+    const auto location = tableLocationOf(document, tableId);
+    if (!canEditTableLayer(document, location)) {
+        return false;
+    }
+
+    document.layers[location.layerIndex].tables[location.tableIndex].locked = locked;
     return true;
 }
 

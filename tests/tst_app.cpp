@@ -73,6 +73,8 @@ private slots:
     void templateDesignerWindowAddsLayer();
     void templateDesignerWindowPreservesLegacyDynamicElements();
     void templateDesignerWindowAddsFixedTextToCurrentLayer();
+    void templateDesignerWindowAddsTableToCurrentLayer();
+    void templateDesignerWindowUpdatesSelectedTableProperties();
     void templateDesignerWindowDeletesSelectedEmptyLayer();
     void templateDesignerWindowDoesNotEditLockedLayer();
     void templateDesignerWindowShowsDesignerPreview();
@@ -532,6 +534,113 @@ void AppTests::templateDesignerWindowAddsFixedTextToCurrentLayer()
 
     QCOMPARE(elementList->count(), 1);
     QCOMPARE(elementList->item(0)->data(Qt::UserRole + 1).toString(), QString("fixedText"));
+}
+
+void AppTests::templateDesignerWindowAddsTableToCurrentLayer()
+{
+    PrintClientSettings changedSettings;
+    TemplateDesignerWindow window(PrintClientSettings{}, [&changedSettings](const PrintClientSettings& nextSettings) {
+        changedSettings = nextSettings;
+    });
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* addTableButton = window.findChild<QPushButton*>(QStringLiteral("designerAddTableButton"));
+    auto* elementList = window.findChild<QListWidget*>(QStringLiteral("templateElementList"));
+    auto* dataPathEdit = window.findChild<QLineEdit*>(QStringLiteral("tableDataPathEdit"));
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(addTableButton != nullptr);
+    QVERIFY(elementList != nullptr);
+    QVERIFY(dataPathEdit != nullptr);
+
+    addLayerButton->click();
+    addTableButton->click();
+
+    QCOMPARE(elementList->count(), 1);
+    QCOMPARE(elementList->item(0)->data(Qt::UserRole + 1).toString(), QString("table"));
+    QCOMPARE(dataPathEdit->text(), QString("items"));
+
+    const auto document = changedSettings.templateDocuments.value("default");
+    QVERIFY(!document.layers.isEmpty());
+    QCOMPARE(document.layers.last().tables.size(), 1);
+    const auto table = document.layers.last().tables.first();
+    QVERIFY(table.id.startsWith(QStringLiteral("table-")));
+    QCOMPARE(table.dataPath, QString("items"));
+    QCOMPARE(table.columns.size(), 2);
+    QCOMPARE(table.columns.first().fieldKey, QString("productName"));
+}
+
+void AppTests::templateDesignerWindowUpdatesSelectedTableProperties()
+{
+    PrintClientSettings changedSettings;
+    TemplateDesignerWindow window(PrintClientSettings{}, [&changedSettings](const PrintClientSettings& nextSettings) {
+        changedSettings = nextSettings;
+    });
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* addTableButton = window.findChild<QPushButton*>(QStringLiteral("designerAddTableButton"));
+    auto* elementList = window.findChild<QListWidget*>(QStringLiteral("templateElementList"));
+    auto* displayNameEdit = window.findChild<QLineEdit*>(QStringLiteral("tableDisplayNameEdit"));
+    auto* dataPathEdit = window.findChild<QLineEdit*>(QStringLiteral("tableDataPathEdit"));
+    auto* xSpin = window.findChild<QDoubleSpinBox*>(QStringLiteral("tableXSpin"));
+    auto* ySpin = window.findChild<QDoubleSpinBox*>(QStringLiteral("tableYSpin"));
+    auto* widthSpin = window.findChild<QDoubleSpinBox*>(QStringLiteral("tableWidthSpin"));
+    auto* heightSpin = window.findChild<QDoubleSpinBox*>(QStringLiteral("tableHeightSpin"));
+    auto* headerHeightSpin = window.findChild<QDoubleSpinBox*>(QStringLiteral("tableHeaderHeightSpin"));
+    auto* detailHeightSpin = window.findChild<QDoubleSpinBox*>(QStringLiteral("tableDetailHeightSpin"));
+    auto* repeatHeaderCheck = window.findChild<QCheckBox*>(QStringLiteral("tableRepeatHeaderCheck"));
+    auto* drawBordersCheck = window.findChild<QCheckBox*>(QStringLiteral("tableDrawBordersCheck"));
+    auto* columnsEdit = window.findChild<QLineEdit*>(QStringLiteral("tableColumnsEdit"));
+    auto* applyButton = window.findChild<QPushButton*>(QStringLiteral("applyTablePropertiesButton"));
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(addTableButton != nullptr);
+    QVERIFY(elementList != nullptr);
+    QVERIFY(displayNameEdit != nullptr);
+    QVERIFY(dataPathEdit != nullptr);
+    QVERIFY(xSpin != nullptr);
+    QVERIFY(ySpin != nullptr);
+    QVERIFY(widthSpin != nullptr);
+    QVERIFY(heightSpin != nullptr);
+    QVERIFY(headerHeightSpin != nullptr);
+    QVERIFY(detailHeightSpin != nullptr);
+    QVERIFY(repeatHeaderCheck != nullptr);
+    QVERIFY(drawBordersCheck != nullptr);
+    QVERIFY(columnsEdit != nullptr);
+    QVERIFY(applyButton != nullptr);
+
+    addLayerButton->click();
+    addTableButton->click();
+    displayNameEdit->setText(QString::fromUtf8("销售明细"));
+    dataPathEdit->setText(QStringLiteral("saleItems"));
+    xSpin->setValue(6.0);
+    ySpin->setValue(7.0);
+    widthSpin->setValue(60.0);
+    heightSpin->setValue(18.0);
+    headerHeightSpin->setValue(4.0);
+    detailHeightSpin->setValue(3.5);
+    repeatHeaderCheck->setChecked(false);
+    drawBordersCheck->setChecked(false);
+    columnsEdit->setText(QString::fromUtf8("品名=productName:35,重量=weight:20"));
+    applyButton->click();
+
+    const auto table = changedSettings.templateDocuments.value("default").layers.last().tables.first();
+    QCOMPARE(table.displayName, QString::fromUtf8("销售明细"));
+    QCOMPARE(table.dataPath, QString("saleItems"));
+    QCOMPARE(table.x, 6.0);
+    QCOMPARE(table.y, 7.0);
+    QCOMPARE(table.width, 60.0);
+    QCOMPARE(table.height, 18.0);
+    QCOMPARE(table.headerRowHeightMm, 4.0);
+    QCOMPARE(table.detailRowHeightMm, 3.5);
+    QCOMPARE(table.repeatHeaderOnPage, false);
+    QCOMPARE(table.drawBorders, false);
+    QCOMPARE(table.columns.size(), 2);
+    QCOMPARE(table.columns[0].title, QString::fromUtf8("品名"));
+    QCOMPARE(table.columns[0].fieldKey, QString("productName"));
+    QCOMPARE(table.columns[0].widthMm, 35.0);
+    QCOMPARE(table.columns[1].title, QString::fromUtf8("重量"));
+    QCOMPARE(table.columns[1].fieldKey, QString("weight"));
+    QCOMPARE(table.columns[1].widthMm, 20.0);
+    QVERIFY(elementList->currentItem()->text().contains(QString::fromUtf8("销售明细")));
 }
 
 void AppTests::templateDesignerWindowDeletesSelectedEmptyLayer()

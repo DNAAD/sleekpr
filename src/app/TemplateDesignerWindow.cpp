@@ -16,6 +16,7 @@
 #include "sleekpr/infrastructure/preview/PreviewLabelFactory.h"
 
 #include <QDateTime>
+#include <QCheckBox>
 #include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileDialog>
@@ -31,6 +32,7 @@
 #include <QPushButton>
 #include <QSaveFile>
 #include <QSizePolicy>
+#include <QStringList>
 #include <QUuid>
 #include <QVBoxLayout>
 
@@ -101,6 +103,21 @@ QString elementDisplayName(const sleekpr::core::TemplateElement& element, int in
     return suffixes.isEmpty() ? baseName : QStringLiteral("%1 (%2)").arg(baseName, suffixes.join(QStringLiteral(", ")));
 }
 
+QString tableDisplayName(const sleekpr::core::TableElement& table, int index)
+{
+    const auto baseName = table.displayName.trimmed().isEmpty()
+        ? QString::fromUtf8("表格 %1").arg(index + 1)
+        : table.displayName.trimmed();
+    QStringList suffixes;
+    if (!table.visible) {
+        suffixes.append(QString::fromUtf8("隐藏"));
+    }
+    if (table.locked) {
+        suffixes.append(QString::fromUtf8("锁定"));
+    }
+    return suffixes.isEmpty() ? baseName : QStringLiteral("%1 (%2)").arg(baseName, suffixes.join(QStringLiteral(", ")));
+}
+
 QPushButton* createButton(const QString& text, const QString& objectName, QWidget* parent)
 {
     auto* button = new QPushButton(text, parent);
@@ -120,6 +137,22 @@ QDoubleSpinBox* createProfileSpinBox(
     spinBox->setRange(minimum, maximum);
     spinBox->setDecimals(3);
     spinBox->setSingleStep(0.01);
+    spinBox->setValue(value);
+    return spinBox;
+}
+
+QDoubleSpinBox* createTableSpinBox(
+    const QString& objectName,
+    double minimum,
+    double maximum,
+    double value,
+    QWidget* parent)
+{
+    auto* spinBox = new QDoubleSpinBox(parent);
+    spinBox->setObjectName(objectName);
+    spinBox->setRange(minimum, maximum);
+    spinBox->setDecimals(2);
+    spinBox->setSingleStep(0.5);
     spinBox->setValue(value);
     return spinBox;
 }
@@ -164,6 +197,84 @@ sleekpr::core::TemplateElement createDefaultElement(sleekpr::core::TemplateEleme
     }
 
     return element;
+}
+
+sleekpr::core::TableElement createDefaultTable()
+{
+    sleekpr::core::TableElement table;
+    table.id = generatedElementId(QStringLiteral("table"));
+    table.displayName = QString::fromUtf8("明细表");
+    table.visible = true;
+    table.locked = false;
+    table.x = 5.0;
+    table.y = 10.0;
+    table.width = 70.0;
+    table.height = 15.0;
+    table.dataPath = QStringLiteral("items");
+    table.headerRowHeightMm = 5.0;
+    table.detailRowHeightMm = 5.0;
+    table.drawBorders = true;
+    table.repeatHeaderOnPage = true;
+
+    sleekpr::core::TableColumn productNameColumn;
+    productNameColumn.id = QStringLiteral("productName");
+    productNameColumn.title = QString::fromUtf8("品名");
+    productNameColumn.fieldKey = QStringLiteral("productName");
+    productNameColumn.widthMm = 45.0;
+    table.columns.append(productNameColumn);
+
+    sleekpr::core::TableColumn weightColumn;
+    weightColumn.id = QStringLiteral("weight");
+    weightColumn.title = QString::fromUtf8("重量");
+    weightColumn.fieldKey = QStringLiteral("weight");
+    weightColumn.widthMm = 25.0;
+    table.columns.append(weightColumn);
+
+    return table;
+}
+
+QString formatTableColumns(const QList<sleekpr::core::TableColumn>& columns)
+{
+    // 第一批 UI 用单行文本维护列定义，后续可替换为专门的列编辑表格控件。
+    QStringList parts;
+    for (const auto& column : columns) {
+        parts.append(QStringLiteral("%1=%2:%3").arg(
+            column.title,
+            column.fieldKey,
+            QString::number(column.widthMm, 'f', 2)));
+    }
+    return parts.join(QStringLiteral(","));
+}
+
+QList<sleekpr::core::TableColumn> parseTableColumns(const QString& text)
+{
+    // 列配置语法：列标题=字段key:列宽，多列用英文逗号分隔，例如“品名=productName:45,重量=weight:25”。
+    QList<sleekpr::core::TableColumn> columns;
+    const auto parts = text.split(QStringLiteral(","), Qt::SkipEmptyParts);
+    for (const auto& part : parts) {
+        const auto trimmed = part.trimmed();
+        const auto equalsIndex = trimmed.indexOf(QStringLiteral("="));
+        const auto widthIndex = trimmed.lastIndexOf(QStringLiteral(":"));
+        if (equalsIndex <= 0 || widthIndex <= equalsIndex + 1 || widthIndex >= trimmed.size() - 1) {
+            return {};
+        }
+
+        bool widthOk = false;
+        const auto width = trimmed.mid(widthIndex + 1).trimmed().toDouble(&widthOk);
+        const auto title = trimmed.left(equalsIndex).trimmed();
+        const auto fieldKey = trimmed.mid(equalsIndex + 1, widthIndex - equalsIndex - 1).trimmed();
+        if (!widthOk || width <= 0.0 || title.isEmpty() || fieldKey.isEmpty()) {
+            return {};
+        }
+
+        sleekpr::core::TableColumn column;
+        column.id = fieldKey;
+        column.title = title;
+        column.fieldKey = fieldKey;
+        column.widthMm = width;
+        columns.append(column);
+    }
+    return columns;
 }
 
 } // 匿名命名空间
@@ -332,11 +443,35 @@ void TemplateDesignerWindow::buildUi()
     auto* addBoundFieldButton = createButton(QString::fromUtf8("绑定字段"), QStringLiteral("designerAddBoundFieldButton"), elementPanel);
     auto* addQrCodeButton = createButton(QString::fromUtf8("二维码"), QStringLiteral("designerAddQrCodeButton"), elementPanel);
     auto* addRectangleButton = createButton(QString::fromUtf8("矩形"), QStringLiteral("designerAddRectangleButton"), elementPanel);
+    auto* addTableButton = createButton(QString::fromUtf8("表格"), QStringLiteral("designerAddTableButton"), elementPanel);
     auto* deleteElementButton = createButton(QString::fromUtf8("删除元素"), QStringLiteral("deleteElementButton"), elementPanel);
     auto* lockElementButton = createButton(QString::fromUtf8("锁定元素"), QStringLiteral("lockElementButton"), elementPanel);
     auto* hideElementButton = createButton(QString::fromUtf8("隐藏元素"), QStringLiteral("hideElementButton"), elementPanel);
     auto* moveElementUpButton = createButton(QString::fromUtf8("上移元素"), QStringLiteral("moveElementUpButton"), elementPanel);
     auto* moveElementDownButton = createButton(QString::fromUtf8("下移元素"), QStringLiteral("moveElementDownButton"), elementPanel);
+
+    auto* tablePropertyTitleLabel = new QLabel(QString::fromUtf8("表格属性"), elementPanel);
+    m_tableDisplayNameEdit = new QLineEdit(elementPanel);
+    m_tableDisplayNameEdit->setObjectName(QStringLiteral("tableDisplayNameEdit"));
+    m_tableDataPathEdit = new QLineEdit(elementPanel);
+    m_tableDataPathEdit->setObjectName(QStringLiteral("tableDataPathEdit"));
+    m_tableXSpin = createTableSpinBox(QStringLiteral("tableXSpin"), 0.0, 500.0, 5.0, elementPanel);
+    m_tableYSpin = createTableSpinBox(QStringLiteral("tableYSpin"), 0.0, 500.0, 10.0, elementPanel);
+    m_tableWidthSpin = createTableSpinBox(QStringLiteral("tableWidthSpin"), 1.0, 500.0, 70.0, elementPanel);
+    m_tableHeightSpin = createTableSpinBox(QStringLiteral("tableHeightSpin"), 1.0, 500.0, 15.0, elementPanel);
+    m_tableHeaderHeightSpin = createTableSpinBox(QStringLiteral("tableHeaderHeightSpin"), 1.0, 100.0, 5.0, elementPanel);
+    m_tableDetailHeightSpin = createTableSpinBox(QStringLiteral("tableDetailHeightSpin"), 1.0, 100.0, 5.0, elementPanel);
+    m_tableRepeatHeaderCheck = new QCheckBox(QString::fromUtf8("分页重复表头"), elementPanel);
+    m_tableRepeatHeaderCheck->setObjectName(QStringLiteral("tableRepeatHeaderCheck"));
+    m_tableDrawBordersCheck = new QCheckBox(QString::fromUtf8("绘制边框"), elementPanel);
+    m_tableDrawBordersCheck->setObjectName(QStringLiteral("tableDrawBordersCheck"));
+    m_tableColumnsEdit = new QLineEdit(elementPanel);
+    m_tableColumnsEdit->setObjectName(QStringLiteral("tableColumnsEdit"));
+    m_tableColumnsEdit->setPlaceholderText(QString::fromUtf8("品名=productName:45,重量=weight:25"));
+    auto* applyTablePropertiesButton = createButton(
+        QString::fromUtf8("应用表格属性"),
+        QStringLiteral("applyTablePropertiesButton"),
+        elementPanel);
 
     auto* deviceProfileTitleLabel = new QLabel(QString::fromUtf8("设备校准"), elementPanel);
     m_deviceProfilePrinterEdit = new QLineEdit(elementPanel);
@@ -355,6 +490,7 @@ void TemplateDesignerWindow::buildUi()
     addElementGrid->addWidget(addBoundFieldButton, 0, 1);
     addElementGrid->addWidget(addQrCodeButton, 1, 0);
     addElementGrid->addWidget(addRectangleButton, 1, 1);
+    addElementGrid->addWidget(addTableButton, 2, 0, 1, 2);
 
     auto* editElementGrid = new QGridLayout();
     editElementGrid->setContentsMargins(0, 0, 0, 0);
@@ -363,6 +499,29 @@ void TemplateDesignerWindow::buildUi()
     editElementGrid->addWidget(hideElementButton, 1, 0);
     editElementGrid->addWidget(moveElementUpButton, 1, 1);
     editElementGrid->addWidget(moveElementDownButton, 2, 0, 1, 2);
+
+    auto* tablePropertyGrid = new QGridLayout();
+    tablePropertyGrid->setContentsMargins(0, 0, 0, 0);
+    tablePropertyGrid->addWidget(new QLabel(QString::fromUtf8("名称"), elementPanel), 0, 0);
+    tablePropertyGrid->addWidget(m_tableDisplayNameEdit, 0, 1);
+    tablePropertyGrid->addWidget(new QLabel(QStringLiteral("dataPath"), elementPanel), 1, 0);
+    tablePropertyGrid->addWidget(m_tableDataPathEdit, 1, 1);
+    tablePropertyGrid->addWidget(new QLabel(QStringLiteral("X"), elementPanel), 2, 0);
+    tablePropertyGrid->addWidget(m_tableXSpin, 2, 1);
+    tablePropertyGrid->addWidget(new QLabel(QStringLiteral("Y"), elementPanel), 3, 0);
+    tablePropertyGrid->addWidget(m_tableYSpin, 3, 1);
+    tablePropertyGrid->addWidget(new QLabel(QString::fromUtf8("宽"), elementPanel), 4, 0);
+    tablePropertyGrid->addWidget(m_tableWidthSpin, 4, 1);
+    tablePropertyGrid->addWidget(new QLabel(QString::fromUtf8("高"), elementPanel), 5, 0);
+    tablePropertyGrid->addWidget(m_tableHeightSpin, 5, 1);
+    tablePropertyGrid->addWidget(new QLabel(QString::fromUtf8("表头高"), elementPanel), 6, 0);
+    tablePropertyGrid->addWidget(m_tableHeaderHeightSpin, 6, 1);
+    tablePropertyGrid->addWidget(new QLabel(QString::fromUtf8("明细高"), elementPanel), 7, 0);
+    tablePropertyGrid->addWidget(m_tableDetailHeightSpin, 7, 1);
+    tablePropertyGrid->addWidget(m_tableRepeatHeaderCheck, 8, 0, 1, 2);
+    tablePropertyGrid->addWidget(m_tableDrawBordersCheck, 9, 0, 1, 2);
+    tablePropertyGrid->addWidget(new QLabel(QString::fromUtf8("列"), elementPanel), 10, 0);
+    tablePropertyGrid->addWidget(m_tableColumnsEdit, 10, 1);
 
     auto* deviceProfileGrid = new QGridLayout();
     deviceProfileGrid->setContentsMargins(0, 0, 0, 0);
@@ -383,6 +542,9 @@ void TemplateDesignerWindow::buildUi()
     elementLayout->addWidget(m_elementList, 1);
     elementLayout->addLayout(addElementGrid);
     elementLayout->addLayout(editElementGrid);
+    elementLayout->addWidget(tablePropertyTitleLabel);
+    elementLayout->addLayout(tablePropertyGrid);
+    elementLayout->addWidget(applyTablePropertiesButton);
     elementLayout->addWidget(deviceProfileTitleLabel);
     elementLayout->addLayout(deviceProfileGrid);
     elementLayout->addWidget(saveDeviceProfileButton);
@@ -412,14 +574,20 @@ void TemplateDesignerWindow::buildUi()
     connect(addBoundFieldButton, &QPushButton::clicked, this, [this] { addBoundFieldElement(); });
     connect(addQrCodeButton, &QPushButton::clicked, this, [this] { addQrCodeElement(); });
     connect(addRectangleButton, &QPushButton::clicked, this, [this] { addRectangleElement(); });
+    connect(addTableButton, &QPushButton::clicked, this, [this] { addTableElement(); });
     connect(deleteElementButton, &QPushButton::clicked, this, [this] { deleteCurrentElement(); });
     connect(lockElementButton, &QPushButton::clicked, this, [this] { toggleCurrentElementLocked(); });
     connect(hideElementButton, &QPushButton::clicked, this, [this] { toggleCurrentElementVisible(); });
     connect(moveElementUpButton, &QPushButton::clicked, this, [this] { moveCurrentElementUp(); });
     connect(moveElementDownButton, &QPushButton::clicked, this, [this] { moveCurrentElementDown(); });
+    connect(applyTablePropertiesButton, &QPushButton::clicked, this, [this] { applyCurrentTableProperties(); });
     connect(saveDeviceProfileButton, &QPushButton::clicked, this, [this] { saveDeviceProfile(); });
     connect(m_layerList, &QListWidget::currentRowChanged, this, [this] {
         refreshElementList();
+        refreshPreview();
+    });
+    connect(m_elementList, &QListWidget::currentRowChanged, this, [this] {
+        refreshTablePropertyEditor();
         refreshPreview();
     });
     connect(m_previewLabel, &TemplatePreviewLabel::destroyed, this, [this] { m_previewLabel = nullptr; });
@@ -581,11 +749,23 @@ void TemplateDesignerWindow::addRectangleElement()
     addElement(createDefaultElement(sleekpr::core::TemplateElementType::Rectangle));
 }
 
+void TemplateDesignerWindow::addTableElement()
+{
+    addTable(createDefaultTable());
+}
+
 void TemplateDesignerWindow::deleteCurrentElement()
 {
     ensureCurrentTemplateDocument();
     auto& document = m_settings.templateDocuments[m_templateKey];
     const auto elementId = currentElementId();
+    if (currentSelectionIsTable()) {
+        if (sleekpr::core::TemplateDocumentEditModel::deleteTable(document, elementId)) {
+            refreshAll();
+            notifySettingsChanged();
+        }
+        return;
+    }
     if (sleekpr::core::TemplateDocumentEditModel::deleteElement(document, elementId)) {
         refreshAll();
         notifySettingsChanged();
@@ -596,6 +776,20 @@ void TemplateDesignerWindow::toggleCurrentElementLocked()
 {
     ensureCurrentTemplateDocument();
     auto& document = m_settings.templateDocuments[m_templateKey];
+    if (currentSelectionIsTable()) {
+        auto* table = currentTable();
+        if (table == nullptr) {
+            return;
+        }
+        const auto tableId = table->id;
+        if (sleekpr::core::TemplateDocumentEditModel::setTableLocked(document, tableId, !table->locked)) {
+            refreshAll();
+            selectElement(tableId);
+            notifySettingsChanged();
+        }
+        return;
+    }
+
     auto* element = currentElement();
     if (element == nullptr) {
         return;
@@ -612,6 +806,20 @@ void TemplateDesignerWindow::toggleCurrentElementVisible()
 {
     ensureCurrentTemplateDocument();
     auto& document = m_settings.templateDocuments[m_templateKey];
+    if (currentSelectionIsTable()) {
+        auto* table = currentTable();
+        if (table == nullptr) {
+            return;
+        }
+        const auto tableId = table->id;
+        if (sleekpr::core::TemplateDocumentEditModel::setTableVisible(document, tableId, !table->visible)) {
+            refreshAll();
+            selectElement(tableId);
+            notifySettingsChanged();
+        }
+        return;
+    }
+
     auto* element = currentElement();
     if (element == nullptr) {
         return;
@@ -1001,10 +1209,14 @@ void TemplateDesignerWindow::refreshElementList()
         return;
     }
 
-    const auto selectedElementInCurrentLayer = std::any_of(layer->elements.begin(), layer->elements.end(), [&selectedElementId](const auto& element) {
-        return element.id == selectedElementId;
-    });
-    if (!selectedElementInCurrentLayer) {
+    const auto selectedItemInCurrentLayer =
+        std::any_of(layer->elements.begin(), layer->elements.end(), [&selectedElementId](const auto& element) {
+            return element.id == selectedElementId;
+        })
+        || std::any_of(layer->tables.begin(), layer->tables.end(), [&selectedElementId](const auto& table) {
+               return table.id == selectedElementId;
+           });
+    if (!selectedItemInCurrentLayer) {
         selectedElementId.clear();
     }
 
@@ -1020,11 +1232,74 @@ void TemplateDesignerWindow::refreshElementList()
         item->setData(Qt::UserRole + 1, elementTypeKey(element.type));
     }
 
+    QList<sleekpr::core::TableElement> tables = layer->tables;
+    std::stable_sort(tables.begin(), tables.end(), [](const auto& left, const auto& right) {
+        return left.zIndex < right.zIndex;
+    });
+
+    for (int index = 0; index < tables.size(); ++index) {
+        const auto& table = tables[index];
+        auto* item = new QListWidgetItem(tableDisplayName(table, index), m_elementList);
+        item->setData(Qt::UserRole, table.id);
+        item->setData(Qt::UserRole + 1, QStringLiteral("table"));
+    }
+
     // 刷新元素列表时只在当前图层内恢复选择，避免跨图层选择再次触发列表刷新。
     if (!selectElementInCurrentList(selectedElementId) && m_elementList->count() > 0) {
         m_elementList->setCurrentRow(0);
     }
     m_elementList->blockSignals(wasBlocked);
+    refreshTablePropertyEditor();
+}
+
+void TemplateDesignerWindow::refreshTablePropertyEditor()
+{
+    // 表格属性面板只服务当前选中的表格；选中普通元素时禁用，避免误把普通元素写成表格配置。
+    const auto* table = currentTable();
+    const auto hasTable = table != nullptr;
+    const QList<QWidget*> controls{
+        m_tableDisplayNameEdit,
+        m_tableDataPathEdit,
+        m_tableXSpin,
+        m_tableYSpin,
+        m_tableWidthSpin,
+        m_tableHeightSpin,
+        m_tableHeaderHeightSpin,
+        m_tableDetailHeightSpin,
+        m_tableRepeatHeaderCheck,
+        m_tableDrawBordersCheck,
+        m_tableColumnsEdit,
+    };
+    for (auto* control : controls) {
+        if (control != nullptr) {
+            control->setEnabled(hasTable);
+        }
+    }
+
+    if (!hasTable) {
+        if (m_tableDisplayNameEdit != nullptr) {
+            m_tableDisplayNameEdit->clear();
+        }
+        if (m_tableDataPathEdit != nullptr) {
+            m_tableDataPathEdit->clear();
+        }
+        if (m_tableColumnsEdit != nullptr) {
+            m_tableColumnsEdit->clear();
+        }
+        return;
+    }
+
+    m_tableDisplayNameEdit->setText(table->displayName);
+    m_tableDataPathEdit->setText(table->dataPath);
+    m_tableXSpin->setValue(table->x);
+    m_tableYSpin->setValue(table->y);
+    m_tableWidthSpin->setValue(table->width);
+    m_tableHeightSpin->setValue(table->height);
+    m_tableHeaderHeightSpin->setValue(table->headerRowHeightMm);
+    m_tableDetailHeightSpin->setValue(table->detailRowHeightMm);
+    m_tableRepeatHeaderCheck->setChecked(table->repeatHeaderOnPage);
+    m_tableDrawBordersCheck->setChecked(table->drawBorders);
+    m_tableColumnsEdit->setText(formatTableColumns(table->columns));
 }
 
 void TemplateDesignerWindow::refreshPreview()
@@ -1145,6 +1420,12 @@ bool TemplateDesignerWindow::selectElement(const QString& elementId)
                 break;
             }
         }
+        for (const auto& table : layer.tables) {
+            if (table.id == elementId) {
+                targetLayerId = layer.id;
+                break;
+            }
+        }
         if (!targetLayerId.isEmpty()) {
             break;
         }
@@ -1183,8 +1464,21 @@ bool TemplateDesignerWindow::canEditElement(const QString& elementId) const
                 return layer.visible && !layer.locked && element.visible && !element.locked;
             }
         }
+        for (const auto& table : layer.tables) {
+            if (table.id == elementId) {
+                return layer.visible && !layer.locked && table.visible && !table.locked;
+            }
+        }
     }
     return false;
+}
+
+bool TemplateDesignerWindow::currentSelectionIsTable() const
+{
+    if (m_elementList == nullptr || m_elementList->currentItem() == nullptr) {
+        return false;
+    }
+    return m_elementList->currentItem()->data(Qt::UserRole + 1).toString() == QStringLiteral("table");
 }
 
 QString TemplateDesignerWindow::currentLayerId() const
@@ -1245,6 +1539,22 @@ sleekpr::core::TemplateElement* TemplateDesignerWindow::currentElement()
     return nullptr;
 }
 
+sleekpr::core::TableElement* TemplateDesignerWindow::currentTable()
+{
+    auto* layer = currentLayer();
+    if (layer == nullptr) {
+        return nullptr;
+    }
+
+    const auto tableId = currentElementId();
+    for (auto& table : layer->tables) {
+        if (table.id == tableId) {
+            return &table;
+        }
+    }
+    return nullptr;
+}
+
 void TemplateDesignerWindow::addElement(sleekpr::core::TemplateElement element)
 {
     ensureCurrentTemplateDocument();
@@ -1267,9 +1577,98 @@ void TemplateDesignerWindow::addElement(sleekpr::core::TemplateElement element)
     notifySettingsChanged();
 }
 
+void TemplateDesignerWindow::addTable(sleekpr::core::TableElement table)
+{
+    ensureCurrentTemplateDocument();
+    auto& document = m_settings.templateDocuments[m_templateKey];
+    const auto layerId = currentLayerId();
+    auto* layer = currentLayer();
+    if (layer == nullptr) {
+        return;
+    }
+    table.zIndex = layer->tables.size();
+    const auto tableId = table.id;
+    if (!sleekpr::core::TemplateDocumentEditModel::addTable(document, layerId, table)) {
+        m_statusLabel->setText(QString::fromUtf8("当前图层不可编辑"));
+        return;
+    }
+
+    refreshAll();
+    selectElement(tableId);
+    m_statusLabel->setText(QString::fromUtf8("已新增表格"));
+    notifySettingsChanged();
+}
+
+void TemplateDesignerWindow::applyCurrentTableProperties()
+{
+    // 属性面板回写整张表格，但 id、所属图层和层内顺序仍由编辑模型保护。
+    auto* table = currentTable();
+    if (table == nullptr) {
+        m_statusLabel->setText(QString::fromUtf8("请先选择表格"));
+        return;
+    }
+
+    auto updated = *table;
+    updated.displayName = m_tableDisplayNameEdit == nullptr ? updated.displayName : m_tableDisplayNameEdit->text().trimmed();
+    updated.dataPath = m_tableDataPathEdit == nullptr ? updated.dataPath : m_tableDataPathEdit->text().trimmed();
+    updated.x = m_tableXSpin == nullptr ? updated.x : m_tableXSpin->value();
+    updated.y = m_tableYSpin == nullptr ? updated.y : m_tableYSpin->value();
+    updated.width = m_tableWidthSpin == nullptr ? updated.width : m_tableWidthSpin->value();
+    updated.height = m_tableHeightSpin == nullptr ? updated.height : m_tableHeightSpin->value();
+    updated.headerRowHeightMm = m_tableHeaderHeightSpin == nullptr ? updated.headerRowHeightMm : m_tableHeaderHeightSpin->value();
+    updated.detailRowHeightMm = m_tableDetailHeightSpin == nullptr ? updated.detailRowHeightMm : m_tableDetailHeightSpin->value();
+    updated.repeatHeaderOnPage = m_tableRepeatHeaderCheck == nullptr ? updated.repeatHeaderOnPage : m_tableRepeatHeaderCheck->isChecked();
+    updated.drawBorders = m_tableDrawBordersCheck == nullptr ? updated.drawBorders : m_tableDrawBordersCheck->isChecked();
+
+    const auto parsedColumns = parseTableColumns(m_tableColumnsEdit == nullptr ? QString() : m_tableColumnsEdit->text());
+    if (parsedColumns.isEmpty()) {
+        m_statusLabel->setText(QString::fromUtf8("表格列配置无效"));
+        return;
+    }
+    updated.columns = parsedColumns;
+
+    auto& document = m_settings.templateDocuments[m_templateKey];
+    const auto tableId = updated.id;
+    if (!sleekpr::core::TemplateDocumentEditModel::updateTable(document, tableId, updated)) {
+        m_statusLabel->setText(QString::fromUtf8("表格属性保存失败"));
+        return;
+    }
+
+    refreshAll();
+    selectElement(tableId);
+    m_statusLabel->setText(QString::fromUtf8("已更新表格属性"));
+    notifySettingsChanged();
+}
+
 void TemplateDesignerWindow::moveSelectedElementByPixels(QPoint delta)
 {
     ensureCurrentTemplateDocument();
+    if (currentSelectionIsTable()) {
+        auto* table = currentTable();
+        if (table == nullptr || m_previewLabel == nullptr) {
+            return;
+        }
+
+        const auto labelPlan = sleekpr::core::LabelRenderPlanner().createPlan(
+            sleekpr::infrastructure::PreviewLabelFactory::createDemoLabel(sleekpr::core::LabelTemplateKey::Default80x30));
+        const TemplateDragCoordinateMapper mapper(
+            QSizeF(labelPlan.paperSize.widthMm(), labelPlan.paperSize.heightMm()),
+            m_previewLabel->size());
+        const auto tableId = table->id;
+        const auto moved = mapper.movedTopLeftMm(
+            QPointF(table->x, table->y),
+            delta,
+            QSizeF(table->width, table->height));
+
+        auto& document = m_settings.templateDocuments[m_templateKey];
+        if (sleekpr::core::TemplateDocumentEditModel::moveTable(document, tableId, moved.x(), moved.y())) {
+            refreshAll();
+            selectElement(tableId);
+            notifySettingsChanged();
+        }
+        return;
+    }
+
     auto* element = currentElement();
     if (element == nullptr || m_previewLabel == nullptr) {
         return;
@@ -1296,6 +1695,27 @@ void TemplateDesignerWindow::moveSelectedElementByPixels(QPoint delta)
 
 void TemplateDesignerWindow::nudgeSelectedElement(QPoint direction, Qt::KeyboardModifiers modifiers)
 {
+    if (currentSelectionIsTable()) {
+        auto* table = currentTable();
+        if (table == nullptr) {
+            return;
+        }
+
+        const auto step = modifiers.testFlag(Qt::ShiftModifier) ? 1.0 : 0.1;
+        auto& document = m_settings.templateDocuments[m_templateKey];
+        const auto tableId = table->id;
+        if (sleekpr::core::TemplateDocumentEditModel::moveTable(
+                document,
+                tableId,
+                std::max(0.0, table->x + direction.x() * step),
+                std::max(0.0, table->y + direction.y() * step))) {
+            refreshAll();
+            selectElement(tableId);
+            notifySettingsChanged();
+        }
+        return;
+    }
+
     auto* element = currentElement();
     if (element == nullptr) {
         return;

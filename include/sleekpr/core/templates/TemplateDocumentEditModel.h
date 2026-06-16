@@ -22,6 +22,12 @@ public:
     static bool moveElementDown(TemplateDocument& document, const QString& elementId);
     static bool setElementVisible(TemplateDocument& document, const QString& elementId, bool visible);
     static bool setElementLocked(TemplateDocument& document, const QString& elementId, bool locked);
+    static bool addTable(TemplateDocument& document, const QString& layerId, const TableElement& table);
+    static bool updateTable(TemplateDocument& document, const QString& tableId, const TableElement& table);
+    static bool deleteTable(TemplateDocument& document, const QString& tableId);
+    static bool moveTable(TemplateDocument& document, const QString& tableId, double x, double y);
+    static bool setTableVisible(TemplateDocument& document, const QString& tableId, bool visible);
+    static bool setTableLocked(TemplateDocument& document, const QString& tableId, bool locked);
     static bool saveVersion(TemplateDocument& document, const QString& versionId, const QString& name, const QString& createdAt, const QString& note);
     static bool restoreVersion(TemplateDocument& document, const QString& versionId);
 };

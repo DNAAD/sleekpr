@@ -12,6 +12,7 @@
 #include <functional>
 
 class QLabel;
+class QCheckBox;
 class QDoubleSpinBox;
 class QLineEdit;
 class QListWidget;
@@ -20,6 +21,7 @@ class QPushButton;
 namespace sleekpr::core {
 struct TemplateElement;
 struct TemplateLayer;
+struct TableElement;
 }
 
 namespace sleekpr::app {
@@ -53,6 +55,7 @@ private:
     void addBoundFieldElement();
     void addQrCodeElement();
     void addRectangleElement();
+    void addTableElement();
     void deleteCurrentElement();
     void toggleCurrentElementLocked();
     void toggleCurrentElementVisible();
@@ -72,6 +75,7 @@ private:
     void refreshTemplateLibraryList();
     void refreshLayerList();
     void refreshElementList();
+    void refreshTablePropertyEditor();
     void refreshPreview();
     void refreshAll();
     void notifySettingsChanged();
@@ -79,6 +83,7 @@ private:
     bool selectElement(const QString& elementId);
     bool selectElementInCurrentList(const QString& elementId);
     bool canEditElement(const QString& elementId) const;
+    bool currentSelectionIsTable() const;
     bool loadTemplateDocumentFromFile(const QString& path, sleekpr::core::TemplateDocument* document, QString* errorMessage) const;
     void applyImportedTemplateDocument(const sleekpr::core::TemplateDocument& document);
     QString currentLayerId() const;
@@ -86,7 +91,10 @@ private:
     sleekpr::core::TemplateLayer* currentLayer();
     const sleekpr::core::TemplateLayer* currentLayer() const;
     sleekpr::core::TemplateElement* currentElement();
+    sleekpr::core::TableElement* currentTable();
     void addElement(sleekpr::core::TemplateElement element);
+    void addTable(sleekpr::core::TableElement table);
+    void applyCurrentTableProperties();
     void moveSelectedElementByPixels(QPoint delta);
     void nudgeSelectedElement(QPoint direction, Qt::KeyboardModifiers modifiers);
 
@@ -106,6 +114,17 @@ private:
     QDoubleSpinBox* m_deviceProfileScaleYSpin = nullptr;
     QDoubleSpinBox* m_deviceProfileOffsetXSpin = nullptr;
     QDoubleSpinBox* m_deviceProfileOffsetYSpin = nullptr;
+    QLineEdit* m_tableDisplayNameEdit = nullptr;
+    QLineEdit* m_tableDataPathEdit = nullptr;
+    QDoubleSpinBox* m_tableXSpin = nullptr;
+    QDoubleSpinBox* m_tableYSpin = nullptr;
+    QDoubleSpinBox* m_tableWidthSpin = nullptr;
+    QDoubleSpinBox* m_tableHeightSpin = nullptr;
+    QDoubleSpinBox* m_tableHeaderHeightSpin = nullptr;
+    QDoubleSpinBox* m_tableDetailHeightSpin = nullptr;
+    QCheckBox* m_tableRepeatHeaderCheck = nullptr;
+    QCheckBox* m_tableDrawBordersCheck = nullptr;
+    QLineEdit* m_tableColumnsEdit = nullptr;
     QList<sleekpr::core::NativeDrawCommand> m_previewCommands;
 };
 
