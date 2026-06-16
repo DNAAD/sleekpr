@@ -9,6 +9,7 @@
 #include <algorithm>
 
 #include "sleekpr/core/settings/FileSettingsStore.h"
+#include "sleekpr/core/templates/TemplateDocumentJson.h"
 #include "sleekpr/http/LocalHttpRouter.h"
 #include "sleekpr/http/LocalHttpServer.h"
 #include "sleekpr/infrastructure/printing/LabelPrintEngine.h"
@@ -66,6 +67,38 @@ public:
     QList<NativeLabelDrawingPlan> printedPages;
 };
 
+TemplateDocument createHttpInvoiceTemplateDocument()
+{
+    FieldDefinition customerName;
+    customerName.key = "customerName";
+    customerName.displayName = QString::fromUtf8("客户名称");
+    customerName.required = true;
+
+    TemplateElement customerText;
+    customerText.id = "customerNameText";
+    customerText.type = TemplateElementType::BoundField;
+    customerText.fieldKey = "customerName";
+    customerText.x = 1.0;
+    customerText.y = 2.0;
+    customerText.width = 30.0;
+    customerText.height = 5.0;
+    customerText.fontSizePt = 9.0;
+
+    TemplateLayer layer;
+    layer.id = "base";
+    layer.name = QString::fromUtf8("基础图层");
+    layer.elements = {customerText};
+
+    TemplateDocument document;
+    document.id = "template-invoice";
+    document.name = QString::fromUtf8("客户标签");
+    document.templateKey = "invoice";
+    document.category = "label";
+    document.fieldSchema = {customerName};
+    document.layers = {layer};
+    return document;
+}
+
 class HttpTests final : public QObject
 {
     Q_OBJECT
@@ -76,7 +109,9 @@ private slots:
     void postSettingsPersistsFullSettingsShape();
     void labelPrintEngineDispatchesPrintPlanPagesInOrder();
     void postPrintTagCreatesAcceptedJobAndUsesConfiguredPrinter();
+    void templateLibraryRoutesPersistReadAndRemoveTemplates();
     void postPrintTemplateUsesRequestValuesAndConfiguredPrinter();
+    void postPrintTemplateCanUseTemplateLibraryDocument();
     void postPrintTemplateRejectsMissingRequiredFields();
     void localServerWaitsForFullPostBody();
 };
@@ -299,6 +334,75 @@ void HttpTests::postPrintTagCreatesAcceptedJobAndUsesConfiguredPrinter()
     QCOMPARE(data["failed"].toInt(), 0);
 }
 
+void HttpTests::templateLibraryRoutesPersistReadAndRemoveTemplates()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    LocalHttpRouter router(dir.filePath("settings.json"));
+    const auto templateJson = TemplateDocumentJson::toJson(createHttpInvoiceTemplateDocument());
+
+    LocalHttpRequest saveRequest;
+    saveRequest.method = "POST";
+    saveRequest.path = "/templates";
+    saveRequest.body = QJsonDocument(templateJson).toJson(QJsonDocument::Compact);
+
+    const auto saveResponse = router.route(saveRequest);
+    QCOMPARE(saveResponse.statusCode, 200);
+
+    LocalHttpRequest listRequest;
+    listRequest.method = "GET";
+    listRequest.path = "/templates";
+
+    const auto listResponse = router.route(listRequest);
+    QCOMPARE(listResponse.statusCode, 200);
+    const auto listPayload = QJsonDocument::fromJson(listResponse.body).object();
+    const auto templates = listPayload["data"].toObject()["templates"].toArray();
+    QCOMPARE(templates.size(), 1);
+    QCOMPARE(templates.first().toObject()["id"].toString(), QString("template-invoice"));
+    QCOMPARE(templates.first().toObject()["templateKey"].toString(), QString("invoice"));
+
+    LocalHttpRequest readRequest;
+    readRequest.method = "GET";
+    readRequest.path = "/templates/template-invoice";
+
+    const auto readResponse = router.route(readRequest);
+    QCOMPARE(readResponse.statusCode, 200);
+    const auto readPayload = QJsonDocument::fromJson(readResponse.body).object();
+    const auto readTemplate = readPayload["data"].toObject()["template"].toObject();
+    QCOMPARE(readTemplate["id"].toString(), QString("template-invoice"));
+    QCOMPARE(readTemplate["fieldSchema"].toObject()["fields"].toArray().size(), 1);
+
+    auto updatedDocument = createHttpInvoiceTemplateDocument();
+    updatedDocument.name = QString::fromUtf8("客户标签更新版");
+    LocalHttpRequest updateRequest;
+    updateRequest.method = "PUT";
+    updateRequest.path = "/templates/template-invoice";
+    updateRequest.body = QJsonDocument(TemplateDocumentJson::toJson(updatedDocument)).toJson(QJsonDocument::Compact);
+
+    const auto updateResponse = router.route(updateRequest);
+    QCOMPARE(updateResponse.statusCode, 200);
+    const auto updatePayload = QJsonDocument::fromJson(updateResponse.body).object();
+    QCOMPARE(updatePayload["data"].toObject()["template"].toObject()["name"].toString(), QString::fromUtf8("客户标签更新版"));
+
+    auto mismatchedDocument = createHttpInvoiceTemplateDocument();
+    mismatchedDocument.id = "another-template";
+    updateRequest.body = QJsonDocument(TemplateDocumentJson::toJson(mismatchedDocument)).toJson(QJsonDocument::Compact);
+    const auto mismatchedUpdateResponse = router.route(updateRequest);
+    QCOMPARE(mismatchedUpdateResponse.statusCode, 400);
+
+    LocalHttpRequest removeRequest;
+    removeRequest.method = "DELETE";
+    removeRequest.path = "/templates/template-invoice";
+
+    const auto removeResponse = router.route(removeRequest);
+    QCOMPARE(removeResponse.statusCode, 200);
+
+    const auto emptyListResponse = router.route(listRequest);
+    const auto emptyListPayload = QJsonDocument::fromJson(emptyListResponse.body).object();
+    QCOMPARE(emptyListPayload["data"].toObject()["templates"].toArray().size(), 0);
+}
+
 void HttpTests::postPrintTemplateUsesRequestValuesAndConfiguredPrinter()
 {
     QTemporaryDir dir;
@@ -373,6 +477,54 @@ void HttpTests::postPrintTemplateUsesRequestValuesAndConfiguredPrinter()
     QCOMPARE(data["accepted"].toInt(), 1);
     QCOMPARE(data["printed"].toInt(), 1);
     QCOMPARE(data["failed"].toInt(), 0);
+}
+
+void HttpTests::postPrintTemplateCanUseTemplateLibraryDocument()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    PrintClientSettings settings;
+    settings.defaultPrinter = "Configured Printer";
+    QVERIFY(FileSettingsStore(dir.filePath("settings.json")).save(settings));
+
+    LocalHttpRouter saveRouter(dir.filePath("settings.json"));
+    LocalHttpRequest saveRequest;
+    saveRequest.method = "POST";
+    saveRequest.path = "/templates";
+    saveRequest.body = QJsonDocument(TemplateDocumentJson::toJson(createHttpInvoiceTemplateDocument()))
+                           .toJson(QJsonDocument::Compact);
+    QCOMPARE(saveRouter.route(saveRequest).statusCode, 200);
+
+    RecordingLabelPrintEngine printEngine;
+    LocalHttpRouter router(dir.filePath("settings.json"), &printEngine);
+
+    LocalHttpRequest printRequest;
+    printRequest.method = "POST";
+    printRequest.path = "/print/template";
+    printRequest.body = R"json({
+        "requestId": "template-library-request-1",
+        "templateKey": "invoice",
+        "printerName": "Ignored Printer",
+        "executePrint": true,
+        "values": {
+            "customerName": "李四"
+        }
+    })json";
+
+    const auto response = router.route(printRequest);
+    QCOMPARE(response.statusCode, 200);
+    QCOMPARE(printEngine.printCount, 1);
+    QCOMPARE(printEngine.lastPrinterName, QString("Configured Printer"));
+
+    const auto command = std::find_if(
+        printEngine.lastPlan.commands.cbegin(),
+        printEngine.lastPlan.commands.cend(),
+        [](const NativeDrawCommand& item) {
+            return item.elementKey == QStringLiteral("customerNameText");
+        });
+    QVERIFY(command != printEngine.lastPlan.commands.cend());
+    QCOMPARE(command->text, QString::fromUtf8("李四"));
 }
 
 void HttpTests::postPrintTemplateRejectsMissingRequiredFields()

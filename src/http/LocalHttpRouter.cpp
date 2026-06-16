@@ -9,16 +9,21 @@
 #include "sleekpr/core/settings/PrintClientSettingsJson.h"
 #include "sleekpr/core/settings/PrinterSelectionResolver.h"
 #include "sleekpr/core/templates/DeviceProfileResolver.h"
+#include "sleekpr/core/templates/TemplateDocumentJson.h"
 #include "sleekpr/core/templates/TemplateDocumentRenderer.h"
+#include "sleekpr/core/templates/TemplateLibraryStore.h"
 #include "sleekpr/core/templates/TemplateRenderContextBuilder.h"
 
 #include <QDateTime>
+#include <QDir>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPrinterInfo>
 #include <QUuid>
 
+#include <optional>
 #include <utility>
 
 namespace sleekpr::http {
@@ -34,7 +39,10 @@ using sleekpr::core::PrintClientSettingsJson;
 using sleekpr::core::PrinterSelectionResolver;
 using sleekpr::core::PrivateNetworkAccessPolicy;
 using sleekpr::core::DeviceProfileResolver;
+using sleekpr::core::TemplateDocument;
+using sleekpr::core::TemplateDocumentJson;
 using sleekpr::core::TemplateDocumentRenderer;
+using sleekpr::core::TemplateLibraryStore;
 using sleekpr::core::TemplateRenderContext;
 using sleekpr::core::TemplateRenderContextBuilder;
 using sleekpr::core::templateOverrideKey;
@@ -98,7 +106,7 @@ QHash<QByteArray, QByteArray> corsHeaders(const LocalHttpRequest& request, const
     headers.insert("Access-Control-Allow-Origin", origin.toUtf8());
     headers.insert("Vary", "Origin");
     headers.insert("Access-Control-Allow-Headers", "*");
-    headers.insert("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    headers.insert("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
 
     if (PrivateNetworkAccessPolicy::shouldAllow(
             headerValue(request, "access-control-request-private-network"),
@@ -245,28 +253,126 @@ QJsonObject printResultJson(const QString& requestId, int total, int printed, in
     };
 }
 
-const sleekpr::core::TemplateDocument* findTemplateDocument(
+QString templateLibraryDirectoryForSettings(const QString& settingsPath)
+{
+    // 模板库跟随 settings.json 放在同级目录，便于整套客户端配置备份和迁移。
+    const QFileInfo settingsFile(settingsPath);
+    return settingsFile.absoluteDir().filePath(QStringLiteral("templates"));
+}
+
+TemplateLibraryStore templateLibraryStoreForSettings(const QString& settingsPath)
+{
+    return TemplateLibraryStore(templateLibraryDirectoryForSettings(settingsPath));
+}
+
+QString templateIdFromPath(const QString& path)
+{
+    // 模板 id 直接映射到文件名，路由层先挡掉路径分隔符，避免把路径语义泄漏给存储层。
+    const auto prefix = QStringLiteral("/templates/");
+    if (!path.startsWith(prefix)) {
+        return {};
+    }
+
+    const auto templateId = path.mid(prefix.size()).trimmed();
+    if (templateId.isEmpty() || templateId.contains(QLatin1Char('/')) || templateId.contains(QLatin1Char('\\'))) {
+        return {};
+    }
+    return templateId;
+}
+
+QJsonObject templateSummaryJson(const TemplateDocument& document)
+{
+    return QJsonObject{
+        {"id", document.id},
+        {"name", document.name},
+        {"templateKey", document.templateKey},
+        {"category", document.category},
+        {"paperSpecId", document.paperSpecId},
+        {"schemaVersion", document.schemaVersion},
+        {"activeVersionId", document.activeVersionId},
+    };
+}
+
+QJsonArray templateSummaryListJson(const TemplateLibraryStore& store)
+{
+    QJsonArray templates;
+    for (const auto& templateId : store.templateIds()) {
+        QString errorMessage;
+        const auto document = store.loadTemplate(templateId, &errorMessage);
+        if (!document.has_value()) {
+            continue;
+        }
+        templates.append(templateSummaryJson(document.value()));
+    }
+    return templates;
+}
+
+QJsonObject templateObjectFromRequest(const QJsonObject& root)
+{
+    // 前端既可以提交裸模板，也可以提交带 template 包装的对象，便于复用表单状态。
+    if (root.contains("template") && root["template"].isObject()) {
+        return root["template"].toObject();
+    }
+    return root;
+}
+
+std::optional<TemplateDocument> validatedTemplateFromRequest(
+    const QJsonObject& root,
+    QString* errorMessage)
+{
+    const auto templateObject = templateObjectFromRequest(root);
+    QString validationError;
+    if (!TemplateDocumentJson::validateForImport(templateObject, &validationError)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = validationError;
+        }
+        return std::nullopt;
+    }
+    return TemplateDocumentJson::fromJson(templateObject);
+}
+
+std::optional<TemplateDocument> findTemplateDocument(
     const PrintClientSettings& settings,
+    const QString& settingsPath,
     const QString& requestedTemplate)
 {
+    // 先查旧 settings 内嵌模板，再查独立模板库，保证历史配置和新模板库可以并行过渡。
     const auto templateName = requestedTemplate.trimmed().isEmpty()
         ? QStringLiteral("default")
         : requestedTemplate.trimmed();
 
     const auto directIt = settings.templateDocuments.constFind(templateName);
     if (directIt != settings.templateDocuments.cend()) {
-        return &directIt.value();
+        return directIt.value();
     }
 
     for (auto it = settings.templateDocuments.cbegin(); it != settings.templateDocuments.cend(); ++it) {
         const auto& document = it.value();
         if (document.id.compare(templateName, Qt::CaseInsensitive) == 0
             || document.templateKey.compare(templateName, Qt::CaseInsensitive) == 0) {
-            return &document;
+            return document;
         }
     }
 
-    return nullptr;
+    const auto store = templateLibraryStoreForSettings(settingsPath);
+    QString errorMessage;
+    auto document = store.loadTemplate(templateName, &errorMessage);
+    if (document.has_value()) {
+        return document;
+    }
+
+    for (const auto& templateId : store.templateIds()) {
+        document = store.loadTemplate(templateId, &errorMessage);
+        if (!document.has_value()) {
+            continue;
+        }
+        if (document->id.compare(templateName, Qt::CaseInsensitive) == 0
+            || document->templateKey.compare(templateName, Qt::CaseInsensitive) == 0) {
+            return document;
+        }
+    }
+
+    return std::nullopt;
 }
 
 sleekpr::core::LabelRenderPlan templateLabelPlan(const sleekpr::core::TemplateDocument& document)
@@ -358,6 +464,89 @@ LocalHttpResponse LocalHttpRouter::route(const LocalHttpRequest& request) const
         return jsonResponse(okEnvelope(printersToJson(settings)), 200, extraHeaders);
     }
 
+    const auto routeTemplateId = templateIdFromPath(path);
+    if (path == "/templates" && method == "GET") {
+        const auto store = templateLibraryStoreForSettings(m_settingsPath);
+        return jsonResponse(okEnvelope(QJsonObject{
+            {"templates", templateSummaryListJson(store)},
+        }), 200, extraHeaders);
+    }
+
+    if (path == "/templates" && method == "POST") {
+        QJsonParseError parseError;
+        const auto parsedDocument = QJsonDocument::fromJson(request.body, &parseError);
+        if (parseError.error != QJsonParseError::NoError || !parsedDocument.isObject()) {
+            return jsonResponse(failEnvelope("BAD_REQUEST", "Invalid template JSON"), 400, extraHeaders);
+        }
+
+        // 保存入口接受裸模板对象，也接受 { "template": ... } 包装，方便前端表单提交。
+        QString errorMessage;
+        const auto templateDocument = validatedTemplateFromRequest(parsedDocument.object(), &errorMessage);
+        if (!templateDocument.has_value()) {
+            return jsonResponse(failEnvelope("BAD_REQUEST", errorMessage), 400, extraHeaders);
+        }
+
+        const auto store = templateLibraryStoreForSettings(m_settingsPath);
+        if (!store.saveTemplate(templateDocument.value(), &errorMessage)) {
+            return jsonResponse(failEnvelope("SAVE_FAILED", errorMessage), 400, extraHeaders);
+        }
+
+        return jsonResponse(okEnvelope(QJsonObject{
+            {"template", TemplateDocumentJson::toJson(templateDocument.value())},
+        }), 200, extraHeaders);
+    }
+
+    if (!routeTemplateId.isEmpty() && method == "GET") {
+        const auto store = templateLibraryStoreForSettings(m_settingsPath);
+        QString errorMessage;
+        const auto templateDocument = store.loadTemplate(routeTemplateId, &errorMessage);
+        if (!templateDocument.has_value()) {
+            return jsonResponse(failEnvelope("TEMPLATE_NOT_FOUND", QString::fromUtf8("未找到指定模板。")), 404, extraHeaders);
+        }
+
+        return jsonResponse(okEnvelope(QJsonObject{
+            {"template", TemplateDocumentJson::toJson(templateDocument.value())},
+        }), 200, extraHeaders);
+    }
+
+    if (!routeTemplateId.isEmpty() && method == "PUT") {
+        QJsonParseError parseError;
+        const auto parsedDocument = QJsonDocument::fromJson(request.body, &parseError);
+        if (parseError.error != QJsonParseError::NoError || !parsedDocument.isObject()) {
+            return jsonResponse(failEnvelope("BAD_REQUEST", "Invalid template JSON"), 400, extraHeaders);
+        }
+
+        QString errorMessage;
+        const auto templateDocument = validatedTemplateFromRequest(parsedDocument.object(), &errorMessage);
+        if (!templateDocument.has_value()) {
+            return jsonResponse(failEnvelope("BAD_REQUEST", errorMessage), 400, extraHeaders);
+        }
+        if (templateDocument->id != routeTemplateId) {
+            return jsonResponse(failEnvelope("BAD_REQUEST", QString::fromUtf8("模板 id 与路径不一致。")), 400, extraHeaders);
+        }
+
+        const auto store = templateLibraryStoreForSettings(m_settingsPath);
+        if (!store.saveTemplate(templateDocument.value(), &errorMessage)) {
+            return jsonResponse(failEnvelope("SAVE_FAILED", errorMessage), 400, extraHeaders);
+        }
+
+        return jsonResponse(okEnvelope(QJsonObject{
+            {"template", TemplateDocumentJson::toJson(templateDocument.value())},
+        }), 200, extraHeaders);
+    }
+
+    if (!routeTemplateId.isEmpty() && method == "DELETE") {
+        const auto store = templateLibraryStoreForSettings(m_settingsPath);
+        if (!store.removeTemplate(routeTemplateId)) {
+            return jsonResponse(failEnvelope("DELETE_FAILED", QString::fromUtf8("删除模板失败。")), 400, extraHeaders);
+        }
+
+        return jsonResponse(okEnvelope(QJsonObject{
+            {"id", routeTemplateId},
+            {"removed", true},
+        }), 200, extraHeaders);
+    }
+
     if (path == "/print/tag" && method == "POST") {
         QJsonParseError parseError;
         const auto document = QJsonDocument::fromJson(request.body, &parseError);
@@ -403,8 +592,9 @@ LocalHttpResponse LocalHttpRouter::route(const LocalHttpRequest& request) const
         const auto root = parsedDocument.object();
         const auto templateDocument = findTemplateDocument(
             settings,
+            m_settingsPath,
             stringFor(root, {"templateKey", "TemplateKey", "templateId", "TemplateId"}));
-        if (templateDocument == nullptr) {
+        if (!templateDocument.has_value()) {
             return jsonResponse(failEnvelope("TEMPLATE_NOT_FOUND", QString::fromUtf8("未找到指定模板。")), 404, extraHeaders);
         }
 
@@ -425,8 +615,8 @@ LocalHttpResponse LocalHttpRouter::route(const LocalHttpRequest& request) const
         const auto selectedPrinter = PrinterSelectionResolver().resolve(settings, stringFor(root, {"printerName", "PrinterName"}));
         const auto profile = DeviceProfileResolver::resolve(templateDocument->deviceProfiles, selectedPrinter);
         const auto printPlan = TemplateDocumentRenderer().renderPrint(
-            *templateDocument,
-            templateLabelPlan(*templateDocument),
+            templateDocument.value(),
+            templateLabelPlan(templateDocument.value()),
             settings.labelOffset,
             profile,
             context);
