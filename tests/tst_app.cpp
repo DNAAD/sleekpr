@@ -41,6 +41,10 @@ private slots:
     void settingsWindowAddsFixedTextTemplateElement();
     void templateDesignerWindowAddsLayer();
     void templateDesignerWindowPreservesLegacyDynamicElements();
+    void templateDesignerWindowAddsFixedTextToCurrentLayer();
+    void templateDesignerWindowDeletesSelectedEmptyLayer();
+    void templateDesignerWindowDoesNotEditLockedLayer();
+    void templateDesignerWindowShowsDesignerPreview();
 };
 
 void AppTests::openingAndSavingSettingsDoesNotCreateImplicitElementOverride()
@@ -470,6 +474,81 @@ void AppTests::templateDesignerWindowPreservesLegacyDynamicElements()
     QCOMPARE(migratedQrCode.type, TemplateElementType::QrCode);
     QCOMPARE(migratedQrCode.fieldKey, QString("qrPayload"));
     QVERIFY(migratedQrCode.payload.isEmpty());
+}
+
+void AppTests::templateDesignerWindowAddsFixedTextToCurrentLayer()
+{
+    PrintClientSettings settings;
+    TemplateDesignerWindow window(settings, nullptr);
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* addFixedTextButton = window.findChild<QPushButton*>(QStringLiteral("designerAddFixedTextButton"));
+    auto* elementList = window.findChild<QListWidget*>(QStringLiteral("templateElementList"));
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(addFixedTextButton != nullptr);
+    QVERIFY(elementList != nullptr);
+
+    addLayerButton->click();
+    addFixedTextButton->click();
+
+    QCOMPARE(elementList->count(), 1);
+    QCOMPARE(elementList->item(0)->data(Qt::UserRole + 1).toString(), QString("fixedText"));
+}
+
+void AppTests::templateDesignerWindowDeletesSelectedEmptyLayer()
+{
+    PrintClientSettings settings;
+    TemplateDesignerWindow window(settings, nullptr);
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* deleteLayerButton = window.findChild<QPushButton*>(QStringLiteral("deleteLayerButton"));
+    auto* layerList = window.findChild<QListWidget*>(QStringLiteral("templateLayerList"));
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(deleteLayerButton != nullptr);
+    QVERIFY(layerList != nullptr);
+
+    const auto initialCount = layerList->count();
+    addLayerButton->click();
+    deleteLayerButton->click();
+
+    QCOMPARE(layerList->count(), initialCount);
+}
+
+void AppTests::templateDesignerWindowDoesNotEditLockedLayer()
+{
+    PrintClientSettings settings;
+    TemplateDesignerWindow window(settings, nullptr);
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* lockLayerButton = window.findChild<QPushButton*>(QStringLiteral("lockLayerButton"));
+    auto* addFixedTextButton = window.findChild<QPushButton*>(QStringLiteral("designerAddFixedTextButton"));
+    auto* elementList = window.findChild<QListWidget*>(QStringLiteral("templateElementList"));
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(lockLayerButton != nullptr);
+    QVERIFY(addFixedTextButton != nullptr);
+    QVERIFY(elementList != nullptr);
+
+    addLayerButton->click();
+    lockLayerButton->click();
+    addFixedTextButton->click();
+
+    QCOMPARE(elementList->count(), 0);
+}
+
+void AppTests::templateDesignerWindowShowsDesignerPreview()
+{
+    PrintClientSettings settings;
+    TemplateDesignerWindow window(settings, nullptr);
+
+    TemplatePreviewLabel* previewLabel = nullptr;
+    for (auto* label : window.findChildren<QLabel*>(QStringLiteral("designerPreviewLabel"))) {
+        previewLabel = dynamic_cast<TemplatePreviewLabel*>(label);
+        if (previewLabel != nullptr) {
+            break;
+        }
+    }
+    QVERIFY(previewLabel != nullptr);
+    QVERIFY(!previewLabel->pixmap().isNull());
 }
 
 int main(int argc, char* argv[])
