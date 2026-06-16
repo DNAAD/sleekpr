@@ -6,6 +6,46 @@
 
 namespace sleekpr::core {
 
+namespace {
+
+QString weightLabelPart(const QString& value)
+{
+    const auto splitIndex = value.lastIndexOf(' ');
+    if (splitIndex < 0 || splitIndex == value.size() - 1) {
+        return value;
+    }
+    return value.left(splitIndex + 1);
+}
+
+QString weightValuePart(const QString& value)
+{
+    const auto splitIndex = value.lastIndexOf(' ');
+    if (splitIndex < 0 || splitIndex == value.size() - 1) {
+        return value;
+    }
+    return value.mid(splitIndex + 1);
+}
+
+QString partRowText(const LabelRenderPlan& labelPlan, const QString& fieldKey)
+{
+    const QString prefix = QStringLiteral("partRow:");
+    if (!fieldKey.startsWith(prefix)) {
+        return QString();
+    }
+
+    bool ok = false;
+    const auto index = fieldKey.mid(prefix.size()).toInt(&ok);
+    if (!ok || index < 0 || index >= labelPlan.parts.size()) {
+        return QString();
+    }
+
+    // 明细行 fieldKey 保存行号，渲染时再从当前业务计划取值，避免模板启动时固化演示数据。
+    const auto& part = labelPlan.parts[index];
+    return QStringLiteral("%1:%2g").arg(part.categoryName, part.partWeightText);
+}
+
+} // 匿名命名空间
+
 NativeLabelDrawingPlan NativeLabelDrawingPlanner::createPlan(
     const LabelRenderPlan& labelPlan,
     const LabelOffset& offset,
@@ -304,14 +344,30 @@ QList<NativeDrawCommand> NativeLabelDrawingPlanner::appendTemplateElements(
 
 QString NativeLabelDrawingPlanner::valueForField(const LabelRenderPlan& labelPlan, const QString& fieldKey)
 {
+    const auto partText = partRowText(labelPlan, fieldKey);
+    if (!partText.isEmpty()) {
+        return partText;
+    }
     if (fieldKey == QStringLiteral("identifierText")) {
         return labelPlan.identifierText;
     }
     if (fieldKey == QStringLiteral("productName")) {
         return labelPlan.productName;
     }
+    if (fieldKey == QStringLiteral("finishedWeightLabel")) {
+        return weightLabelPart(labelPlan.finishedWeightText);
+    }
+    if (fieldKey == QStringLiteral("finishedWeightValue")) {
+        return weightValuePart(labelPlan.finishedWeightText);
+    }
     if (fieldKey == QStringLiteral("finishedWeightText")) {
         return labelPlan.finishedWeightText;
+    }
+    if (fieldKey == QStringLiteral("roughWeightLabel")) {
+        return weightLabelPart(labelPlan.roughWeightText);
+    }
+    if (fieldKey == QStringLiteral("roughWeightValue")) {
+        return weightValuePart(labelPlan.roughWeightText);
     }
     if (fieldKey == QStringLiteral("roughWeightText")) {
         return labelPlan.roughWeightText;
@@ -339,6 +395,9 @@ QString NativeLabelDrawingPlanner::valueForField(const LabelRenderPlan& labelPla
     }
     if (fieldKey == QStringLiteral("tagWeightText")) {
         return labelPlan.tagWeightText;
+    }
+    if (fieldKey == QStringLiteral("qrNote")) {
+        return QString::fromUtf8("标签约%1g").arg(labelPlan.tagWeightText);
     }
     if (fieldKey == QStringLiteral("footerText")) {
         return labelPlan.footerText;

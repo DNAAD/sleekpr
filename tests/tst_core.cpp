@@ -51,6 +51,8 @@ private slots:
     void templateDocumentEditModelRejectsLockedLayerElementMove();
     void deviceProfileResolverUsesPrinterSpecificProfile();
     void templateDocumentFactoryBootstrapsExistingDrawingPlan();
+    void templateDocumentFactoryKeepsDynamicFieldsWhenRendered();
+    void templateDocumentFactoryNormalizesCustomElements();
     void templateDocumentRendererSkipsHiddenLayersAndSortsElements();
     void settingsStorePersistsTemplateDocuments();
     void allowedOriginParserNormalizesValidOrigins();
@@ -550,6 +552,93 @@ void CoreTests::templateDocumentFactoryBootstrapsExistingDrawingPlan()
 
     QVERIFY(verticalIdentifier != elements.cend());
     QCOMPARE(verticalIdentifier->rotationDegrees, 90.0);
+}
+
+void CoreTests::templateDocumentFactoryKeepsDynamicFieldsWhenRendered()
+{
+    const auto demoLabelPlan = LabelRenderPlanner().createPlan(sleekpr::infrastructure::PreviewLabelFactory::createDemoLabel());
+    const auto document = TemplateDocumentFactory::fromDrawingPlan(
+        "default",
+        QString::fromUtf8("默认标签"),
+        NativeLabelDrawingPlanner().createPlan(demoLabelPlan),
+        QList<TemplateElement>{});
+
+    LabelItem liveItem;
+    liveItem.identifierCode = "LIVE-001";
+    liveItem.productName = "Live Ring";
+    liveItem.weightCategory = "Finished";
+    liveItem.finishedProductWeight = 3.2;
+    liveItem.roughWeight = 3.56;
+    liveItem.salesCode = "XS-LIVE";
+    liveItem.goldPurity = "Au999";
+    liveItem.address = "Store Live";
+    liveItem.tagWeight = 0.99;
+    liveItem.finishedProductParts = {
+        LabelPartItem{"Ring", 1.23},
+        LabelPartItem{"Chain", 2.34},
+    };
+    const auto liveLabelPlan = LabelRenderPlanner().createPlan(liveItem);
+    const auto drawingPlan = TemplateDocumentRenderer().render(document, liveLabelPlan, LabelOffset{}, DeviceProfile{});
+
+    auto findCommand = [&drawingPlan](const QString& key) -> std::optional<NativeDrawCommand> {
+        for (const auto& command : drawingPlan.commands) {
+            if (command.elementKey == key) {
+                return command;
+            }
+        }
+        return std::nullopt;
+    };
+
+    const auto finishedWeightValue = findCommand("finishedWeightValue");
+    QVERIFY(finishedWeightValue.has_value());
+    QCOMPARE(finishedWeightValue->text, QString("3.20"));
+
+    const auto roughWeightValue = findCommand("roughWeightValue");
+    QVERIFY(roughWeightValue.has_value());
+    QCOMPARE(roughWeightValue->text, QString("3.56"));
+
+    const auto qrNote = findCommand("qrNote");
+    QVERIFY(qrNote.has_value());
+    QVERIFY(qrNote->text.contains(QString("0.99")));
+
+    QList<NativeDrawCommand> partRows;
+    for (const auto& command : drawingPlan.commands) {
+        if (command.elementKey.startsWith(QStringLiteral("partRow"))) {
+            partRows.append(command);
+        }
+    }
+    QVERIFY(partRows.size() >= 2);
+    QCOMPARE(partRows[0].text, QString("Ring:1.23g"));
+    QCOMPARE(partRows[1].text, QString("Chain:2.34g"));
+}
+
+void CoreTests::templateDocumentFactoryNormalizesCustomElements()
+{
+    TemplateElement top;
+    top.id = "custom-top";
+    top.layerId = "legacy-layer";
+    top.zIndex = 5;
+
+    TemplateElement bottom;
+    bottom.id = "custom-bottom";
+    bottom.zIndex = 1;
+
+    NativeLabelDrawingPlan emptyPlan;
+    const auto document = TemplateDocumentFactory::fromDrawingPlan(
+        "default",
+        QString::fromUtf8("默认标签"),
+        emptyPlan,
+        QList<TemplateElement>{top, bottom});
+
+    QCOMPARE(document.layers.size(), 1);
+    const auto layer = document.layers.first();
+    QCOMPARE(layer.elements.size(), 2);
+    QCOMPARE(layer.elements[0].id, QString("custom-bottom"));
+    QCOMPARE(layer.elements[0].layerId, layer.id);
+    QCOMPARE(layer.elements[0].zIndex, 0);
+    QCOMPARE(layer.elements[1].id, QString("custom-top"));
+    QCOMPARE(layer.elements[1].layerId, layer.id);
+    QCOMPARE(layer.elements[1].zIndex, 1);
 }
 
 void CoreTests::templateDocumentRendererSkipsHiddenLayersAndSortsElements()

@@ -2,6 +2,7 @@
 
 #include "sleekpr/core/native/NativeDrawCommandType.h"
 
+#include <algorithm>
 #include <QHash>
 #include <QSet>
 
@@ -14,11 +15,16 @@ QString fieldKeyForCommand(const QString& elementKey)
         {QStringLiteral("identifier"), QStringLiteral("identifierText")},
         {QStringLiteral("verticalIdentifier"), QStringLiteral("identifierText")},
         {QStringLiteral("productName"), QStringLiteral("productName")},
+        {QStringLiteral("finishedWeightLabel"), QStringLiteral("finishedWeightLabel")},
+        {QStringLiteral("finishedWeightValue"), QStringLiteral("finishedWeightValue")},
+        {QStringLiteral("roughWeightLabel"), QStringLiteral("roughWeightLabel")},
+        {QStringLiteral("roughWeightValue"), QStringLiteral("roughWeightValue")},
         {QStringLiteral("standardText"), QStringLiteral("standardText")},
         {QStringLiteral("addressText"), QStringLiteral("addressText")},
         {QStringLiteral("salesCode"), QStringLiteral("salesCode")},
         {QStringLiteral("priceText"), QStringLiteral("priceText")},
         {QStringLiteral("additionalPrice"), QStringLiteral("additionalPriceText")},
+        {QStringLiteral("qrNote"), QStringLiteral("qrNote")},
         {QStringLiteral("footerText"), QStringLiteral("footerText")},
     };
     return fieldKeys.value(elementKey);
@@ -42,8 +48,16 @@ QString uniqueElementId(const QString& preferredId, QSet<QString>& usedIds)
     return id;
 }
 
-TemplateElement elementFromCommand(const NativeDrawCommand& command, int index, const QString& layerId, QSet<QString>& usedIds)
+TemplateElement elementFromCommand(
+    const NativeDrawCommand& command,
+    int index,
+    const QString& layerId,
+    QSet<QString>& usedIds,
+    QHash<QString, int>& commandOccurrences)
 {
+    const auto occurrenceIndex = commandOccurrences.value(command.elementKey, 0);
+    commandOccurrences[command.elementKey] = occurrenceIndex + 1;
+
     TemplateElement element;
     element.id = uniqueElementId(command.elementKey.isEmpty() ? QStringLiteral("element-%1").arg(index) : command.elementKey, usedIds);
     element.layerId = layerId;
@@ -61,7 +75,9 @@ TemplateElement elementFromCommand(const NativeDrawCommand& command, int index, 
 
     switch (command.type) {
     case NativeDrawCommandType::Text: {
-        const auto fieldKey = fieldKeyForCommand(command.elementKey);
+        const auto fieldKey = command.elementKey == QStringLiteral("partRow")
+            ? QStringLiteral("partRow:%1").arg(occurrenceIndex)
+            : fieldKeyForCommand(command.elementKey);
         if (fieldKey.isEmpty()) {
             element.type = TemplateElementType::FixedText;
         } else {
@@ -99,6 +115,7 @@ TemplateDocument TemplateDocumentFactory::fromDrawingPlan(
 {
     const QString baseLayerId = QStringLiteral("base");
     QSet<QString> usedIds;
+    QHash<QString, int> commandOccurrences;
 
     TemplateLayer baseLayer;
     baseLayer.id = baseLayerId;
@@ -108,15 +125,18 @@ TemplateDocument TemplateDocumentFactory::fromDrawingPlan(
     baseLayer.elements.reserve(drawingPlan.commands.size() + customElements.size());
 
     for (int index = 0; index < drawingPlan.commands.size(); ++index) {
-        baseLayer.elements.append(elementFromCommand(drawingPlan.commands[index], index, baseLayerId, usedIds));
+        baseLayer.elements.append(elementFromCommand(drawingPlan.commands[index], index, baseLayerId, usedIds, commandOccurrences));
     }
 
+    QList<TemplateElement> sortedCustomElements = customElements;
+    std::stable_sort(sortedCustomElements.begin(), sortedCustomElements.end(), [](const TemplateElement& left, const TemplateElement& right) {
+        return left.zIndex < right.zIndex;
+    });
+
     int nextZIndex = baseLayer.elements.size();
-    for (auto customElement : customElements) {
+    for (auto customElement : sortedCustomElements) {
         customElement.id = uniqueElementId(customElement.id, usedIds);
-        if (customElement.layerId.trimmed().isEmpty()) {
-            customElement.layerId = baseLayerId;
-        }
+        customElement.layerId = baseLayerId;
         // 自定义元素追加到基础命令之后，避免覆盖启动模板的原有绘制顺序。
         customElement.zIndex = nextZIndex++;
         baseLayer.elements.append(customElement);
