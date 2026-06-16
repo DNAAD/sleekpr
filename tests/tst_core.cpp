@@ -1,5 +1,6 @@
 #include <QtTest/QtTest>
 
+#include <QDir>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -29,6 +30,7 @@
 #include "sleekpr/core/templates/TemplateDocumentEditModel.h"
 #include "sleekpr/core/templates/TemplateDocumentFactory.h"
 #include "sleekpr/core/templates/TemplateDocumentJson.h"
+#include "sleekpr/core/templates/TemplateLibraryStore.h"
 #include "sleekpr/core/templates/TemplateDocumentRenderer.h"
 #include "sleekpr/infrastructure/preview/LabelPreviewImageRenderer.h"
 #include "sleekpr/infrastructure/preview/LabelPreviewService.h"
@@ -63,6 +65,9 @@ private slots:
     void paperSpecJsonRejectsInvalidDimensions();
     void templateDocumentJsonPersistsPaperMetadata();
     void templateDocumentImportRequiresPaperSpecIdForGenericTemplates();
+    void templateLibraryStoreSavesListsAndLoadsTemplates();
+    void templateLibraryStoreRemovesSavedTemplates();
+    void templateLibraryStoreRejectsInvalidTemplateImport();
     void allowedOriginParserNormalizesValidOrigins();
     void corsAndPrivateNetworkPoliciesKeepLocalContract();
     void printerSelectionUsesConfiguredDefaultOnly();
@@ -876,6 +881,84 @@ void CoreTests::templateDocumentImportRequiresPaperSpecIdForGenericTemplates()
     QString errorMessage;
     QVERIFY(!TemplateDocumentJson::validateForImport(TemplateDocumentJson::toJson(document), &errorMessage));
     QVERIFY(errorMessage.contains(QStringLiteral("paperSpecId")));
+}
+
+void CoreTests::templateLibraryStoreSavesListsAndLoadsTemplates()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    TemplateDocument document;
+    document.schemaVersion = 1;
+    document.id = QStringLiteral("sale-order");
+    document.name = QString::fromUtf8("销售单");
+    document.templateKey = QStringLiteral("saleOrder");
+    document.category = QStringLiteral("document");
+    document.paperSpecId = QStringLiteral("a4");
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("main");
+    TemplateElement element;
+    element.id = QStringLiteral("title");
+    element.layerId = layer.id;
+    layer.elements.append(element);
+    document.layers.append(layer);
+
+    TemplateLibraryStore store(dir.path());
+    QVERIFY(store.saveTemplate(document));
+
+    const auto ids = store.templateIds();
+    QCOMPARE(ids, QStringList{QStringLiteral("sale-order")});
+
+    const auto loaded = store.loadTemplate(QStringLiteral("sale-order"));
+    QVERIFY(loaded.has_value());
+    QCOMPARE(loaded->id, QString("sale-order"));
+    QCOMPARE(loaded->paperSpecId, QString("a4"));
+}
+
+void CoreTests::templateLibraryStoreRemovesSavedTemplates()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    TemplateDocument document;
+    document.schemaVersion = 1;
+    document.id = QStringLiteral("sale-order");
+    document.name = QString::fromUtf8("销售单");
+    document.templateKey = QStringLiteral("saleOrder");
+    document.category = QStringLiteral("document");
+    document.paperSpecId = QStringLiteral("a4");
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("main");
+    TemplateElement element;
+    element.id = QStringLiteral("title");
+    element.layerId = layer.id;
+    layer.elements.append(element);
+    document.layers.append(layer);
+
+    TemplateLibraryStore store(dir.path());
+    QVERIFY(store.saveTemplate(document));
+    QVERIFY(store.removeTemplate(QStringLiteral("sale-order")));
+
+    QVERIFY(store.templateIds().isEmpty());
+    QVERIFY(!store.loadTemplate(QStringLiteral("sale-order")).has_value());
+}
+
+void CoreTests::templateLibraryStoreRejectsInvalidTemplateImport()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    QFile file(QDir(dir.path()).filePath(QStringLiteral("broken.sleekpr-template.json")));
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    file.write(R"json({"schemaVersion":1,"id":"broken","templateKey":"broken","layers":[]})json");
+    file.close();
+
+    QString errorMessage;
+    TemplateLibraryStore store(dir.path());
+    QVERIFY(!store.loadTemplate(QStringLiteral("broken"), &errorMessage).has_value());
+    QVERIFY(errorMessage.contains(QString::fromUtf8("图层")));
 }
 
 void CoreTests::allowedOriginParserNormalizesValidOrigins()

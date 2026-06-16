@@ -30,6 +30,7 @@ add_library(sleekpr_core
     src/core/templates/TemplateDocumentEditModel.cpp
     src/core/templates/TemplateDocumentFactory.cpp
     src/core/templates/TemplateDocumentJson.cpp
+    src/core/templates/TemplateLibraryStore.cpp
     src/core/templates/TemplateDocumentRenderer.cpp
     src/infrastructure/preview/LabelPreviewImageRenderer.cpp
     src/infrastructure/preview/LabelPreviewService.cpp
