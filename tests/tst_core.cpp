@@ -22,6 +22,7 @@
 #include "sleekpr/core/settings/TemplateElement.h"
 #include "sleekpr/core/settings/TemplateElementCatalog.h"
 #include "sleekpr/core/templates/TemplateDocument.h"
+#include "sleekpr/core/templates/TemplateDocumentEditModel.h"
 #include "sleekpr/core/templates/TemplateDocumentJson.h"
 #include "sleekpr/infrastructure/preview/LabelPreviewImageRenderer.h"
 #include "sleekpr/infrastructure/preview/PreviewLabelFactory.h"
@@ -40,6 +41,10 @@ private slots:
     void settingsStorePersistsTemplateElements();
     void templateDocumentJsonPersistsLayersVersionsAndProfiles();
     void templateDocumentJsonRejectsInvalidImportDocument();
+    void templateDocumentEditModelManagesLayers();
+    void templateDocumentEditModelReordersElements();
+    void templateDocumentEditModelRestoresVersionsWithoutProfiles();
+    void templateDocumentEditModelRejectsLockedLayerElementMove();
     void settingsStorePersistsTemplateDocuments();
     void allowedOriginParserNormalizesValidOrigins();
     void corsAndPrivateNetworkPoliciesKeepLocalContract();
@@ -386,6 +391,106 @@ void CoreTests::templateDocumentJsonRejectsInvalidImportDocument()
     QString layerIdError;
     QVERIFY(!TemplateDocumentJson::validateForImport(mismatchedLayerId, &layerIdError));
     QVERIFY(layerIdError.contains(QStringLiteral("layerId")));
+}
+
+void CoreTests::templateDocumentEditModelManagesLayers()
+{
+    TemplateDocument document;
+
+    QVERIFY(TemplateDocumentEditModel::addLayer(document, "base", "Base"));
+    QVERIFY(TemplateDocumentEditModel::addLayer(document, "foreground", "Foreground"));
+
+    QCOMPARE(document.layers.size(), 2);
+    QCOMPARE(document.layers[0].id, QString("base"));
+    QCOMPARE(document.layers[1].id, QString("foreground"));
+
+    QVERIFY(TemplateDocumentEditModel::moveLayerDown(document, "base"));
+    QCOMPARE(document.layers[0].id, QString("foreground"));
+    QCOMPARE(document.layers[1].id, QString("base"));
+
+    QVERIFY(TemplateDocumentEditModel::setLayerVisible(document, "base", false));
+    QCOMPARE(document.layers[1].visible, false);
+}
+
+void CoreTests::templateDocumentEditModelReordersElements()
+{
+    TemplateDocument document;
+    QVERIFY(TemplateDocumentEditModel::addLayer(document, "base", "Base"));
+
+    TemplateElement first;
+    first.id = "first";
+    first.x = 1.0;
+    TemplateElement second;
+    second.id = "second";
+    second.x = 2.0;
+
+    QVERIFY(TemplateDocumentEditModel::addElement(document, "base", first));
+    QVERIFY(TemplateDocumentEditModel::addElement(document, "base", second));
+    QCOMPARE(document.layers.first().elements[0].zIndex, 0);
+    QCOMPARE(document.layers.first().elements[1].zIndex, 1);
+
+    QVERIFY(TemplateDocumentEditModel::moveElementUp(document, "second"));
+
+    const auto elements = document.layers.first().elements;
+    QCOMPARE(elements[0].id, QString("second"));
+    QCOMPARE(elements[0].zIndex, 0);
+    QCOMPARE(elements[1].id, QString("first"));
+    QCOMPARE(elements[1].zIndex, 1);
+}
+
+void CoreTests::templateDocumentEditModelRestoresVersionsWithoutProfiles()
+{
+    TemplateLayer snapshotLayer;
+    snapshotLayer.id = "snapshot";
+    snapshotLayer.name = "Snapshot";
+
+    TemplateVersion version;
+    version.id = "version-1";
+    version.name = "Initial";
+    version.layersSnapshot = {snapshotLayer};
+
+    TemplateLayer currentLayer;
+    currentLayer.id = "current";
+    currentLayer.name = "Current";
+
+    DeviceProfile profile;
+    profile.id = "profile-default";
+    profile.printerName = "Printer A";
+    profile.scaleX = 1.05;
+
+    TemplateDocument document;
+    document.layers = {currentLayer};
+    document.versions = {version};
+    document.deviceProfiles = {profile};
+
+    QVERIFY(TemplateDocumentEditModel::restoreVersion(document, "version-1"));
+
+    QCOMPARE(document.activeVersionId, QString("version-1"));
+    QCOMPARE(document.layers.size(), 1);
+    QCOMPARE(document.layers.first().id, QString("snapshot"));
+    QCOMPARE(document.deviceProfiles.size(), 1);
+    QCOMPARE(document.deviceProfiles.first().id, QString("profile-default"));
+    QCOMPARE(document.deviceProfiles.first().scaleX, 1.05);
+}
+
+void CoreTests::templateDocumentEditModelRejectsLockedLayerElementMove()
+{
+    TemplateElement element;
+    element.id = "locked-element";
+    element.x = 3.0;
+    element.y = 4.0;
+
+    TemplateLayer layer;
+    layer.id = "base";
+    layer.locked = true;
+    layer.elements = {element};
+
+    TemplateDocument document;
+    document.layers = {layer};
+
+    QVERIFY(!TemplateDocumentEditModel::moveElement(document, "locked-element", 9.0, 10.0));
+    QCOMPARE(document.layers.first().elements.first().x, 3.0);
+    QCOMPARE(document.layers.first().elements.first().y, 4.0);
 }
 
 void CoreTests::settingsStorePersistsTemplateDocuments()
