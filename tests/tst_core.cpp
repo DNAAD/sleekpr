@@ -25,6 +25,7 @@
 #include "sleekpr/core/settings/TemplateElement.h"
 #include "sleekpr/core/settings/TemplateElementCatalog.h"
 #include "sleekpr/core/templates/DeviceProfileResolver.h"
+#include "sleekpr/core/templates/FieldSchemaJson.h"
 #include "sleekpr/core/templates/PaperSpecJson.h"
 #include "sleekpr/core/templates/TemplateDocument.h"
 #include "sleekpr/core/templates/TemplateDocumentEditModel.h"
@@ -63,6 +64,8 @@ private slots:
     void settingsJsonKeepsOldTemplateElementsWhenTemplateDocumentsMissing();
     void paperSpecJsonPersistsLabelAndSheetGrid();
     void paperSpecJsonRejectsInvalidDimensions();
+    void fieldSchemaJsonPersistsCustomFieldDefinitions();
+    void fieldSchemaJsonRejectsInvalidFieldDefinitions();
     void templateDocumentJsonPersistsPaperMetadata();
     void templateDocumentImportRequiresPaperSpecIdForGenericTemplates();
     void templateLibraryStoreSavesListsAndLoadsTemplates();
@@ -830,6 +833,80 @@ void CoreTests::paperSpecJsonRejectsInvalidDimensions()
     QString errorMessage;
     QVERIFY(!PaperSpecJson::validate(json, &errorMessage));
     QVERIFY(errorMessage.contains(QString::fromUtf8("宽高")));
+}
+
+void CoreTests::fieldSchemaJsonPersistsCustomFieldDefinitions()
+{
+    QList<FieldDefinition> fields;
+
+    FieldDefinition customerName;
+    customerName.key = QStringLiteral("customerName");
+    customerName.displayName = QString::fromUtf8("客户名称");
+    customerName.type = FieldValueType::Text;
+    customerName.required = true;
+    customerName.defaultValue = QString::fromUtf8("散客");
+    customerName.sampleValue = QString::fromUtf8("张三");
+    customerName.format = QStringLiteral("plain");
+    customerName.source = FieldSource::Custom;
+    fields.append(customerName);
+
+    FieldDefinition totalAmount;
+    totalAmount.key = QStringLiteral("totalAmount");
+    totalAmount.displayName = QString::fromUtf8("合计金额");
+    totalAmount.type = FieldValueType::Money;
+    totalAmount.required = false;
+    totalAmount.defaultValue = QStringLiteral("0.00");
+    totalAmount.sampleValue = QStringLiteral("1280.00");
+    totalAmount.format = QStringLiteral("0.00");
+    totalAmount.source = FieldSource::BuiltIn;
+    fields.append(totalAmount);
+
+    const auto json = FieldSchemaJson::toJson(fields);
+    QString errorMessage;
+    QVERIFY(FieldSchemaJson::validate(json, &errorMessage));
+
+    const auto actual = FieldSchemaJson::fromJson(json);
+    QCOMPARE(actual.size(), 2);
+    QCOMPARE(actual[0].key, QString("customerName"));
+    QCOMPARE(actual[0].displayName, QString::fromUtf8("客户名称"));
+    QCOMPARE(actual[0].type, FieldValueType::Text);
+    QVERIFY(actual[0].required);
+    QCOMPARE(actual[0].defaultValue, QString::fromUtf8("散客"));
+    QCOMPARE(actual[0].sampleValue, QString::fromUtf8("张三"));
+    QCOMPARE(actual[0].format, QString("plain"));
+    QCOMPARE(actual[0].source, FieldSource::Custom);
+
+    QCOMPARE(actual[1].key, QString("totalAmount"));
+    QCOMPARE(actual[1].type, FieldValueType::Money);
+    QCOMPARE(actual[1].source, FieldSource::BuiltIn);
+}
+
+void CoreTests::fieldSchemaJsonRejectsInvalidFieldDefinitions()
+{
+    QJsonObject missingKeyField;
+    missingKeyField["key"] = QStringLiteral(" ");
+    missingKeyField["displayName"] = QString::fromUtf8("空字段");
+    missingKeyField["type"] = QStringLiteral("text");
+    missingKeyField["source"] = QStringLiteral("custom");
+
+    QJsonObject missingKeySchema;
+    missingKeySchema["fields"] = QJsonArray{missingKeyField};
+
+    QString errorMessage;
+    QVERIFY(!FieldSchemaJson::validate(missingKeySchema, &errorMessage));
+    QVERIFY(errorMessage.contains(QString::fromUtf8("字段")));
+
+    QJsonObject unknownTypeField;
+    unknownTypeField["key"] = QStringLiteral("badField");
+    unknownTypeField["displayName"] = QString::fromUtf8("错误字段");
+    unknownTypeField["type"] = QStringLiteral("unknown");
+    unknownTypeField["source"] = QStringLiteral("custom");
+
+    QJsonObject unknownTypeSchema;
+    unknownTypeSchema["fields"] = QJsonArray{unknownTypeField};
+
+    QVERIFY(!FieldSchemaJson::validate(unknownTypeSchema, &errorMessage));
+    QVERIFY(errorMessage.contains(QString::fromUtf8("类型")));
 }
 
 void CoreTests::templateDocumentJsonPersistsPaperMetadata()
