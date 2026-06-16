@@ -109,6 +109,11 @@ SettingsWindow::SettingsWindow(QString settingsPath, SettingsAppliedCallback onS
     reloadFromDisk();
 }
 
+void SettingsWindow::setOpenTemplateDesignerCallback(OpenTemplateDesignerCallback callback)
+{
+    m_openTemplateDesigner = std::move(callback);
+}
+
 void SettingsWindow::reloadFromDisk()
 {
     m_settings = m_settingsStore.load();
@@ -144,14 +149,17 @@ void SettingsWindow::buildUi()
     auto* saveButton = new QPushButton(QString::fromUtf8("保存"));
     auto* applyButton = new QPushButton(QString::fromUtf8("应用但不保存"));
     auto* refreshButton = new QPushButton(QString::fromUtf8("刷新预览"));
+    auto* openDesignerButton = new QPushButton(QString::fromUtf8("模板设计器"));
     auto* resetElementButton = new QPushButton(QString::fromUtf8("重置当前元素"));
     auto* resetAllButton = new QPushButton(QString::fromUtf8("重置全部元素"));
     auto* closeButton = new QPushButton(QString::fromUtf8("关闭"));
 
     saveButton->setObjectName(QStringLiteral("saveSettingsButton"));
+    openDesignerButton->setObjectName(QStringLiteral("openTemplateDesignerButton"));
     buttonLayout->addWidget(saveButton);
     buttonLayout->addWidget(applyButton);
     buttonLayout->addWidget(refreshButton);
+    buttonLayout->addWidget(openDesignerButton);
     buttonLayout->addStretch();
     buttonLayout->addWidget(resetElementButton);
     buttonLayout->addWidget(resetAllButton);
@@ -161,6 +169,11 @@ void SettingsWindow::buildUi()
     connect(saveButton, &QPushButton::clicked, this, [this] { saveSettings(); });
     connect(applyButton, &QPushButton::clicked, this, [this] { applyWithoutSaving(); });
     connect(refreshButton, &QPushButton::clicked, this, [this] { refreshPreviewOnly(); });
+    connect(openDesignerButton, &QPushButton::clicked, this, [this] {
+        if (m_openTemplateDesigner) {
+            m_openTemplateDesigner();
+        }
+    });
     connect(resetElementButton, &QPushButton::clicked, this, [this] { resetCurrentElement(); });
     connect(resetAllButton, &QPushButton::clicked, this, [this] { resetAllElements(); });
     connect(closeButton, &QPushButton::clicked, this, [this] { close(); });

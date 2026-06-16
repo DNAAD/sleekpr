@@ -49,6 +49,7 @@ private slots:
     void templateDesignerWindowSavesAndRestoresVersion();
     void templateDesignerWindowExportsAndImportsTemplateFile();
     void templateDesignerWindowSavesAndReplacesDeviceProfile();
+    void settingsWindowHasTemplateDesignerEntry();
 };
 
 void AppTests::openingAndSavingSettingsDoesNotCreateImplicitElementOverride()
@@ -651,6 +652,28 @@ void AppTests::templateDesignerWindowSavesAndReplacesDeviceProfile()
     profiles = changedSettings.templateDocuments.value("default").deviceProfiles;
     QCOMPARE(profiles.size(), 1);
     QCOMPARE(profiles.first().scaleX, 1.05);
+}
+
+void AppTests::settingsWindowHasTemplateDesignerEntry()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const auto settingsPath = dir.filePath("settings.json");
+    FileSettingsStore store(settingsPath);
+    QVERIFY(store.save(PrintClientSettings{}));
+
+    int openCount = 0;
+    SettingsWindow window(settingsPath, nullptr);
+    window.setOpenTemplateDesignerCallback([&openCount] {
+        ++openCount;
+    });
+
+    auto* openDesignerButton = window.findChild<QPushButton*>(QStringLiteral("openTemplateDesignerButton"));
+    QVERIFY(openDesignerButton != nullptr);
+
+    openDesignerButton->click();
+    QCOMPARE(openCount, 1);
 }
 
 int main(int argc, char* argv[])

@@ -1,6 +1,8 @@
 #include "sleekpr/app/PreviewWindow.h"
 #include "sleekpr/app/SettingsWindow.h"
+#include "sleekpr/app/TemplateDesignerWindow.h"
 #include "sleekpr/app/WindowActivation.h"
+#include "sleekpr/core/settings/FileSettingsStore.h"
 #include "sleekpr/http/LocalHttpServer.h"
 #include "sleekpr/infrastructure/printing/QtLabelPrintEngine.h"
 
@@ -15,6 +17,8 @@
 #include <QStyle>
 #include <QSystemTrayIcon>
 #include <QTimer>
+
+#include <memory>
 
 namespace {
 
@@ -39,11 +43,26 @@ int main(int argc, char* argv[])
     qInfo() << "sleekpr settings:" << settingsFilePath;
     sleekpr::infrastructure::QtLabelPrintEngine printEngine;
     sleekpr::app::PreviewWindow previewWindow(settingsFilePath);
+    std::unique_ptr<sleekpr::app::TemplateDesignerWindow> templateDesignerWindow;
     sleekpr::app::SettingsWindow settingsWindow(
         settingsFilePath,
         [&previewWindow](const sleekpr::core::PrintClientSettings& settings) {
             previewWindow.refreshFromSettings(settings);
         });
+    settingsWindow.setOpenTemplateDesignerCallback([&settingsFilePath, &previewWindow, &settingsWindow, &templateDesignerWindow] {
+        const auto latestSettings = sleekpr::core::FileSettingsStore(settingsFilePath).load();
+        templateDesignerWindow = std::make_unique<sleekpr::app::TemplateDesignerWindow>(
+            latestSettings,
+            [&settingsFilePath, &previewWindow, &settingsWindow](const sleekpr::core::PrintClientSettings& settings) {
+                // 设计器变更直接写回统一配置文件，确保 HTTP 接口和打印预览读取到同一份模板。
+                if (!sleekpr::core::FileSettingsStore(settingsFilePath).save(settings)) {
+                    QMessageBox::warning(&settingsWindow, QString::fromUtf8("保存失败"), QString::fromUtf8("无法写入模板设计器设置"));
+                    return;
+                }
+                previewWindow.refreshFromSettings(settings);
+            });
+        sleekpr::app::showAndActivateWindow(*templateDesignerWindow);
+    });
 
     sleekpr::http::LocalHttpServer server(settingsFilePath, &printEngine);
     if (!server.listen(QHostAddress::LocalHost, 37122)) {

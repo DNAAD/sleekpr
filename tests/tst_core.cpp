@@ -3,6 +3,7 @@
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QFile>
 #include <QTemporaryDir>
 
 #include <algorithm>
@@ -56,6 +57,7 @@ private slots:
     void templateDocumentFactoryNormalizesCustomElements();
     void templateDocumentRendererSkipsHiddenLayersAndSortsElements();
     void settingsStorePersistsTemplateDocuments();
+    void settingsJsonKeepsOldTemplateElementsWhenTemplateDocumentsMissing();
     void allowedOriginParserNormalizesValidOrigins();
     void corsAndPrivateNetworkPoliciesKeepLocalContract();
     void printerSelectionUsesConfiguredDefaultOnly();
@@ -735,6 +737,36 @@ void CoreTests::settingsStorePersistsTemplateDocuments()
     const auto actual = store.load();
     QVERIFY(actual.templateDocuments.contains("default"));
     QCOMPARE(actual.templateDocuments["default"].layers.first().elements.first().id, QString("title"));
+}
+
+void CoreTests::settingsJsonKeepsOldTemplateElementsWhenTemplateDocumentsMissing()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    QFile file(dir.filePath(QStringLiteral("settings.json")));
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    file.write(R"json({
+        "templateElements": {
+            "default": [{
+                "id": "legacy-fixed",
+                "type": "fixedText",
+                "text": "LEGACY",
+                "x": 3.0,
+                "y": 4.0,
+                "width": 12.0,
+                "height": 3.0
+            }]
+        }
+    })json");
+    file.close();
+
+    const auto settings = FileSettingsStore(dir.filePath(QStringLiteral("settings.json"))).load();
+
+    QVERIFY(settings.templateDocuments.isEmpty());
+    QCOMPARE(settings.templateElements.value(QStringLiteral("default")).size(), 1);
+    QCOMPARE(settings.templateElements.value(QStringLiteral("default")).first().id, QString("legacy-fixed"));
+    QCOMPARE(settings.templateElements.value(QStringLiteral("default")).first().text, QString("LEGACY"));
 }
 
 void CoreTests::allowedOriginParserNormalizesValidOrigins()

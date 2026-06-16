@@ -1,5 +1,6 @@
 #include <QtTest/QtTest>
 
+#include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTcpSocket>
@@ -40,6 +41,7 @@ class HttpTests final : public QObject
 
 private slots:
     void optionsUsesTrustedCorsPolicy();
+    void getSettingsReturnsTemplateCompatibilityFields();
     void postSettingsPersistsFullSettingsShape();
     void postPrintTagCreatesAcceptedJobAndUsesConfiguredPrinter();
     void localServerWaitsForFullPostBody();
@@ -73,6 +75,44 @@ void HttpTests::optionsUsesTrustedCorsPolicy()
     const auto untrustedResponse = router.route(untrustedRequest);
     QCOMPARE(untrustedResponse.statusCode, 403);
     QVERIFY(!untrustedResponse.headers.contains("Access-Control-Allow-Origin"));
+}
+
+void HttpTests::getSettingsReturnsTemplateCompatibilityFields()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    QFile file(dir.filePath(QStringLiteral("settings.json")));
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    file.write(R"json({
+        "templateOverrides": {},
+        "templateElements": {
+            "default": [{
+                "id": "legacy-fixed",
+                "type": "fixedText",
+                "text": "LEGACY"
+            }]
+        }
+    })json");
+    file.close();
+
+    LocalHttpRouter router(dir.filePath("settings.json"));
+    LocalHttpRequest request;
+    request.method = "GET";
+    request.path = "/settings";
+
+    const auto response = router.route(request);
+    QCOMPARE(response.statusCode, 200);
+
+    const auto root = QJsonDocument::fromJson(response.body).object();
+    const auto data = root["data"].toObject();
+    QVERIFY(data.contains("templateOverrides"));
+    QVERIFY(data["templateOverrides"].isObject());
+    QVERIFY(data.contains("templateElements"));
+    QVERIFY(data["templateElements"].isObject());
+    QVERIFY(data.contains("templateDocuments"));
+    QVERIFY(data["templateDocuments"].isObject());
+    QVERIFY(data["templateDocuments"].toObject().isEmpty());
 }
 
 void HttpTests::postSettingsPersistsFullSettingsShape()
