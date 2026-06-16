@@ -26,6 +26,7 @@ add_library(sleekpr_core
     src/core/settings/SettingsEditModel.cpp
     src/core/settings/TemplateElementCatalog.cpp
     src/core/templates/DeviceProfileResolver.cpp
+    src/core/templates/PaperSpecJson.cpp
     src/core/templates/TemplateDocumentEditModel.cpp
     src/core/templates/TemplateDocumentFactory.cpp
     src/core/templates/TemplateDocumentJson.cpp

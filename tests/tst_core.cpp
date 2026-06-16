@@ -24,6 +24,7 @@
 #include "sleekpr/core/settings/TemplateElement.h"
 #include "sleekpr/core/settings/TemplateElementCatalog.h"
 #include "sleekpr/core/templates/DeviceProfileResolver.h"
+#include "sleekpr/core/templates/PaperSpecJson.h"
 #include "sleekpr/core/templates/TemplateDocument.h"
 #include "sleekpr/core/templates/TemplateDocumentEditModel.h"
 #include "sleekpr/core/templates/TemplateDocumentFactory.h"
@@ -58,6 +59,8 @@ private slots:
     void templateDocumentRendererSkipsHiddenLayersAndSortsElements();
     void settingsStorePersistsTemplateDocuments();
     void settingsJsonKeepsOldTemplateElementsWhenTemplateDocumentsMissing();
+    void paperSpecJsonPersistsLabelAndSheetGrid();
+    void paperSpecJsonRejectsInvalidDimensions();
     void allowedOriginParserNormalizesValidOrigins();
     void corsAndPrivateNetworkPoliciesKeepLocalContract();
     void printerSelectionUsesConfiguredDefaultOnly();
@@ -767,6 +770,59 @@ void CoreTests::settingsJsonKeepsOldTemplateElementsWhenTemplateDocumentsMissing
     QCOMPARE(settings.templateElements.value(QStringLiteral("default")).size(), 1);
     QCOMPARE(settings.templateElements.value(QStringLiteral("default")).first().id, QString("legacy-fixed"));
     QCOMPARE(settings.templateElements.value(QStringLiteral("default")).first().text, QString("LEGACY"));
+}
+
+void CoreTests::paperSpecJsonPersistsLabelAndSheetGrid()
+{
+    PaperSpec spec;
+    spec.id = QStringLiteral("a4-2x5");
+    spec.name = QString::fromUtf8("A4 双列标签");
+    spec.kind = PaperSpecKind::Sheet;
+    spec.orientation = PaperOrientation::Portrait;
+    spec.widthMm = 210.0;
+    spec.heightMm = 297.0;
+    spec.marginLeftMm = 5.0;
+    spec.marginTopMm = 6.0;
+    spec.marginRightMm = 5.0;
+    spec.marginBottomMm = 6.0;
+    spec.defaultDpi = 300.0;
+    spec.labelGrid.enabled = true;
+    spec.labelGrid.rows = 5;
+    spec.labelGrid.columns = 2;
+    spec.labelGrid.horizontalGapMm = 3.0;
+    spec.labelGrid.verticalGapMm = 4.0;
+
+    const auto json = PaperSpecJson::toJson(spec);
+    QString errorMessage;
+    QVERIFY(PaperSpecJson::validate(json, &errorMessage));
+    const auto actual = PaperSpecJson::fromJson(json);
+
+    QCOMPARE(actual.id, QString("a4-2x5"));
+    QCOMPARE(actual.kind, PaperSpecKind::Sheet);
+    QCOMPARE(actual.orientation, PaperOrientation::Portrait);
+    QCOMPARE(actual.widthMm, 210.0);
+    QCOMPARE(actual.heightMm, 297.0);
+    QVERIFY(actual.labelGrid.enabled);
+    QCOMPARE(actual.labelGrid.rows, 5);
+    QCOMPARE(actual.labelGrid.columns, 2);
+    QCOMPARE(actual.labelGrid.horizontalGapMm, 3.0);
+    QCOMPARE(actual.labelGrid.verticalGapMm, 4.0);
+}
+
+void CoreTests::paperSpecJsonRejectsInvalidDimensions()
+{
+    QJsonObject json;
+    json["schemaVersion"] = 1;
+    json["id"] = QStringLiteral("bad-paper");
+    json["name"] = QString::fromUtf8("错误纸张");
+    json["kind"] = QStringLiteral("label");
+    json["orientation"] = QStringLiteral("portrait");
+    json["widthMm"] = 0.0;
+    json["heightMm"] = 30.0;
+
+    QString errorMessage;
+    QVERIFY(!PaperSpecJson::validate(json, &errorMessage));
+    QVERIFY(errorMessage.contains(QString::fromUtf8("宽高")));
 }
 
 void CoreTests::allowedOriginParserNormalizesValidOrigins()
