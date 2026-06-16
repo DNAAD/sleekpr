@@ -7,6 +7,7 @@
 #include "sleekpr/core/native/NativeLabelDrawingPlanner.h"
 #include "sleekpr/core/settings/TemplateElement.h"
 #include "sleekpr/core/templates/DeviceProfileResolver.h"
+#include "sleekpr/core/templates/PaperSpecStore.h"
 #include "sleekpr/core/templates/TemplateDocumentFactory.h"
 #include "sleekpr/core/templates/TemplateDocumentEditModel.h"
 #include "sleekpr/core/templates/TemplateDocumentJson.h"
@@ -17,9 +18,11 @@
 
 #include <QDateTime>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QJsonDocument>
@@ -32,6 +35,7 @@
 #include <QPushButton>
 #include <QSaveFile>
 #include <QSizePolicy>
+#include <QSignalBlocker>
 #include <QStringList>
 #include <QUuid>
 #include <QVBoxLayout>
@@ -42,6 +46,23 @@
 namespace sleekpr::app {
 
 namespace {
+
+constexpr auto kDefaultPaperSpecId = "label-80x30";
+
+QSizeF defaultPaperSizeMm()
+{
+    return QSizeF(80.0, 30.0);
+}
+
+QString paperSpecDisplayName(const sleekpr::core::PaperSpec& spec)
+{
+    const auto name = spec.name.trimmed().isEmpty() ? spec.id : spec.name.trimmed();
+    return QString::fromUtf8("%1 (%2, %3x%4 mm)")
+        .arg(name)
+        .arg(spec.id)
+        .arg(spec.widthMm, 0, 'f', 1)
+        .arg(spec.heightMm, 0, 'f', 1);
+}
 
 QString generatedLayerId()
 {
@@ -293,6 +314,7 @@ TemplateDesignerWindow::TemplateDesignerWindow(
     resize(1180, 680);
     buildUi();
     ensureCurrentTemplateDocument();
+    refreshPaperSpecSelector();
     refreshTemplateLibraryList();
     refreshLayerList();
     refreshElementList();
@@ -359,6 +381,9 @@ void TemplateDesignerWindow::buildUi()
     auto* restoreVersionButton = createButton(QString::fromUtf8("恢复版本"), QStringLiteral("restoreTemplateVersionButton"), layerPanel);
     auto* importTemplateButton = createButton(QString::fromUtf8("导入模板"), QStringLiteral("importTemplateButton"), layerPanel);
     auto* exportTemplateButton = createButton(QString::fromUtf8("导出模板"), QStringLiteral("exportTemplateButton"), layerPanel);
+    auto* paperSpecTitleLabel = new QLabel(QString::fromUtf8("纸张规格"), layerPanel);
+    m_paperSpecCombo = new QComboBox(layerPanel);
+    m_paperSpecCombo->setObjectName(QStringLiteral("paperSpecCombo"));
 
     auto* saveToLibraryButton = createButton(QString::fromUtf8("保存到模板库"), QStringLiteral("saveTemplateToLibraryButton"), layerPanel);
     auto* loadFromLibraryButton = createButton(QString::fromUtf8("从模板库加载"), QStringLiteral("loadTemplateFromLibraryButton"), layerPanel);
@@ -406,6 +431,8 @@ void TemplateDesignerWindow::buildUi()
     layerLayout->addWidget(m_layerList, 1);
     layerLayout->addLayout(layerButtonGrid);
     layerLayout->addLayout(documentButtonGrid);
+    layerLayout->addWidget(paperSpecTitleLabel);
+    layerLayout->addWidget(m_paperSpecCombo);
     layerLayout->addWidget(libraryTitleLabel);
     layerLayout->addWidget(m_templateLibraryNameEdit);
     layerLayout->addWidget(m_templateLibraryList);
@@ -565,6 +592,7 @@ void TemplateDesignerWindow::buildUi()
     connect(exportTemplateButton, &QPushButton::clicked, this, [this] { exportTemplateWithDialog(); });
     connect(saveToLibraryButton, &QPushButton::clicked, this, [this] { saveCurrentTemplateToLibrary(); });
     connect(loadFromLibraryButton, &QPushButton::clicked, this, [this] { loadCurrentTemplateFromLibrary(); });
+    connect(m_paperSpecCombo, &QComboBox::currentIndexChanged, this, [this] { applySelectedPaperSpec(); });
     connect(refreshLibraryButton, &QPushButton::clicked, this, [this] { refreshTemplateLibraryList(); });
     connect(loadSelectedLibraryButton, &QPushButton::clicked, this, [this] { loadSelectedTemplateFromLibrary(); });
     connect(createLibraryButton, &QPushButton::clicked, this, [this] { createTemplateInLibrary(); });
@@ -592,11 +620,10 @@ void TemplateDesignerWindow::buildUi()
     });
     connect(m_previewLabel, &TemplatePreviewLabel::destroyed, this, [this] { m_previewLabel = nullptr; });
     m_previewLabel->setDragStartCallback([this](QPoint position) {
-        const auto labelPlan = sleekpr::core::LabelRenderPlanner().createPlan(
-            sleekpr::infrastructure::PreviewLabelFactory::createDemoLabel(sleekpr::core::LabelTemplateKey::Default80x30));
+        const auto paperSize = currentPaperSizeMm();
         const auto hit = TemplateElementHitTester().hitTest(
             m_previewCommands,
-            QSizeF(labelPlan.paperSize.widthMm(), labelPlan.paperSize.heightMm()),
+            paperSize,
             m_previewLabel->size(),
             position);
         if (!hit.has_value() || !canEditElement(hit.value())) {
@@ -632,6 +659,7 @@ void TemplateDesignerWindow::ensureCurrentTemplateDocument()
         QString::fromUtf8("默认标签"),
         drawingPlan,
         m_settings.templateElements.value(m_templateKey));
+    m_settings.templateDocuments[m_templateKey].paperSpecId = QString::fromLatin1(kDefaultPaperSpecId);
 }
 
 void TemplateDesignerWindow::addLayer()
@@ -1302,6 +1330,54 @@ void TemplateDesignerWindow::refreshTablePropertyEditor()
     m_tableColumnsEdit->setText(formatTableColumns(table->columns));
 }
 
+void TemplateDesignerWindow::refreshPaperSpecSelector()
+{
+    if (m_paperSpecCombo == nullptr) {
+        return;
+    }
+
+    ensureCurrentTemplateDocument();
+    auto& document = m_settings.templateDocuments[m_templateKey];
+    if (document.paperSpecId.trimmed().isEmpty()) {
+        document.paperSpecId = QString::fromLatin1(kDefaultPaperSpecId);
+    }
+
+    QString errorMessage;
+    auto specs = paperSpecFilePath().trimmed().isEmpty()
+        ? QList<sleekpr::core::PaperSpec>{}
+        : sleekpr::core::PaperSpecStore(paperSpecFilePath()).paperSpecs(&errorMessage);
+
+    const auto hasDefaultSpec = std::any_of(specs.cbegin(), specs.cend(), [](const auto& spec) {
+        return spec.id == QString::fromLatin1(kDefaultPaperSpecId);
+    });
+    if (!hasDefaultSpec) {
+        sleekpr::core::PaperSpec defaultSpec;
+        defaultSpec.id = QString::fromLatin1(kDefaultPaperSpecId);
+        defaultSpec.name = QString::fromUtf8("80x30 标签");
+        defaultSpec.widthMm = defaultPaperSizeMm().width();
+        defaultSpec.heightMm = defaultPaperSizeMm().height();
+        specs.prepend(defaultSpec);
+    }
+
+    const QSignalBlocker blocker(m_paperSpecCombo);
+    m_paperSpecCombo->clear();
+    for (const auto& spec : specs) {
+        m_paperSpecCombo->addItem(paperSpecDisplayName(spec), spec.id);
+    }
+
+    auto selectedIndex = m_paperSpecCombo->findData(document.paperSpecId);
+    if (selectedIndex < 0) {
+        selectedIndex = m_paperSpecCombo->findData(QString::fromLatin1(kDefaultPaperSpecId));
+    }
+    if (selectedIndex >= 0) {
+        m_paperSpecCombo->setCurrentIndex(selectedIndex);
+    }
+
+    if (!errorMessage.trimmed().isEmpty() && m_statusLabel != nullptr) {
+        m_statusLabel->setText(errorMessage);
+    }
+}
+
 void TemplateDesignerWindow::refreshPreview()
 {
     ensureCurrentTemplateDocument();
@@ -1311,7 +1387,9 @@ void TemplateDesignerWindow::refreshPreview()
 
     const auto labelItem = sleekpr::infrastructure::PreviewLabelFactory::createDemoLabel(
         sleekpr::core::LabelTemplateKey::Default80x30);
-    const auto labelPlan = sleekpr::core::LabelRenderPlanner().createPlan(labelItem);
+    auto labelPlan = sleekpr::core::LabelRenderPlanner().createPlan(labelItem);
+    const auto paperSize = currentPaperSizeMm();
+    labelPlan.paperSize = sleekpr::core::LabelPaperSize(paperSize.width(), paperSize.height());
     const auto& document = m_settings.templateDocuments[m_templateKey];
     const auto printerName = m_deviceProfilePrinterEdit == nullptr ? QString() : m_deviceProfilePrinterEdit->text();
     const auto profile = sleekpr::core::DeviceProfileResolver::resolve(document.deviceProfiles, printerName);
@@ -1326,11 +1404,37 @@ void TemplateDesignerWindow::refreshAll()
 {
     const auto layerId = currentLayerId();
     const auto elementId = currentElementId();
+    refreshPaperSpecSelector();
     refreshLayerList();
     selectLayer(layerId);
     refreshElementList();
     selectElement(elementId);
     refreshPreview();
+}
+
+void TemplateDesignerWindow::applySelectedPaperSpec()
+{
+    if (m_paperSpecCombo == nullptr || m_paperSpecCombo->currentIndex() < 0) {
+        return;
+    }
+
+    ensureCurrentTemplateDocument();
+    const auto paperSpecId = m_paperSpecCombo->currentData().toString().trimmed();
+    if (paperSpecId.isEmpty()) {
+        return;
+    }
+
+    auto& document = m_settings.templateDocuments[m_templateKey];
+    if (document.paperSpecId == paperSpecId) {
+        return;
+    }
+
+    document.paperSpecId = paperSpecId;
+    refreshPreview();
+    if (m_statusLabel != nullptr) {
+        m_statusLabel->setText(QString::fromUtf8("已切换纸张规格"));
+    }
+    notifySettingsChanged();
 }
 
 void TemplateDesignerWindow::notifySettingsChanged()
@@ -1388,6 +1492,37 @@ void TemplateDesignerWindow::applyImportedTemplateDocument(const sleekpr::core::
     documentToApply.templateKey = m_templateKey;
     m_settings.templateDocuments[m_templateKey] = documentToApply;
     refreshAll();
+}
+
+QString TemplateDesignerWindow::paperSpecFilePath() const
+{
+    if (m_templateLibraryDirectoryPath.trimmed().isEmpty()) {
+        return QString();
+    }
+
+    return QFileInfo(m_templateLibraryDirectoryPath).absoluteDir().filePath(QStringLiteral("paper-specs.json"));
+}
+
+QSizeF TemplateDesignerWindow::currentPaperSizeMm() const
+{
+    const_cast<TemplateDesignerWindow*>(this)->ensureCurrentTemplateDocument();
+    const auto documentIt = m_settings.templateDocuments.constFind(m_templateKey);
+    auto paperSpecId = documentIt == m_settings.templateDocuments.constEnd()
+        ? QString::fromLatin1(kDefaultPaperSpecId)
+        : documentIt.value().paperSpecId.trimmed();
+    if (paperSpecId.isEmpty()) {
+        paperSpecId = QString::fromLatin1(kDefaultPaperSpecId);
+    }
+
+    const auto path = paperSpecFilePath();
+    if (!path.trimmed().isEmpty()) {
+        const auto spec = sleekpr::core::PaperSpecStore(path).loadPaperSpec(paperSpecId);
+        if (spec.has_value() && spec->widthMm > 0.0 && spec->heightMm > 0.0) {
+            return QSizeF(spec->widthMm, spec->heightMm);
+        }
+    }
+
+    return defaultPaperSizeMm();
 }
 
 bool TemplateDesignerWindow::selectLayer(const QString& layerId)
@@ -1649,11 +1784,7 @@ void TemplateDesignerWindow::moveSelectedElementByPixels(QPoint delta)
             return;
         }
 
-        const auto labelPlan = sleekpr::core::LabelRenderPlanner().createPlan(
-            sleekpr::infrastructure::PreviewLabelFactory::createDemoLabel(sleekpr::core::LabelTemplateKey::Default80x30));
-        const TemplateDragCoordinateMapper mapper(
-            QSizeF(labelPlan.paperSize.widthMm(), labelPlan.paperSize.heightMm()),
-            m_previewLabel->size());
+        const TemplateDragCoordinateMapper mapper(currentPaperSizeMm(), m_previewLabel->size());
         const auto tableId = table->id;
         const auto moved = mapper.movedTopLeftMm(
             QPointF(table->x, table->y),
@@ -1674,11 +1805,7 @@ void TemplateDesignerWindow::moveSelectedElementByPixels(QPoint delta)
         return;
     }
 
-    const auto labelPlan = sleekpr::core::LabelRenderPlanner().createPlan(
-        sleekpr::infrastructure::PreviewLabelFactory::createDemoLabel(sleekpr::core::LabelTemplateKey::Default80x30));
-    const TemplateDragCoordinateMapper mapper(
-        QSizeF(labelPlan.paperSize.widthMm(), labelPlan.paperSize.heightMm()),
-        m_previewLabel->size());
+    const TemplateDragCoordinateMapper mapper(currentPaperSizeMm(), m_previewLabel->size());
     const auto elementId = element->id;
     const auto moved = mapper.movedTopLeftMm(
         QPointF(element->x, element->y),

@@ -2,6 +2,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFile>
 #include <QLineEdit>
@@ -18,6 +19,7 @@
 #include "sleekpr/core/native/NativeDrawCommand.h"
 #include "sleekpr/core/settings/FileSettingsStore.h"
 #include "sleekpr/core/settings/TemplateElement.h"
+#include "sleekpr/core/templates/PaperSpecStore.h"
 #include "sleekpr/core/templates/TemplateLibraryStore.h"
 
 using namespace sleekpr::app;
@@ -85,6 +87,7 @@ private slots:
     void templateDesignerWindowCreatesTemplateLibraryDocumentFromCurrentTemplate();
     void templateDesignerWindowDeletesSelectedTemplateLibraryDocument();
     void templateDesignerWindowSavesAndReplacesDeviceProfile();
+    void templateDesignerWindowSelectsPaperSpecFromStore();
     void settingsWindowHasTemplateDesignerEntry();
 };
 
@@ -954,6 +957,54 @@ void AppTests::templateDesignerWindowSavesAndReplacesDeviceProfile()
     profiles = changedSettings.templateDocuments.value("default").deviceProfiles;
     QCOMPARE(profiles.size(), 1);
     QCOMPARE(profiles.first().scaleX, 1.05);
+}
+
+void AppTests::templateDesignerWindowSelectsPaperSpecFromStore()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    PaperSpec label;
+    label.id = QStringLiteral("label-80x30");
+    label.name = QString::fromUtf8("80x30 标签");
+    label.widthMm = 80.0;
+    label.heightMm = 30.0;
+
+    PaperSpec sheet;
+    sheet.id = QStringLiteral("a4-sheet");
+    sheet.name = QString::fromUtf8("A4 纸");
+    sheet.kind = PaperSpecKind::Sheet;
+    sheet.widthMm = 210.0;
+    sheet.heightMm = 297.0;
+
+    PaperSpecStore store(dir.filePath(QStringLiteral("paper-specs.json")));
+    QVERIFY(store.savePaperSpec(label));
+    QVERIFY(store.savePaperSpec(sheet));
+
+    PrintClientSettings changedSettings;
+    TemplateDesignerWindow window(PrintClientSettings{}, [&changedSettings](const PrintClientSettings& nextSettings) {
+        changedSettings = nextSettings;
+    }, dir.filePath(QStringLiteral("templates")));
+
+    auto* paperSpecCombo = window.findChild<QComboBox*>(QStringLiteral("paperSpecCombo"));
+    TemplatePreviewLabel* previewLabel = nullptr;
+    for (auto* labelWidget : window.findChildren<QLabel*>(QStringLiteral("designerPreviewLabel"))) {
+        previewLabel = dynamic_cast<TemplatePreviewLabel*>(labelWidget);
+        if (previewLabel != nullptr) {
+            break;
+        }
+    }
+    QVERIFY(paperSpecCombo != nullptr);
+    QVERIFY(previewLabel != nullptr);
+    QCOMPARE(paperSpecCombo->count(), 2);
+
+    const auto a4Index = paperSpecCombo->findData(QStringLiteral("a4-sheet"));
+    QVERIFY(a4Index >= 0);
+    paperSpecCombo->setCurrentIndex(a4Index);
+
+    QCOMPARE(changedSettings.templateDocuments.value("default").paperSpecId, QString("a4-sheet"));
+    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(previewLabel->pixmap().height() > previewLabel->pixmap().width());
 }
 
 void AppTests::settingsWindowHasTemplateDesignerEntry()

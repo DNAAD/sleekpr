@@ -3,8 +3,10 @@
 #include "sleekpr/core/settings/PrintClientSettings.h"
 #include "sleekpr/core/native/NativeDrawCommand.h"
 
+#include <QComboBox>
 #include <QList>
 #include <QPoint>
+#include <QSizeF>
 #include <QString>
 #include <Qt>
 #include <QWidget>
@@ -38,6 +40,14 @@ public:
         SettingsChangedCallback onSettingsChanged,
         QString templateLibraryDirectoryPath = QString(),
         QWidget* parent = nullptr);
+    ~TemplateDesignerWindow() override
+    {
+        if (m_paperSpecCombo != nullptr) {
+            m_paperSpecCombo->disconnect();
+            delete m_paperSpecCombo;
+            m_paperSpecCombo = nullptr;
+        }
+    }
 
     bool exportTemplateToFile(const QString& path) const;
     bool importTemplateFromFile(const QString& path);
@@ -73,11 +83,13 @@ private:
     void exportTemplateWithDialog();
     void saveDeviceProfile();
     void refreshTemplateLibraryList();
+    void refreshPaperSpecSelector();
     void refreshLayerList();
     void refreshElementList();
     void refreshTablePropertyEditor();
     void refreshPreview();
     void refreshAll();
+    void applySelectedPaperSpec();
     void notifySettingsChanged();
     bool selectLayer(const QString& layerId);
     bool selectElement(const QString& elementId);
@@ -86,6 +98,8 @@ private:
     bool currentSelectionIsTable() const;
     bool loadTemplateDocumentFromFile(const QString& path, sleekpr::core::TemplateDocument* document, QString* errorMessage) const;
     void applyImportedTemplateDocument(const sleekpr::core::TemplateDocument& document);
+    QString paperSpecFilePath() const;
+    QSizeF currentPaperSizeMm() const;
     QString currentLayerId() const;
     QString currentElementId() const;
     sleekpr::core::TemplateLayer* currentLayer();
@@ -102,6 +116,7 @@ private:
     SettingsChangedCallback m_onSettingsChanged;
     QString m_templateLibraryDirectoryPath;
     QString m_templateKey = QStringLiteral("default");
+    QComboBox* m_paperSpecCombo = nullptr;
     QLineEdit* m_templateLibraryNameEdit = nullptr;
     QListWidget* m_templateLibraryList = nullptr;
     QListWidget* m_layerList = nullptr;
