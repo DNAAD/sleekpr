@@ -34,6 +34,7 @@ public:
     explicit TemplateDesignerWindow(
         sleekpr::core::PrintClientSettings settings,
         SettingsChangedCallback onSettingsChanged,
+        QString templateLibraryDirectoryPath = QString(),
         QWidget* parent = nullptr);
 
     bool exportTemplateToFile(const QString& path) const;
@@ -59,6 +60,8 @@ private:
     void moveCurrentElementDown();
     void saveTemplateVersion();
     void restoreActiveTemplateVersion();
+    void saveCurrentTemplateToLibrary();
+    void loadCurrentTemplateFromLibrary();
     void importTemplateWithDialog();
     void exportTemplateWithDialog();
     void saveDeviceProfile();
@@ -84,6 +87,7 @@ private:
 
     sleekpr::core::PrintClientSettings m_settings;
     SettingsChangedCallback m_onSettingsChanged;
+    QString m_templateLibraryDirectoryPath;
     QString m_templateKey = QStringLiteral("default");
     QListWidget* m_layerList = nullptr;
     QListWidget* m_elementList = nullptr;

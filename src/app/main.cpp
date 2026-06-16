@@ -10,6 +10,7 @@
 #include <QApplication>
 #include <QDebug>
 #include <QDir>
+#include <QFileInfo>
 #include <QHostAddress>
 #include <QMenu>
 #include <QMessageBox>
@@ -28,6 +29,12 @@ QString settingsPath()
     // 设置文件放在系统应用数据目录，避免写入安装目录造成权限问题。
     QDir().mkpath(dataDir);
     return QDir(dataDir).filePath("settings.json");
+}
+
+QString templateLibraryDirectoryPath(const QString& settingsFilePath)
+{
+    // Qt 设计器和本地 HTTP 模板库共用同一目录，避免出现两个互不相见的模板来源。
+    return QFileInfo(settingsFilePath).absoluteDir().filePath(QStringLiteral("templates"));
 }
 
 } // 匿名命名空间
@@ -60,7 +67,8 @@ int main(int argc, char* argv[])
                     return;
                 }
                 previewWindow.refreshFromSettings(settings);
-            });
+            },
+            templateLibraryDirectoryPath(settingsFilePath));
         sleekpr::app::showAndActivateWindow(*templateDesignerWindow);
     });
 

@@ -11,6 +11,7 @@
 #include "sleekpr/core/templates/TemplateDocumentEditModel.h"
 #include "sleekpr/core/templates/TemplateDocumentJson.h"
 #include "sleekpr/core/templates/TemplateDocumentRenderer.h"
+#include "sleekpr/core/templates/TemplateLibraryStore.h"
 #include "sleekpr/infrastructure/preview/LabelPreviewImageRenderer.h"
 #include "sleekpr/infrastructure/preview/PreviewLabelFactory.h"
 
@@ -170,10 +171,12 @@ sleekpr::core::TemplateElement createDefaultElement(sleekpr::core::TemplateEleme
 TemplateDesignerWindow::TemplateDesignerWindow(
     sleekpr::core::PrintClientSettings settings,
     SettingsChangedCallback onSettingsChanged,
+    QString templateLibraryDirectoryPath,
     QWidget* parent)
     : QWidget(parent)
     , m_settings(std::move(settings))
     , m_onSettingsChanged(std::move(onSettingsChanged))
+    , m_templateLibraryDirectoryPath(std::move(templateLibraryDirectoryPath))
 {
     setWindowTitle(QString::fromUtf8("sleekpr 模板设计器"));
     resize(1180, 680);
@@ -245,6 +248,9 @@ void TemplateDesignerWindow::buildUi()
     auto* importTemplateButton = createButton(QString::fromUtf8("导入模板"), QStringLiteral("importTemplateButton"), layerPanel);
     auto* exportTemplateButton = createButton(QString::fromUtf8("导出模板"), QStringLiteral("exportTemplateButton"), layerPanel);
 
+    auto* saveToLibraryButton = createButton(QString::fromUtf8("保存到模板库"), QStringLiteral("saveTemplateToLibraryButton"), layerPanel);
+    auto* loadFromLibraryButton = createButton(QString::fromUtf8("从模板库加载"), QStringLiteral("loadTemplateFromLibraryButton"), layerPanel);
+
     m_layerList = new QListWidget(layerPanel);
     m_layerList->setObjectName(QStringLiteral("templateLayerList"));
 
@@ -263,6 +269,8 @@ void TemplateDesignerWindow::buildUi()
     documentButtonGrid->addWidget(restoreVersionButton, 0, 1);
     documentButtonGrid->addWidget(importTemplateButton, 1, 0);
     documentButtonGrid->addWidget(exportTemplateButton, 1, 1);
+    documentButtonGrid->addWidget(saveToLibraryButton, 2, 0);
+    documentButtonGrid->addWidget(loadFromLibraryButton, 2, 1);
 
     layerLayout->addWidget(titleLabel);
     layerLayout->addWidget(m_layerList, 1);
@@ -364,6 +372,8 @@ void TemplateDesignerWindow::buildUi()
     connect(restoreVersionButton, &QPushButton::clicked, this, [this] { restoreActiveTemplateVersion(); });
     connect(importTemplateButton, &QPushButton::clicked, this, [this] { importTemplateWithDialog(); });
     connect(exportTemplateButton, &QPushButton::clicked, this, [this] { exportTemplateWithDialog(); });
+    connect(saveToLibraryButton, &QPushButton::clicked, this, [this] { saveCurrentTemplateToLibrary(); });
+    connect(loadFromLibraryButton, &QPushButton::clicked, this, [this] { loadCurrentTemplateFromLibrary(); });
     connect(addFixedTextButton, &QPushButton::clicked, this, [this] { addFixedTextElement(); });
     connect(addBoundFieldButton, &QPushButton::clicked, this, [this] { addBoundFieldElement(); });
     connect(addQrCodeButton, &QPushButton::clicked, this, [this] { addQrCodeElement(); });
@@ -645,6 +655,46 @@ void TemplateDesignerWindow::restoreActiveTemplateVersion()
     }
 
     m_statusLabel->setText(QString::fromUtf8("没有可恢复的模板版本"));
+}
+
+void TemplateDesignerWindow::saveCurrentTemplateToLibrary()
+{
+    ensureCurrentTemplateDocument();
+    if (m_templateLibraryDirectoryPath.trimmed().isEmpty()) {
+        m_statusLabel->setText(QString::fromUtf8("未配置模板库目录"));
+        return;
+    }
+
+    QString errorMessage;
+    const auto& document = m_settings.templateDocuments[m_templateKey];
+    // 设计器只负责发起保存，模板 id 安全性、目录创建和原子写入都交给模板库存储层。
+    if (!sleekpr::core::TemplateLibraryStore(m_templateLibraryDirectoryPath).saveTemplate(document, &errorMessage)) {
+        m_statusLabel->setText(errorMessage.isEmpty() ? QString::fromUtf8("保存到模板库失败") : errorMessage);
+        return;
+    }
+
+    m_statusLabel->setText(QString::fromUtf8("已保存到模板库"));
+}
+
+void TemplateDesignerWindow::loadCurrentTemplateFromLibrary()
+{
+    if (m_templateLibraryDirectoryPath.trimmed().isEmpty()) {
+        m_statusLabel->setText(QString::fromUtf8("未配置模板库目录"));
+        return;
+    }
+
+    QString errorMessage;
+    const auto loadedDocument = sleekpr::core::TemplateLibraryStore(m_templateLibraryDirectoryPath)
+                                    .loadTemplate(QStringLiteral("template-") + m_templateKey, &errorMessage);
+    if (!loadedDocument.has_value()) {
+        m_statusLabel->setText(errorMessage.isEmpty() ? QString::fromUtf8("从模板库加载失败") : errorMessage);
+        return;
+    }
+
+    // 加载后仍写回当前 settings 模板槽位，保持旧设置结构和预览刷新链路兼容。
+    applyImportedTemplateDocument(loadedDocument.value());
+    m_statusLabel->setText(QString::fromUtf8("已从模板库加载"));
+    notifySettingsChanged();
 }
 
 void TemplateDesignerWindow::importTemplateWithDialog()

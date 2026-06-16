@@ -18,6 +18,7 @@
 #include "sleekpr/core/native/NativeDrawCommand.h"
 #include "sleekpr/core/settings/FileSettingsStore.h"
 #include "sleekpr/core/settings/TemplateElement.h"
+#include "sleekpr/core/templates/TemplateLibraryStore.h"
 
 using namespace sleekpr::app;
 using namespace sleekpr::core;
@@ -48,6 +49,7 @@ private slots:
     void templateDesignerWindowShowsDesignerPreview();
     void templateDesignerWindowSavesAndRestoresVersion();
     void templateDesignerWindowExportsAndImportsTemplateFile();
+    void templateDesignerWindowSavesAndLoadsTemplateLibraryDocument();
     void templateDesignerWindowSavesAndReplacesDeviceProfile();
     void settingsWindowHasTemplateDesignerEntry();
 };
@@ -602,6 +604,43 @@ void AppTests::templateDesignerWindowExportsAndImportsTemplateFile()
     QVERIFY(source.exportTemplateToFile(exportPath));
     QVERIFY(QFile::exists(exportPath));
     QVERIFY(target.importTemplateFromFile(exportPath));
+
+    QCOMPARE(targetLayerList->count(), 2);
+    QCOMPARE(importedSettings.templateDocuments.value("default").layers.size(), 2);
+}
+
+void AppTests::templateDesignerWindowSavesAndLoadsTemplateLibraryDocument()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const auto templateDirectoryPath = dir.filePath(QStringLiteral("templates"));
+    TemplateDesignerWindow source(PrintClientSettings{}, nullptr, templateDirectoryPath);
+
+    auto* addLayerButton = source.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* saveLibraryButton = source.findChild<QPushButton*>(QStringLiteral("saveTemplateToLibraryButton"));
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(saveLibraryButton != nullptr);
+
+    addLayerButton->click();
+    saveLibraryButton->click();
+
+    sleekpr::core::TemplateLibraryStore store(templateDirectoryPath);
+    const auto savedTemplate = store.loadTemplate(QStringLiteral("template-default"));
+    QVERIFY(savedTemplate.has_value());
+    QCOMPARE(savedTemplate->layers.size(), 2);
+
+    PrintClientSettings importedSettings;
+    TemplateDesignerWindow target(PrintClientSettings{}, [&importedSettings](const PrintClientSettings& nextSettings) {
+        importedSettings = nextSettings;
+    }, templateDirectoryPath);
+
+    auto* loadLibraryButton = target.findChild<QPushButton*>(QStringLiteral("loadTemplateFromLibraryButton"));
+    auto* targetLayerList = target.findChild<QListWidget*>(QStringLiteral("templateLayerList"));
+    QVERIFY(loadLibraryButton != nullptr);
+    QVERIFY(targetLayerList != nullptr);
+
+    loadLibraryButton->click();
 
     QCOMPARE(targetLayerList->count(), 2);
     QCOMPARE(importedSettings.templateDocuments.value("default").layers.size(), 2);
