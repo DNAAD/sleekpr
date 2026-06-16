@@ -34,6 +34,7 @@
 #include "sleekpr/core/templates/TemplateDocumentJson.h"
 #include "sleekpr/core/templates/TemplateLibraryStore.h"
 #include "sleekpr/core/templates/TemplateDocumentRenderer.h"
+#include "sleekpr/core/templates/TemplateRenderContextBuilder.h"
 #include "sleekpr/infrastructure/preview/LabelPreviewImageRenderer.h"
 #include "sleekpr/infrastructure/preview/LabelPreviewService.h"
 #include "sleekpr/infrastructure/preview/PreviewLabelFactory.h"
@@ -69,6 +70,8 @@ private slots:
     void fieldSchemaJsonRejectsInvalidFieldDefinitions();
     void fieldPresetJsonPersistsReusableValues();
     void fieldPresetJsonRejectsInvalidPreset();
+    void templateRenderContextBuilderMergesValuesByPriority();
+    void templateRenderContextBuilderReportsMissingRequiredFields();
     void templateDocumentJsonPersistsPaperMetadata();
     void templateDocumentImportRequiresPaperSpecIdForGenericTemplates();
     void templateDocumentJsonPersistsFieldSchema();
@@ -955,6 +958,56 @@ void CoreTests::fieldPresetJsonRejectsInvalidPreset()
 
     QVERIFY(!FieldPresetJson::validate(invalidValues, &errorMessage));
     QVERIFY(errorMessage.contains(QString::fromUtf8("字段值")));
+}
+
+void CoreTests::templateRenderContextBuilderMergesValuesByPriority()
+{
+    QList<FieldDefinition> fields;
+
+    FieldDefinition customerName;
+    customerName.key = QStringLiteral("customerName");
+    customerName.displayName = QString::fromUtf8("客户名称");
+    customerName.defaultValue = QString::fromUtf8("默认客户");
+    fields.append(customerName);
+
+    FieldDefinition footerText;
+    footerText.key = QStringLiteral("footerText");
+    footerText.displayName = QString::fromUtf8("底部备注");
+    footerText.defaultValue = QString::fromUtf8("默认备注");
+    fields.append(footerText);
+
+    FieldDefinition operatorName;
+    operatorName.key = QStringLiteral("operatorName");
+    operatorName.displayName = QString::fromUtf8("打印员");
+    operatorName.defaultValue = QString::fromUtf8("系统");
+    fields.append(operatorName);
+
+    QJsonObject presetValues;
+    presetValues["customerName"] = QString::fromUtf8("方案客户");
+    presetValues["footerText"] = QString::fromUtf8("方案备注");
+
+    QJsonObject requestValues;
+    requestValues["customerName"] = QString::fromUtf8("本次客户");
+
+    const auto context = TemplateRenderContextBuilder::build(fields, presetValues, requestValues);
+    QCOMPARE(context.values["customerName"].toString(), QString::fromUtf8("本次客户"));
+    QCOMPARE(context.values["footerText"].toString(), QString::fromUtf8("方案备注"));
+    QCOMPARE(context.values["operatorName"].toString(), QString::fromUtf8("系统"));
+    QVERIFY(!context.hasMissingRequiredFields());
+}
+
+void CoreTests::templateRenderContextBuilderReportsMissingRequiredFields()
+{
+    QList<FieldDefinition> fields;
+    FieldDefinition customerName;
+    customerName.key = QStringLiteral("customerName");
+    customerName.displayName = QString::fromUtf8("客户名称");
+    customerName.required = true;
+    fields.append(customerName);
+
+    const auto context = TemplateRenderContextBuilder::build(fields, QJsonObject{}, QJsonObject{});
+    QVERIFY(context.hasMissingRequiredFields());
+    QCOMPARE(context.missingRequiredFieldNames, QStringList{QString::fromUtf8("客户名称")});
 }
 
 void CoreTests::templateDocumentJsonPersistsPaperMetadata()
