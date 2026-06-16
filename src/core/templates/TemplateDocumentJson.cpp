@@ -1,6 +1,7 @@
 #include "sleekpr/core/templates/TemplateDocumentJson.h"
 
 #include "sleekpr/core/templates/FieldSchemaJson.h"
+#include "sleekpr/core/templates/TableElementJson.h"
 
 #include <QJsonArray>
 #include <QSet>
@@ -129,6 +130,24 @@ QList<TemplateElement> elementsFromJson(const QJsonArray& json, const QString& p
     return result;
 }
 
+QJsonArray tablesToJson(const QList<TableElement>& tables)
+{
+    QJsonArray result;
+    for (const auto& table : tables) {
+        result.append(TableElementJson::toJson(table));
+    }
+    return result;
+}
+
+QList<TableElement> tablesFromJson(const QJsonArray& json, const QString& parentLayerId = QString())
+{
+    QList<TableElement> result;
+    for (const auto& value : json) {
+        result.append(TableElementJson::fromJson(value.toObject(), parentLayerId));
+    }
+    return result;
+}
+
 QJsonObject layerToJson(const TemplateLayer& layer)
 {
     QJsonObject json;
@@ -137,6 +156,7 @@ QJsonObject layerToJson(const TemplateLayer& layer)
     json["visible"] = layer.visible;
     json["locked"] = layer.locked;
     json["elements"] = elementsToJson(layer.elements);
+    json["tables"] = tablesToJson(layer.tables);
     return json;
 }
 
@@ -148,6 +168,7 @@ TemplateLayer layerFromJson(const QJsonObject& json)
     layer.visible = json["visible"].toBool(layer.visible);
     layer.locked = json["locked"].toBool(layer.locked);
     layer.elements = elementsFromJson(json["elements"].toArray(), layer.id);
+    layer.tables = tablesFromJson(json["tables"].toArray(), layer.id);
     return layer;
 }
 
@@ -275,8 +296,8 @@ bool validateLayerCollection(
     bool requireAnyElement = false)
 {
     QSet<QString> layerIds;
-    QSet<QString> elementIds;
-    int totalElementCount = 0;
+    QSet<QString> templateItemIds;
+    int totalItemCount = 0;
 
     for (const auto& layerValue : layers) {
         if (!layerValue.isObject()) {
@@ -306,7 +327,7 @@ bool validateLayerCollection(
         }
 
         for (const auto& elementValue : layer["elements"].toArray()) {
-            ++totalElementCount;
+            ++totalItemCount;
             if (!elementValue.isObject()) {
                 setError(errorMessage, QStringLiteral("%1元素必须是对象：%2").arg(context, normalizedLayerId));
                 return false;
@@ -328,11 +349,11 @@ bool validateLayerCollection(
                 setError(errorMessage, QStringLiteral("%1元素 id 不能包含首尾空白：%2").arg(context, normalizedElementId));
                 return false;
             }
-            if (elementIds.contains(normalizedElementId)) {
+            if (templateItemIds.contains(normalizedElementId)) {
                 setError(errorMessage, QStringLiteral("%1元素 id 重复：%2").arg(context, normalizedElementId));
                 return false;
             }
-            elementIds.insert(normalizedElementId);
+            templateItemIds.insert(normalizedElementId);
 
             const auto elementLayerId = element["layerId"].toString();
             const auto normalizedElementLayerId = normalizedIdentifier(elementLayerId);
@@ -345,9 +366,34 @@ bool validateLayerCollection(
                 return false;
             }
         }
+
+        if (layer.contains("tables") && !layer["tables"].isArray()) {
+            setError(errorMessage, QStringLiteral("%1图层 tables 必须是数组：%2").arg(context, normalizedLayerId));
+            return false;
+        }
+
+        for (const auto& tableValue : layer["tables"].toArray()) {
+            ++totalItemCount;
+            if (!tableValue.isObject()) {
+                setError(errorMessage, QStringLiteral("%1表格必须是对象：%2").arg(context, normalizedLayerId));
+                return false;
+            }
+
+            const auto table = tableValue.toObject();
+            if (!TableElementJson::validate(table, normalizedLayerId, errorMessage)) {
+                return false;
+            }
+
+            const auto tableId = normalizedIdentifier(table["id"].toString());
+            if (templateItemIds.contains(tableId)) {
+                setError(errorMessage, QStringLiteral("%1表格 id 重复：%2").arg(context, tableId));
+                return false;
+            }
+            templateItemIds.insert(tableId);
+        }
     }
 
-    if (requireAnyElement && totalElementCount == 0) {
+    if (requireAnyElement && totalItemCount == 0) {
         setError(errorMessage, QStringLiteral("%1至少需要一个元素").arg(context));
         return false;
     }

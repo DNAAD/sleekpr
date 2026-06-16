@@ -1,6 +1,7 @@
 #include "sleekpr/core/templates/TemplateDocumentRenderer.h"
 
 #include "sleekpr/core/native/NativeLabelDrawingPlanner.h"
+#include "sleekpr/core/templates/TableElementRenderer.h"
 
 #include <algorithm>
 
@@ -48,6 +49,37 @@ QList<TemplateElement> visibleElementsInRenderOrder(const TemplateDocument& docu
     return result;
 }
 
+QList<TableElement> visibleTablesInRenderOrder(const TemplateDocument& document)
+{
+    QList<TableElement> result;
+    int renderZIndex = 0;
+
+    for (const auto& layer : document.layers) {
+        if (!layer.visible) {
+            continue;
+        }
+
+        QList<TableElement> layerTables;
+        for (const auto& table : layer.tables) {
+            if (table.visible) {
+                layerTables.append(table);
+            }
+        }
+
+        // 表格和普通元素分开追加，但表格内部仍保持图层顺序与 zIndex 稳定排序。
+        std::stable_sort(layerTables.begin(), layerTables.end(), [](const TableElement& left, const TableElement& right) {
+            return left.zIndex < right.zIndex;
+        });
+
+        for (auto table : layerTables) {
+            table.zIndex = renderZIndex++;
+            result.append(table);
+        }
+    }
+
+    return result;
+}
+
 void applyDeviceScale(NativeLabelDrawingPlan& drawingPlan, const DeviceProfile& profile)
 {
     const auto scaleX = usableScale(profile.scaleX);
@@ -70,6 +102,16 @@ NativeLabelDrawingPlan TemplateDocumentRenderer::render(
     const LabelOffset& labelOffset,
     const DeviceProfile& profile) const
 {
+    return render(document, labelPlan, labelOffset, profile, TemplateRenderContext{});
+}
+
+NativeLabelDrawingPlan TemplateDocumentRenderer::render(
+    const TemplateDocument& document,
+    const LabelRenderPlan& labelPlan,
+    const LabelOffset& labelOffset,
+    const DeviceProfile& profile,
+    const TemplateRenderContext& context) const
+{
     NativeLabelDrawingPlan drawingPlan;
     drawingPlan.paperSize = labelPlan.paperSize;
     drawingPlan.renderDpi = usableRenderDpi(profile.dpi);
@@ -78,6 +120,16 @@ NativeLabelDrawingPlan TemplateDocumentRenderer::render(
     const auto offsetX = labelOffset.x + profile.offsetX;
     const auto offsetY = labelOffset.y + profile.offsetY;
     drawingPlan.commands = NativeLabelDrawingPlanner::appendTemplateElements({}, labelPlan, renderElements, offsetX, offsetY);
+
+    const auto renderTables = visibleTablesInRenderOrder(document);
+    for (const auto& table : renderTables) {
+        const auto tableResult = TableElementRenderer::renderSinglePage(table, context, offsetX, offsetY);
+        if (!tableResult.success()) {
+            // 当前渲染计划没有错误通道；表格入口校验会在后续打印流程统一阻止异常模板。
+            continue;
+        }
+        drawingPlan.commands.append(tableResult.commands);
+    }
 
     applyDeviceScale(drawingPlan, profile);
     return drawingPlan;

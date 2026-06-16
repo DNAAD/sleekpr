@@ -2,6 +2,7 @@
 
 #include "sleekpr/core/settings/TemplateElement.h"
 #include "sleekpr/core/templates/FieldSchema.h"
+#include "sleekpr/core/templates/TableElement.h"
 
 #include <QList>
 #include <QString>
@@ -16,6 +17,9 @@ struct TemplateLayer
     bool visible = true;
     bool locked = false;
     QList<TemplateElement> elements;
+
+    // 表格是一级模板元素，不能拆成多个普通文本框保存。
+    QList<TableElement> tables;
 };
 
 struct TemplateVersion
