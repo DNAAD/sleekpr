@@ -62,9 +62,12 @@ private:
     void restoreActiveTemplateVersion();
     void saveCurrentTemplateToLibrary();
     void loadCurrentTemplateFromLibrary();
+    void loadSelectedTemplateFromLibrary();
+    void loadTemplateFromLibraryById(const QString& templateId);
     void importTemplateWithDialog();
     void exportTemplateWithDialog();
     void saveDeviceProfile();
+    void refreshTemplateLibraryList();
     void refreshLayerList();
     void refreshElementList();
     void refreshPreview();
@@ -89,6 +92,7 @@ private:
     SettingsChangedCallback m_onSettingsChanged;
     QString m_templateLibraryDirectoryPath;
     QString m_templateKey = QStringLiteral("default");
+    QListWidget* m_templateLibraryList = nullptr;
     QListWidget* m_layerList = nullptr;
     QListWidget* m_elementList = nullptr;
     TemplatePreviewLabel* m_previewLabel = nullptr;
