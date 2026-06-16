@@ -13,6 +13,7 @@
 #include "sleekpr/core/labels/LabelItem.h"
 #include "sleekpr/core/labels/LabelRenderPlanner.h"
 #include "sleekpr/core/native/NativeLabelDrawingPlanner.h"
+#include "sleekpr/core/native/NativePrintDrawingPlan.h"
 #include "sleekpr/core/native/NativePlanJsonSerializer.h"
 #include "sleekpr/core/printing/LabelPaperSize.h"
 #include "sleekpr/core/printing/PrintUnitConverter.h"
@@ -51,6 +52,7 @@ class CoreTests final : public QObject
 private slots:
     void labelPaperSizeCreates80x30();
     void printUnitConverterMatchesDotnetBehavior();
+    void nativePrintDrawingPlanWrapsSinglePagePlan();
     void settingsStoreReturnsDefaultsAndPersistsValues();
     void settingsStorePersistsTemplateElements();
     void templateDocumentJsonPersistsLayersVersionsAndProfiles();
@@ -128,6 +130,33 @@ void CoreTests::printUnitConverterMatchesDotnetBehavior()
     QCOMPARE(converter.millimetersToPixels(80.0), 945);
     QCOMPARE(converter.millimetersToPixels(30.0), 354);
     QCOMPARE(converter.millimetersToPixels(1.0), 12);
+}
+
+void CoreTests::nativePrintDrawingPlanWrapsSinglePagePlan()
+{
+    NativeLabelDrawingPlan labelPlan;
+    labelPlan.paperSize = LabelPaperSize::create80x30();
+    labelPlan.renderDpi = 203.0;
+    NativeDrawCommand command;
+    command.type = NativeDrawCommandType::Text;
+    command.x = 1.0;
+    command.y = 2.0;
+    command.width = 10.0;
+    command.height = 3.0;
+    command.text = QStringLiteral("A");
+    command.fontSizePt = 4.0;
+    command.elementKey = QStringLiteral("title");
+    labelPlan.commands.append(command);
+
+    const auto printPlan = NativePrintDrawingPlan::fromSinglePage(labelPlan);
+    QCOMPARE(printPlan.pages.size(), 1);
+    QCOMPARE(printPlan.pages.first().pageNumber, 1);
+    QCOMPARE(printPlan.pages.first().commands.first().elementKey, QString("title"));
+
+    const auto firstPage = printPlan.firstPageAsLabelPlan();
+    QCOMPARE(firstPage.renderDpi, 203.0);
+    QCOMPARE(firstPage.commands.size(), 1);
+    QCOMPARE(firstPage.commands.first().text, QString("A"));
 }
 
 void CoreTests::settingsStoreReturnsDefaultsAndPersistsValues()
