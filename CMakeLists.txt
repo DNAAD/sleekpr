@@ -29,6 +29,7 @@ add_library(sleekpr_core
     src/core/templates/FieldPresetJson.cpp
     src/core/templates/FieldSchemaJson.cpp
     src/core/templates/PaperSpecJson.cpp
+    src/core/templates/PaperSpecStore.cpp
     src/core/templates/TableElementJson.cpp
     src/core/templates/TableElementRenderer.cpp
     src/core/templates/TemplateDocumentEditModel.cpp

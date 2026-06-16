@@ -9,6 +9,8 @@
 #include "sleekpr/core/settings/PrintClientSettingsJson.h"
 #include "sleekpr/core/settings/PrinterSelectionResolver.h"
 #include "sleekpr/core/templates/DeviceProfileResolver.h"
+#include "sleekpr/core/templates/PaperSpecJson.h"
+#include "sleekpr/core/templates/PaperSpecStore.h"
 #include "sleekpr/core/templates/TemplateDocumentJson.h"
 #include "sleekpr/core/templates/TemplateDocumentRenderer.h"
 #include "sleekpr/core/templates/TemplateLibraryStore.h"
@@ -39,6 +41,9 @@ using sleekpr::core::PrintClientSettingsJson;
 using sleekpr::core::PrinterSelectionResolver;
 using sleekpr::core::PrivateNetworkAccessPolicy;
 using sleekpr::core::DeviceProfileResolver;
+using sleekpr::core::PaperSpec;
+using sleekpr::core::PaperSpecJson;
+using sleekpr::core::PaperSpecStore;
 using sleekpr::core::TemplateDocument;
 using sleekpr::core::TemplateDocumentJson;
 using sleekpr::core::TemplateDocumentRenderer;
@@ -265,6 +270,18 @@ TemplateLibraryStore templateLibraryStoreForSettings(const QString& settingsPath
     return TemplateLibraryStore(templateLibraryDirectoryForSettings(settingsPath));
 }
 
+QString paperSpecFilePathForSettings(const QString& settingsPath)
+{
+    // 纸张规格和 settings.json 同级，便于把整套客户端配置一起备份或迁移。
+    const QFileInfo settingsFile(settingsPath);
+    return settingsFile.absoluteDir().filePath(QStringLiteral("paper-specs.json"));
+}
+
+PaperSpecStore paperSpecStoreForSettings(const QString& settingsPath)
+{
+    return PaperSpecStore(paperSpecFilePathForSettings(settingsPath));
+}
+
 QString templateIdFromPath(const QString& path)
 {
     // 模板 id 直接映射到文件名，路由层先挡掉路径分隔符，避免把路径语义泄漏给存储层。
@@ -278,6 +295,21 @@ QString templateIdFromPath(const QString& path)
         return {};
     }
     return templateId;
+}
+
+QString paperSpecIdFromPath(const QString& path)
+{
+    // 路由层只处理 URL 形状，id 的完整安全校验由 PaperSpecStore 统一负责。
+    const auto prefix = QStringLiteral("/paper-specs/");
+    if (!path.startsWith(prefix)) {
+        return {};
+    }
+
+    const auto paperSpecId = path.mid(prefix.size()).trimmed();
+    if (paperSpecId.isEmpty() || paperSpecId.contains(QLatin1Char('/')) || paperSpecId.contains(QLatin1Char('\\'))) {
+        return {};
+    }
+    return paperSpecId;
 }
 
 QJsonObject templateSummaryJson(const TemplateDocument& document)
@@ -305,6 +337,48 @@ QJsonArray templateSummaryListJson(const TemplateLibraryStore& store)
         templates.append(templateSummaryJson(document.value()));
     }
     return templates;
+}
+
+std::optional<QJsonArray> paperSpecListJson(const PaperSpecStore& store, QString* errorMessage)
+{
+    QJsonArray paperSpecs;
+    QString storeError;
+    const auto specs = store.paperSpecs(&storeError);
+    if (!storeError.isEmpty()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = storeError;
+        }
+        return std::nullopt;
+    }
+
+    for (const auto& spec : specs) {
+        paperSpecs.append(PaperSpecJson::toJson(spec));
+    }
+    return paperSpecs;
+}
+
+QJsonObject paperSpecObjectFromRequest(const QJsonObject& root)
+{
+    // 管理界面可提交裸纸张规格对象，也可提交 { paperSpec: ... } 包装对象。
+    if (root.contains("paperSpec") && root["paperSpec"].isObject()) {
+        return root["paperSpec"].toObject();
+    }
+    return root;
+}
+
+std::optional<PaperSpec> validatedPaperSpecFromRequest(
+    const QJsonObject& root,
+    QString* errorMessage)
+{
+    const auto paperSpecObject = paperSpecObjectFromRequest(root);
+    QString validationError;
+    if (!PaperSpecJson::validate(paperSpecObject, &validationError)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = validationError;
+        }
+        return std::nullopt;
+    }
+    return PaperSpecJson::fromJson(paperSpecObject);
 }
 
 QJsonObject templateObjectFromRequest(const QJsonObject& root)
@@ -462,6 +536,59 @@ LocalHttpResponse LocalHttpRouter::route(const LocalHttpRequest& request) const
     if (path == "/printers" && method == "GET") {
         // 打印机发现依赖本机系统环境，必须留在 HTTP/应用边界；核心层只接收已选择的打印机名。
         return jsonResponse(okEnvelope(printersToJson(settings)), 200, extraHeaders);
+    }
+
+    const auto routePaperSpecId = paperSpecIdFromPath(path);
+    if (path == "/paper-specs" && method == "GET") {
+        const auto store = paperSpecStoreForSettings(m_settingsPath);
+        QString errorMessage;
+        const auto paperSpecs = paperSpecListJson(store, &errorMessage);
+        if (!paperSpecs.has_value()) {
+            return jsonResponse(failEnvelope("PAPER_SPEC_STORE_ERROR", errorMessage), 500, extraHeaders);
+        }
+
+        return jsonResponse(okEnvelope(QJsonObject{
+            {"paperSpecs", paperSpecs.value()},
+        }), 200, extraHeaders);
+    }
+
+    if (!routePaperSpecId.isEmpty() && method == "GET") {
+        const auto store = paperSpecStoreForSettings(m_settingsPath);
+        QString errorMessage;
+        const auto spec = store.loadPaperSpec(routePaperSpecId, &errorMessage);
+        if (!spec.has_value()) {
+            return jsonResponse(failEnvelope("PAPER_SPEC_NOT_FOUND", QString::fromUtf8("未找到指定纸张规格。")), 404, extraHeaders);
+        }
+
+        return jsonResponse(okEnvelope(QJsonObject{
+            {"paperSpec", PaperSpecJson::toJson(spec.value())},
+        }), 200, extraHeaders);
+    }
+
+    if (!routePaperSpecId.isEmpty() && method == "PUT") {
+        QJsonParseError parseError;
+        const auto parsedDocument = QJsonDocument::fromJson(request.body, &parseError);
+        if (parseError.error != QJsonParseError::NoError || !parsedDocument.isObject()) {
+            return jsonResponse(failEnvelope("BAD_REQUEST", "Invalid paper spec JSON"), 400, extraHeaders);
+        }
+
+        QString errorMessage;
+        const auto spec = validatedPaperSpecFromRequest(parsedDocument.object(), &errorMessage);
+        if (!spec.has_value()) {
+            return jsonResponse(failEnvelope("BAD_REQUEST", errorMessage), 400, extraHeaders);
+        }
+        if (spec->id != routePaperSpecId) {
+            return jsonResponse(failEnvelope("BAD_REQUEST", QString::fromUtf8("纸张规格 id 与路径不一致。")), 400, extraHeaders);
+        }
+
+        const auto store = paperSpecStoreForSettings(m_settingsPath);
+        if (!store.savePaperSpec(spec.value(), &errorMessage)) {
+            return jsonResponse(failEnvelope("SAVE_FAILED", errorMessage), 400, extraHeaders);
+        }
+
+        return jsonResponse(okEnvelope(QJsonObject{
+            {"paperSpec", PaperSpecJson::toJson(spec.value())},
+        }), 200, extraHeaders);
     }
 
     const auto routeTemplateId = templateIdFromPath(path);

@@ -29,6 +29,7 @@
 #include "sleekpr/core/templates/FieldPresetJson.h"
 #include "sleekpr/core/templates/FieldSchemaJson.h"
 #include "sleekpr/core/templates/PaperSpecJson.h"
+#include "sleekpr/core/templates/PaperSpecStore.h"
 #include "sleekpr/core/templates/TemplateDocument.h"
 #include "sleekpr/core/templates/TemplateDocumentEditModel.h"
 #include "sleekpr/core/templates/TemplateDocumentFactory.h"
@@ -71,6 +72,8 @@ private slots:
     void settingsJsonKeepsOldTemplateElementsWhenTemplateDocumentsMissing();
     void paperSpecJsonPersistsLabelAndSheetGrid();
     void paperSpecJsonRejectsInvalidDimensions();
+    void paperSpecStoreSavesListsLoadsAndRemovesSpecs();
+    void paperSpecStoreReportsInvalidDocument();
     void fieldSchemaJsonPersistsCustomFieldDefinitions();
     void fieldSchemaJsonRejectsInvalidFieldDefinitions();
     void fieldPresetJsonPersistsReusableValues();
@@ -930,6 +933,71 @@ void CoreTests::paperSpecJsonRejectsInvalidDimensions()
     QString errorMessage;
     QVERIFY(!PaperSpecJson::validate(json, &errorMessage));
     QVERIFY(errorMessage.contains(QString::fromUtf8("宽高")));
+}
+
+void CoreTests::paperSpecStoreSavesListsLoadsAndRemovesSpecs()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    PaperSpec label;
+    label.id = QStringLiteral("label-80x30");
+    label.name = QString::fromUtf8("80x30 标签");
+    label.widthMm = 80.0;
+    label.heightMm = 30.0;
+    label.defaultDpi = 203.0;
+
+    PaperSpec sheet;
+    sheet.id = QStringLiteral("a4-sheet");
+    sheet.name = QString::fromUtf8("A4 多列标签纸");
+    sheet.kind = PaperSpecKind::Sheet;
+    sheet.widthMm = 210.0;
+    sheet.heightMm = 297.0;
+    sheet.labelGrid.enabled = true;
+    sheet.labelGrid.rows = 10;
+    sheet.labelGrid.columns = 3;
+    sheet.labelGrid.horizontalGapMm = 2.0;
+    sheet.labelGrid.verticalGapMm = 3.0;
+
+    PaperSpecStore store(dir.filePath(QStringLiteral("paper-specs.json")));
+    QString errorMessage;
+    QVERIFY2(store.savePaperSpec(label, &errorMessage), qPrintable(errorMessage));
+    QVERIFY2(store.savePaperSpec(sheet, &errorMessage), qPrintable(errorMessage));
+
+    QCOMPARE(store.paperSpecIds(), QStringList({"a4-sheet", "label-80x30"}));
+
+    const auto loadedSheet = store.loadPaperSpec(QStringLiteral("a4-sheet"), &errorMessage);
+    QVERIFY2(loadedSheet.has_value(), qPrintable(errorMessage));
+    QCOMPARE(loadedSheet->kind, PaperSpecKind::Sheet);
+    QCOMPARE(loadedSheet->labelGrid.columns, 3);
+
+    label.name = QString::fromUtf8("80x30 标签更新");
+    QVERIFY2(store.savePaperSpec(label, &errorMessage), qPrintable(errorMessage));
+    const auto loadedLabel = PaperSpecStore(dir.filePath(QStringLiteral("paper-specs.json")))
+                                 .loadPaperSpec(QStringLiteral("label-80x30"), &errorMessage);
+    QVERIFY2(loadedLabel.has_value(), qPrintable(errorMessage));
+    QCOMPARE(loadedLabel->name, QString::fromUtf8("80x30 标签更新"));
+
+    QVERIFY2(store.removePaperSpec(QStringLiteral("a4-sheet"), &errorMessage), qPrintable(errorMessage));
+    QVERIFY(!store.loadPaperSpec(QStringLiteral("a4-sheet"), &errorMessage).has_value());
+    QCOMPARE(store.paperSpecIds(), QStringList({"label-80x30"}));
+}
+
+void CoreTests::paperSpecStoreReportsInvalidDocument()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    QFile file(dir.filePath(QStringLiteral("paper-specs.json")));
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    file.write(R"json({"schemaVersion":99,"paperSpecs":[]})json");
+    file.close();
+
+    QString errorMessage;
+    const auto specs = PaperSpecStore(dir.filePath(QStringLiteral("paper-specs.json"))).paperSpecs(&errorMessage);
+
+    QVERIFY(specs.isEmpty());
+    QVERIFY(errorMessage.contains(QStringLiteral("schemaVersion")));
 }
 
 void CoreTests::fieldSchemaJsonPersistsCustomFieldDefinitions()

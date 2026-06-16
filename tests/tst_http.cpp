@@ -9,6 +9,7 @@
 #include <algorithm>
 
 #include "sleekpr/core/settings/FileSettingsStore.h"
+#include "sleekpr/core/templates/PaperSpecJson.h"
 #include "sleekpr/core/templates/TemplateDocumentJson.h"
 #include "sleekpr/http/LocalHttpRouter.h"
 #include "sleekpr/http/LocalHttpServer.h"
@@ -110,6 +111,8 @@ private slots:
     void labelPrintEngineDispatchesPrintPlanPagesInOrder();
     void postPrintTagCreatesAcceptedJobAndUsesConfiguredPrinter();
     void templateLibraryRoutesPersistReadAndRemoveTemplates();
+    void paperSpecRoutesPersistReadAndListSpecs();
+    void paperSpecRoutesReportStoreReadErrors();
     void postPrintTemplateUsesRequestValuesAndConfiguredPrinter();
     void postPrintTemplateCanUseTemplateLibraryDocument();
     void postPrintTemplateRejectsMissingRequiredFields();
@@ -401,6 +404,79 @@ void HttpTests::templateLibraryRoutesPersistReadAndRemoveTemplates()
     const auto emptyListResponse = router.route(listRequest);
     const auto emptyListPayload = QJsonDocument::fromJson(emptyListResponse.body).object();
     QCOMPARE(emptyListPayload["data"].toObject()["templates"].toArray().size(), 0);
+}
+
+void HttpTests::paperSpecRoutesPersistReadAndListSpecs()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    PaperSpec spec;
+    spec.id = QStringLiteral("label-80x30");
+    spec.name = QString::fromUtf8("80x30 标签");
+    spec.widthMm = 80.0;
+    spec.heightMm = 30.0;
+    spec.defaultDpi = 203.0;
+
+    LocalHttpRouter router(dir.filePath(QStringLiteral("settings.json")));
+    LocalHttpRequest saveRequest;
+    saveRequest.method = "PUT";
+    saveRequest.path = "/paper-specs/label-80x30";
+    saveRequest.body = QJsonDocument(PaperSpecJson::toJson(spec)).toJson(QJsonDocument::Compact);
+
+    const auto saveResponse = router.route(saveRequest);
+    QCOMPARE(saveResponse.statusCode, 200);
+    const auto savePayload = QJsonDocument::fromJson(saveResponse.body).object();
+    QCOMPARE(savePayload["data"].toObject()["paperSpec"].toObject()["id"].toString(), QString("label-80x30"));
+
+    LocalHttpRequest listRequest;
+    listRequest.method = "GET";
+    listRequest.path = "/paper-specs";
+
+    const auto listResponse = router.route(listRequest);
+    QCOMPARE(listResponse.statusCode, 200);
+    const auto paperSpecs = QJsonDocument::fromJson(listResponse.body)
+                                .object()["data"].toObject()["paperSpecs"].toArray();
+    QCOMPARE(paperSpecs.size(), 1);
+    QCOMPARE(paperSpecs.first().toObject()["name"].toString(), QString::fromUtf8("80x30 标签"));
+
+    LocalHttpRequest readRequest;
+    readRequest.method = "GET";
+    readRequest.path = "/paper-specs/label-80x30";
+
+    const auto readResponse = router.route(readRequest);
+    QCOMPARE(readResponse.statusCode, 200);
+    const auto readPaperSpec = QJsonDocument::fromJson(readResponse.body)
+                                   .object()["data"].toObject()["paperSpec"].toObject();
+    QCOMPARE(readPaperSpec["defaultDpi"].toDouble(), 203.0);
+
+    spec.id = QStringLiteral("other-paper");
+    saveRequest.body = QJsonDocument(PaperSpecJson::toJson(spec)).toJson(QJsonDocument::Compact);
+    const auto mismatchedSaveResponse = router.route(saveRequest);
+    QCOMPARE(mismatchedSaveResponse.statusCode, 400);
+}
+
+void HttpTests::paperSpecRoutesReportStoreReadErrors()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    QFile file(dir.filePath(QStringLiteral("paper-specs.json")));
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    file.write(R"json({"schemaVersion":99,"paperSpecs":[]})json");
+    file.close();
+
+    LocalHttpRouter router(dir.filePath(QStringLiteral("settings.json")));
+    LocalHttpRequest request;
+    request.method = "GET";
+    request.path = "/paper-specs";
+
+    const auto response = router.route(request);
+    QCOMPARE(response.statusCode, 500);
+
+    const auto payload = QJsonDocument::fromJson(response.body).object();
+    QVERIFY(!payload["success"].toBool());
+    QCOMPARE(payload["code"].toString(), QString("PAPER_SPEC_STORE_ERROR"));
 }
 
 void HttpTests::postPrintTemplateUsesRequestValuesAndConfiguredPrinter()
