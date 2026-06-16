@@ -35,6 +35,7 @@
 #include "sleekpr/core/templates/TemplateLibraryStore.h"
 #include "sleekpr/core/templates/TemplateDocumentRenderer.h"
 #include "sleekpr/core/templates/TemplateRenderContextBuilder.h"
+#include "sleekpr/core/templates/TableElementJson.h"
 #include "sleekpr/infrastructure/preview/LabelPreviewImageRenderer.h"
 #include "sleekpr/infrastructure/preview/LabelPreviewService.h"
 #include "sleekpr/infrastructure/preview/PreviewLabelFactory.h"
@@ -72,6 +73,8 @@ private slots:
     void fieldPresetJsonRejectsInvalidPreset();
     void templateRenderContextBuilderMergesValuesByPriority();
     void templateRenderContextBuilderReportsMissingRequiredFields();
+    void tableElementJsonPersistsColumnsAndLayout();
+    void tableElementJsonRejectsInvalidTable();
     void templateDocumentJsonPersistsPaperMetadata();
     void templateDocumentImportRequiresPaperSpecIdForGenericTemplates();
     void templateDocumentJsonPersistsFieldSchema();
@@ -1008,6 +1011,70 @@ void CoreTests::templateRenderContextBuilderReportsMissingRequiredFields()
     const auto context = TemplateRenderContextBuilder::build(fields, QJsonObject{}, QJsonObject{});
     QVERIFY(context.hasMissingRequiredFields());
     QCOMPARE(context.missingRequiredFieldNames, QStringList{QString::fromUtf8("客户名称")});
+}
+
+void CoreTests::tableElementJsonPersistsColumnsAndLayout()
+{
+    TableElement table;
+    table.id = QStringLiteral("saleItems");
+    table.layerId = QStringLiteral("main");
+    table.displayName = QString::fromUtf8("销售明细");
+    table.x = 5.0;
+    table.y = 10.0;
+    table.width = 90.0;
+    table.height = 40.0;
+    table.dataPath = QStringLiteral("items");
+    table.headerRowHeightMm = 6.0;
+    table.detailRowHeightMm = 5.0;
+
+    TableColumn nameColumn;
+    nameColumn.id = QStringLiteral("name");
+    nameColumn.title = QString::fromUtf8("品名");
+    nameColumn.fieldKey = QStringLiteral("productName");
+    nameColumn.widthMm = 50.0;
+    table.columns.append(nameColumn);
+
+    TableColumn weightColumn;
+    weightColumn.id = QStringLiteral("weight");
+    weightColumn.title = QString::fromUtf8("重量");
+    weightColumn.fieldKey = QStringLiteral("weight");
+    weightColumn.widthMm = 20.0;
+    weightColumn.alignment = TableCellAlignment::Right;
+    table.columns.append(weightColumn);
+
+    const auto json = TableElementJson::toJson(table);
+    QString errorMessage;
+    QVERIFY(TableElementJson::validate(json, QStringLiteral("main"), &errorMessage));
+
+    const auto actual = TableElementJson::fromJson(json, QStringLiteral("main"));
+    QCOMPARE(actual.id, QString("saleItems"));
+    QCOMPARE(actual.dataPath, QString("items"));
+    QCOMPARE(actual.columns.size(), 2);
+    QCOMPARE(actual.columns[1].alignment, TableCellAlignment::Right);
+}
+
+void CoreTests::tableElementJsonRejectsInvalidTable()
+{
+    QJsonObject invalidTable;
+    invalidTable["id"] = QStringLiteral("saleItems");
+    invalidTable["dataPath"] = QStringLiteral("items");
+    invalidTable["width"] = 80.0;
+    invalidTable["height"] = 30.0;
+    invalidTable["columns"] = QJsonArray{};
+
+    QString errorMessage;
+    QVERIFY(!TableElementJson::validate(invalidTable, QStringLiteral("main"), &errorMessage));
+    QVERIFY(errorMessage.contains(QString::fromUtf8("列")));
+
+    QJsonObject invalidColumn;
+    invalidColumn["id"] = QStringLiteral("name");
+    invalidColumn["title"] = QString::fromUtf8("品名");
+    invalidColumn["fieldKey"] = QStringLiteral("productName");
+    invalidColumn["widthMm"] = 0.0;
+    invalidTable["columns"] = QJsonArray{invalidColumn};
+
+    QVERIFY(!TableElementJson::validate(invalidTable, QStringLiteral("main"), &errorMessage));
+    QVERIFY(errorMessage.contains(QString::fromUtf8("列宽")));
 }
 
 void CoreTests::templateDocumentJsonPersistsPaperMetadata()
