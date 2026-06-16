@@ -413,6 +413,7 @@ void CoreTests::templateDocumentEditModelManagesLayers()
 
     QVERIFY(TemplateDocumentEditModel::setLayerLocked(document, "base", true));
     QVERIFY(!TemplateDocumentEditModel::moveLayerUp(document, "base"));
+    QVERIFY(!TemplateDocumentEditModel::moveLayerDown(document, "base"));
     QCOMPARE(document.layers[1].id, QString("base"));
 }
 
