@@ -83,13 +83,64 @@ void appendCellCommands(QList<NativeDrawCommand>& commands,
     commands.append(textCommand(x, y, column.widthMm, height, text, column, cellKey));
 }
 
-int detailCapacity(const TableElement& table)
+int detailCapacity(const TableElement& table, bool drawHeader)
 {
-    const auto usableHeight = table.height - table.headerRowHeightMm;
+    const auto usableHeight = table.height - (drawHeader ? table.headerRowHeightMm : 0.0);
     if (usableHeight < 0.0 || table.detailRowHeightMm <= 0.0) {
         return -1;
     }
     return static_cast<int>(std::floor(usableHeight / table.detailRowHeightMm));
+}
+
+void appendHeaderCommands(QList<NativeDrawCommand>& commands,
+                          const TableElement& table,
+                          const QString& tableId,
+                          const QString& rowKey,
+                          double originX,
+                          double originY)
+{
+    double currentX = originX;
+    for (const auto& column : table.columns) {
+        appendCellCommands(
+            commands,
+            tableId,
+            rowKey,
+            column,
+            currentX,
+            originY,
+            table.headerRowHeightMm,
+            column.title,
+            table.drawBorders);
+        currentX += column.widthMm;
+    }
+}
+
+void appendDetailRowCommands(QList<NativeDrawCommand>& commands,
+                             const TableElement& table,
+                             const QString& tableId,
+                             const QJsonObject& row,
+                             int originalRowIndex,
+                             int pageRowIndex,
+                             double originX,
+                             double originY,
+                             bool drawHeader)
+{
+    const auto rowY =
+        originY + (drawHeader ? table.headerRowHeightMm : 0.0) + pageRowIndex * table.detailRowHeightMm;
+    double currentX = originX;
+    for (const auto& column : table.columns) {
+        appendCellCommands(
+            commands,
+            tableId,
+            QStringLiteral("row%1").arg(originalRowIndex),
+            column,
+            currentX,
+            rowY,
+            table.detailRowHeightMm,
+            valueToText(row.value(column.fieldKey)),
+            table.drawBorders);
+        currentX += column.widthMm;
+    }
 }
 
 } // 命名空间
@@ -119,9 +170,9 @@ TableRenderResult TableElementRenderer::renderSinglePage(const TableElement& tab
     }
 
     const auto rows = rowsValue.toArray();
-    const auto capacity = detailCapacity(table);
+    const auto capacity = detailCapacity(table, true);
     if (capacity < 0 || rows.size() > capacity) {
-        // 阶段三只支持单页表格，不能静默截断明细；分页会在后续阶段补齐。
+        // 单页入口继续保持严格行为，避免调用方误以为超出部分已经被打印。
         result.errorMessage = QStringLiteral("表格 %1 高度无法容纳全部明细行").arg(tableId);
         return result;
     }
@@ -129,20 +180,7 @@ TableRenderResult TableElementRenderer::renderSinglePage(const TableElement& tab
     const auto originX = table.x + offsetX;
     const auto originY = table.y + offsetY;
 
-    double currentX = originX;
-    for (const auto& column : table.columns) {
-        appendCellCommands(
-            result.commands,
-            tableId,
-            QStringLiteral("header"),
-            column,
-            currentX,
-            originY,
-            table.headerRowHeightMm,
-            column.title,
-            table.drawBorders);
-        currentX += column.widthMm;
-    }
+    appendHeaderCommands(result.commands, table, tableId, QStringLiteral("header"), originX, originY);
 
     for (int rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
         if (!rows[rowIndex].isObject()) {
@@ -152,23 +190,104 @@ TableRenderResult TableElementRenderer::renderSinglePage(const TableElement& tab
         }
 
         const auto row = rows[rowIndex].toObject();
-        const auto rowY = originY + table.headerRowHeightMm + rowIndex * table.detailRowHeightMm;
-        currentX = originX;
-        for (const auto& column : table.columns) {
-            appendCellCommands(
-                result.commands,
-                tableId,
-                QStringLiteral("row%1").arg(rowIndex),
-                column,
-                currentX,
-                rowY,
-                table.detailRowHeightMm,
-                valueToText(row.value(column.fieldKey)),
-                table.drawBorders);
-            currentX += column.widthMm;
-        }
+        appendDetailRowCommands(result.commands, table, tableId, row, rowIndex, rowIndex, originX, originY, true);
     }
 
+    TableRenderPage page;
+    page.pageNumber = 1;
+    page.firstRowIndex = 0;
+    page.rowCount = static_cast<int>(rows.size());
+    page.commands = result.commands;
+    result.pages.append(page);
+    return result;
+}
+
+TableRenderResult TableElementRenderer::renderPages(const TableElement& table,
+                                                    const TemplateRenderContext& context,
+                                                    double offsetX,
+                                                    double offsetY)
+{
+    TableRenderResult result;
+    const auto tableId = table.id.trimmed();
+    if (tableId.isEmpty()) {
+        result.errorMessage = QStringLiteral("表格 id 不能为空");
+        return result;
+    }
+
+    const auto dataPath = table.dataPath.trimmed();
+    const auto rowsValue = context.values.value(dataPath);
+    if (!rowsValue.isArray()) {
+        result.errorMessage = QStringLiteral("表格数据 %1 必须是数组").arg(dataPath);
+        return result;
+    }
+
+    const auto rows = rowsValue.toArray();
+    const auto originX = table.x + offsetX;
+    const auto originY = table.y + offsetY;
+
+    if (rows.isEmpty()) {
+        TableRenderPage page;
+        page.pageNumber = 1;
+        appendHeaderCommands(page.commands, table, tableId, QStringLiteral("header"), originX, originY);
+        result.pages.append(page);
+        result.commands = page.commands;
+        return result;
+    }
+
+    int rowIndex = 0;
+    int pageNumber = 1;
+    while (rowIndex < rows.size()) {
+        const auto drawHeader = pageNumber == 1 || table.repeatHeaderOnPage;
+        const auto capacity = detailCapacity(table, drawHeader);
+        if (capacity <= 0) {
+            result.pages.clear();
+            result.commands.clear();
+            result.errorMessage = QStringLiteral("表格 %1 高度无法容纳单行明细").arg(tableId);
+            return result;
+        }
+
+        TableRenderPage page;
+        page.pageNumber = pageNumber;
+        page.firstRowIndex = rowIndex;
+        if (drawHeader) {
+            const auto headerKey =
+                pageNumber == 1 ? QStringLiteral("header") : QStringLiteral("page%1.header").arg(pageNumber);
+            appendHeaderCommands(page.commands, table, tableId, headerKey, originX, originY);
+        }
+
+        const auto remainingRows = static_cast<int>(rows.size()) - rowIndex;
+        const auto rowsOnPage = std::min(capacity, remainingRows);
+        for (int pageRowIndex = 0; pageRowIndex < rowsOnPage; ++pageRowIndex) {
+            const auto originalRowIndex = rowIndex + pageRowIndex;
+            if (!rows[originalRowIndex].isObject()) {
+                result.pages.clear();
+                result.commands.clear();
+                result.errorMessage =
+                    QStringLiteral("表格数据 %1 的第 %2 行必须是对象").arg(dataPath).arg(originalRowIndex + 1);
+                return result;
+            }
+
+            appendDetailRowCommands(
+                page.commands,
+                table,
+                tableId,
+                rows[originalRowIndex].toObject(),
+                originalRowIndex,
+                pageRowIndex,
+                originX,
+                originY,
+                drawHeader);
+        }
+
+        page.rowCount = rowsOnPage;
+        result.pages.append(page);
+        rowIndex += rowsOnPage;
+        ++pageNumber;
+    }
+
+    if (!result.pages.isEmpty()) {
+        result.commands = result.pages.first().commands;
+    }
     return result;
 }
 

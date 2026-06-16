@@ -80,6 +80,8 @@ private slots:
     void tableElementJsonRejectsInvalidTable();
     void tableElementRendererBuildsSinglePageCommands();
     void tableElementRendererRejectsNonArrayData();
+    void tableElementRendererSplitsRowsAcrossPagesAndRepeatsHeader();
+    void tableElementRendererRejectsPageTooShortForOneRow();
     void templateDocumentJsonPersistsLayerTables();
     void templateDocumentImportRejectsInvalidLayerTable();
     void templateDocumentRendererAppendsTableCommands();
@@ -1146,6 +1148,8 @@ void CoreTests::tableElementRendererBuildsSinglePageCommands()
 
     const auto result = TableElementRenderer::renderSinglePage(table, context, 1.0, 2.0);
     QVERIFY(result.success());
+    QCOMPARE(result.pages.size(), 1);
+    QCOMPARE(result.pages.first().rowCount, 2);
     QCOMPARE(result.commands.size(), 12);
     QCOMPARE(result.commands[0].type, NativeDrawCommandType::Rectangle);
     QCOMPARE(result.commands[1].text, QString::fromUtf8("品名"));
@@ -1174,6 +1178,71 @@ void CoreTests::tableElementRendererRejectsNonArrayData()
     QVERIFY(!result.success());
     QVERIFY(result.errorMessage.contains(QStringLiteral("items")));
     QVERIFY(result.errorMessage.contains(QString::fromUtf8("数组")));
+}
+
+void CoreTests::tableElementRendererSplitsRowsAcrossPagesAndRepeatsHeader()
+{
+    TableElement table;
+    table.id = QStringLiteral("itemsTable");
+    table.x = 5.0;
+    table.y = 8.0;
+    table.width = 45.0;
+    table.height = 15.0;
+    table.dataPath = QStringLiteral("items");
+    table.headerRowHeightMm = 5.0;
+    table.detailRowHeightMm = 5.0;
+
+    TableColumn nameColumn;
+    nameColumn.id = QStringLiteral("name");
+    nameColumn.title = QString::fromUtf8("品名");
+    nameColumn.fieldKey = QStringLiteral("productName");
+    nameColumn.widthMm = 45.0;
+    table.columns.append(nameColumn);
+
+    TemplateRenderContext context;
+    context.values["items"] = QJsonArray{
+        QJsonObject{{QStringLiteral("productName"), QString::fromUtf8("产品1")}},
+        QJsonObject{{QStringLiteral("productName"), QString::fromUtf8("产品2")}},
+        QJsonObject{{QStringLiteral("productName"), QString::fromUtf8("产品3")}},
+        QJsonObject{{QStringLiteral("productName"), QString::fromUtf8("产品4")}},
+        QJsonObject{{QStringLiteral("productName"), QString::fromUtf8("产品5")}},
+    };
+
+    const auto result = TableElementRenderer::renderPages(table, context);
+    QVERIFY(result.success());
+    QCOMPARE(result.pages.size(), 3);
+    QCOMPARE(result.pages[0].firstRowIndex, 0);
+    QCOMPARE(result.pages[0].rowCount, 2);
+    QCOMPARE(result.pages[1].firstRowIndex, 2);
+    QCOMPARE(result.pages[1].rowCount, 2);
+    QCOMPARE(result.pages[2].firstRowIndex, 4);
+    QCOMPARE(result.pages[2].rowCount, 1);
+    QCOMPARE(result.pages[1].commands[1].text, QString::fromUtf8("品名"));
+    QCOMPARE(result.pages[1].commands[3].text, QString::fromUtf8("产品3"));
+    QCOMPARE(result.pages[2].commands[3].text, QString::fromUtf8("产品5"));
+}
+
+void CoreTests::tableElementRendererRejectsPageTooShortForOneRow()
+{
+    TableElement table;
+    table.id = QStringLiteral("itemsTable");
+    table.height = 5.0;
+    table.dataPath = QStringLiteral("items");
+    table.headerRowHeightMm = 5.0;
+    table.detailRowHeightMm = 5.0;
+
+    TableColumn column;
+    column.id = QStringLiteral("name");
+    column.title = QString::fromUtf8("品名");
+    column.fieldKey = QStringLiteral("productName");
+    table.columns.append(column);
+
+    TemplateRenderContext context;
+    context.values["items"] = QJsonArray{QJsonObject{{QStringLiteral("productName"), QString::fromUtf8("产品1")}}};
+
+    const auto result = TableElementRenderer::renderPages(table, context);
+    QVERIFY(!result.success());
+    QVERIFY(result.errorMessage.contains(QString::fromUtf8("单行")));
 }
 
 void CoreTests::templateDocumentJsonPersistsLayerTables()
