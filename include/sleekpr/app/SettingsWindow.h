@@ -24,6 +24,7 @@ class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
 class QListWidget;
+class QPlainTextEdit;
 class QPushButton;
 
 namespace sleekpr::app {
@@ -111,6 +112,7 @@ private:
 
     QComboBox* m_templateCombo = nullptr;
     QComboBox* m_printerCombo = nullptr;
+    QPlainTextEdit* m_allowedOriginsEdit = nullptr;
     QDoubleSpinBox* m_offsetXSpin = nullptr;
     QDoubleSpinBox* m_offsetYSpin = nullptr;
     TemplatePreviewLabel* m_previewLabel = nullptr;

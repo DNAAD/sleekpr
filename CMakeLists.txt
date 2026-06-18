@@ -87,6 +87,9 @@ add_executable(sleekpr
     src/app/main.cpp
 )
 
+# 桌面客户端使用 Windows GUI 子系统，双击 exe 时不弹出控制台黑框。
+set_target_properties(sleekpr PROPERTIES WIN32_EXECUTABLE TRUE)
+
 target_link_libraries(sleekpr
     PRIVATE
         sleekpr_core
@@ -158,6 +161,7 @@ if(WIN32)
                 COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:sleekpr>" "${SLEEKPR_RELEASE_STAGE_DIR}/sleekpr.exe"
                 COMMAND "${WINDEPLOYQT_EXECUTABLE}" --release --no-translations --dir "${SLEEKPR_RELEASE_STAGE_DIR}" "${SLEEKPR_RELEASE_STAGE_DIR}/sleekpr.exe"
                 COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE" "${SLEEKPR_RELEASE_STAGE_DIR}/LICENSE"
+                COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/packaging/README-PORTABLE.txt" "${SLEEKPR_RELEASE_STAGE_DIR}/README-PORTABLE.txt"
                 DEPENDS sleekpr
                 COMMENT "Deploying sleekpr Release runtime into dist/sleekpr-release"
                 VERBATIM

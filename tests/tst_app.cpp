@@ -83,6 +83,7 @@ private slots:
     void templatePreviewLabelRejectsDragStartOutsideEditableArea();
     void settingsWindowShowsPreviewOnlyWithoutElementEditor();
     void settingsWindowLoadsTemplateLibraryDocuments();
+    void settingsWindowEditsAllowedOrigins();
     void templateElementHitTesterSelectsSmallestTopmostElement();
     void templateElementHitTesterReturnsArrayGridElementIdFromCellCommand();
     void templateDesignerWindowAddsLayer();
@@ -315,6 +316,38 @@ void AppTests::settingsWindowLoadsTemplateLibraryDocuments()
 
     QVERIFY(!previewLabel->pixmap().isNull());
     QVERIFY(imageBytes(previewLabel->pixmap()) != defaultBytes);
+}
+
+void AppTests::settingsWindowEditsAllowedOrigins()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const auto settingsPath = dir.filePath("settings.json");
+    PrintClientSettings settings;
+    settings.allowedOrigins = {QStringLiteral("https://manager.example.com")};
+    FileSettingsStore store(settingsPath);
+    QVERIFY(store.save(settings));
+
+    SettingsWindow window(settingsPath, nullptr);
+    auto* originsEdit = window.findChild<QPlainTextEdit*>(QStringLiteral("allowedOriginsEdit"));
+    auto* saveButton = window.findChild<QPushButton*>(QStringLiteral("saveSettingsButton"));
+    QVERIFY(originsEdit != nullptr);
+    QVERIFY(saveButton != nullptr);
+    QVERIFY(originsEdit->toPlainText().contains(QStringLiteral("https://manager.example.com")));
+
+    originsEdit->setPlainText(QStringLiteral(
+        "https://manager.example.com\n"
+        "\n"
+        " https://branch.example.com \n"
+        "https://manager.example.com"));
+    saveButton->click();
+
+    const auto actual = store.load();
+    QCOMPARE(actual.allowedOrigins, QStringList({
+        QStringLiteral("https://manager.example.com"),
+        QStringLiteral("https://branch.example.com"),
+    }));
 }
 
 void AppTests::templateElementHitTesterSelectsSmallestTopmostElement()

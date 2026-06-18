@@ -30,6 +30,7 @@
 #include <QPainter>
 #include <QPen>
 #include <QPixmap>
+#include <QPlainTextEdit>
 #include <QPrinterInfo>
 #include <QPushButton>
 #include <QScrollArea>
@@ -184,6 +185,7 @@ void SettingsWindow::reloadFromDisk()
 
     m_offsetXSpin->setValue(m_settings.labelOffset.x);
     m_offsetYSpin->setValue(m_settings.labelOffset.y);
+    m_allowedOriginsEdit->setPlainText(m_settings.allowedOrigins.join(QStringLiteral("\n")));
 
     renderPreview(m_settings);
 }
@@ -274,9 +276,23 @@ QWidget* SettingsWindow::createPrinterPanel()
     offsetLayout->addRow(QString::fromUtf8("X"), m_offsetXSpin);
     offsetLayout->addRow(QString::fromUtf8("Y"), m_offsetYSpin);
 
+    auto* securityGroup = new QGroupBox(QString::fromUtf8("本地接口安全"));
+    auto* securityLayout = new QVBoxLayout(securityGroup);
+    auto* allowedOriginsHint = new QLabel(
+        QString::fromUtf8("允许访问本地服务的网页 Origin，每行一个；留空时只接受没有 Origin 的本机调用。"),
+        securityGroup);
+    allowedOriginsHint->setWordWrap(true);
+    m_allowedOriginsEdit = new QPlainTextEdit(securityGroup);
+    m_allowedOriginsEdit->setObjectName(QStringLiteral("allowedOriginsEdit"));
+    m_allowedOriginsEdit->setPlaceholderText(QString::fromUtf8("https://manager.example.com"));
+    m_allowedOriginsEdit->setFixedHeight(82);
+    securityLayout->addWidget(allowedOriginsHint);
+    securityLayout->addWidget(m_allowedOriginsEdit);
+
     layout->addWidget(templateGroup);
     layout->addWidget(printerGroup);
     layout->addWidget(offsetGroup);
+    layout->addWidget(securityGroup);
     layout->addStretch();
 
     connect(refreshPrintersButton, &QPushButton::clicked, this, [this] {
@@ -625,6 +641,16 @@ void SettingsWindow::collectGeneralSettings()
         m_offsetXSpin->value(),
         m_offsetYSpin->value(),
     };
+
+    QStringList allowedOrigins;
+    const auto originLines = m_allowedOriginsEdit->toPlainText().split(QLatin1Char('\n'));
+    for (const auto& line : originLines) {
+        const auto origin = line.trimmed();
+        if (!origin.isEmpty() && !allowedOrigins.contains(origin)) {
+            allowedOrigins.append(origin);
+        }
+    }
+    m_settings.allowedOrigins = allowedOrigins;
 }
 
 sleekpr::core::LabelTemplateKey SettingsWindow::currentLabelTemplateKey() const

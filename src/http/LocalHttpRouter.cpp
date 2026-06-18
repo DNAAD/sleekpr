@@ -122,7 +122,7 @@ QHash<QByteArray, QByteArray> corsHeaders(const LocalHttpRequest& request, const
 
     headers.insert("Access-Control-Allow-Origin", origin.toUtf8());
     headers.insert("Vary", "Origin");
-    headers.insert("Access-Control-Allow-Headers", "*");
+    headers.insert("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Sleekpr-Token");
     headers.insert("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
 
     if (PrivateNetworkAccessPolicy::shouldAllow(

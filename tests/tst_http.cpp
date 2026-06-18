@@ -147,6 +147,7 @@ void HttpTests::optionsUsesTrustedCorsPolicy()
     const auto trustedResponse = router.route(trustedRequest);
     QCOMPARE(trustedResponse.statusCode, 204);
     QCOMPARE(trustedResponse.headers.value("Access-Control-Allow-Origin"), QByteArray("https://manager.example.com"));
+    QCOMPARE(trustedResponse.headers.value("Access-Control-Allow-Headers"), QByteArray("Content-Type, Authorization, X-Sleekpr-Token"));
     QCOMPARE(trustedResponse.headers.value("Access-Control-Allow-Private-Network"), QByteArray("true"));
 
     LocalHttpRequest untrustedRequest = trustedRequest;
