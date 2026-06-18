@@ -6,6 +6,31 @@
 
 namespace sleekpr::app {
 
+namespace {
+
+QString editableElementKey(const QString& commandKey)
+{
+    const auto cellMarkerIndex = commandKey.indexOf(QStringLiteral(".cell"));
+    if (cellMarkerIndex <= 0) {
+        return commandKey;
+    }
+
+    const auto cellNumberStart = cellMarkerIndex + QStringLiteral(".cell").size();
+    auto cursor = cellNumberStart;
+    while (cursor < commandKey.size() && commandKey.at(cursor).isDigit()) {
+        ++cursor;
+    }
+
+    const auto suffix = commandKey.mid(cursor);
+    // 数组网格会把一个元素拆成多个单元格绘制命令，交互命中时必须回到元素本身才能拖动和编辑。
+    if (cursor > cellNumberStart && (suffix.isEmpty() || suffix == QStringLiteral(".border"))) {
+        return commandKey.left(cellMarkerIndex);
+    }
+    return commandKey;
+}
+
+} // namespace
+
 std::optional<QString> TemplateElementHitTester::hitTest(
     const QList<sleekpr::core::NativeDrawCommand>& commands,
     QSizeF paperSizeMm,
@@ -42,7 +67,7 @@ std::optional<QString> TemplateElementHitTester::hitTest(
         if (area < bestArea || (area == bestArea && index > bestIndex)) {
             bestArea = area;
             bestIndex = index;
-            bestKey = command.elementKey;
+            bestKey = editableElementKey(command.elementKey);
         }
     }
 

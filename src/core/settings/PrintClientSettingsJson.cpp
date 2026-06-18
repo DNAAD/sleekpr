@@ -19,6 +19,8 @@ QString templateElementTypeToString(TemplateElementType type)
         return QStringLiteral("qrCode");
     case TemplateElementType::Rectangle:
         return QStringLiteral("rectangle");
+    case TemplateElementType::ArrayGrid:
+        return QStringLiteral("arrayGrid");
     }
     return QStringLiteral("fixedText");
 }
@@ -33,6 +35,9 @@ TemplateElementType templateElementTypeFromString(const QString& value)
     }
     if (value == QStringLiteral("rectangle")) {
         return TemplateElementType::Rectangle;
+    }
+    if (value == QStringLiteral("arrayGrid")) {
+        return TemplateElementType::ArrayGrid;
     }
     return TemplateElementType::FixedText;
 }
@@ -95,6 +100,12 @@ QJsonObject templateElementToJson(const TemplateElement& element)
     json["fontSizePt"] = element.fontSizePt;
     json["bold"] = element.bold;
     json["rotationDegrees"] = element.rotationDegrees;
+    json["verticalText"] = element.verticalText;
+    json["dataPath"] = element.dataPath;
+    json["arrayGridRows"] = element.arrayGridRows;
+    json["arrayGridColumns"] = element.arrayGridColumns;
+    json["arrayGridCellTemplate"] = element.arrayGridCellTemplate;
+    json["arrayGridDrawBorders"] = element.arrayGridDrawBorders;
     json["maxLines"] = element.maxLines;
     json["ellipsis"] = element.ellipsis;
     return json;
@@ -139,6 +150,20 @@ TemplateElement templateElementFromJson(const QJsonObject& json)
     }
     if (json.contains("rotationDegrees")) {
         element.rotationDegrees = json["rotationDegrees"].toDouble(element.rotationDegrees);
+    }
+    if (json.contains("verticalText")) {
+        element.verticalText = json["verticalText"].toBool(element.verticalText);
+    }
+    element.dataPath = json["dataPath"].toString(element.dataPath);
+    if (json.contains("arrayGridRows")) {
+        element.arrayGridRows = json["arrayGridRows"].toInt(element.arrayGridRows);
+    }
+    if (json.contains("arrayGridColumns")) {
+        element.arrayGridColumns = json["arrayGridColumns"].toInt(element.arrayGridColumns);
+    }
+    element.arrayGridCellTemplate = json["arrayGridCellTemplate"].toString(element.arrayGridCellTemplate);
+    if (json.contains("arrayGridDrawBorders")) {
+        element.arrayGridDrawBorders = json["arrayGridDrawBorders"].toBool(element.arrayGridDrawBorders);
     }
     if (json.contains("maxLines")) {
         element.maxLines = json["maxLines"].toInt(element.maxLines);

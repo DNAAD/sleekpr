@@ -5,9 +5,14 @@
 #include "sleekpr/core/native/NativeLabelDrawingPlanner.h"
 #include "sleekpr/core/printing/LabelPaperSize.h"
 #include "sleekpr/core/settings/SettingsEditModel.h"
+#include "sleekpr/core/templates/DeviceProfileResolver.h"
+#include "sleekpr/core/templates/TemplateDocumentRenderer.h"
+#include "sleekpr/core/templates/TemplateLibraryStore.h"
+#include "sleekpr/core/templates/TemplateRenderContext.h"
 #include "sleekpr/app/TemplateDragCoordinateMapper.h"
 #include "sleekpr/app/TemplateElementHitTester.h"
 #include "sleekpr/app/TemplatePreviewLabel.h"
+#include "sleekpr/infrastructure/preview/LabelPreviewImageRenderer.h"
 #include "sleekpr/infrastructure/preview/LabelPreviewService.h"
 #include "sleekpr/infrastructure/preview/PreviewLabelFactory.h"
 
@@ -28,6 +33,8 @@
 #include <QPrinterInfo>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSet>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QUuid>
 #include <QVBoxLayout>
@@ -98,10 +105,53 @@ sleekpr::core::TemplateElementType typeFromCombo(const QComboBox* combo)
 
 } // 匿名命名空间
 
+static QString templateDocumentComboText(const sleekpr::core::TemplateDocument& document, const QString& templateId)
+{
+    const auto name = document.name.trimmed().isEmpty() ? templateId : document.name.trimmed();
+    const auto category = document.category.trimmed();
+    if (!category.isEmpty() && category != QStringLiteral("label")) {
+        return QStringLiteral("%1 (%2)").arg(name, category);
+    }
+    return name;
+}
+
+static QImage renderTemplateDocumentPreviewImage(
+    const sleekpr::core::TemplateDocument& document,
+    const sleekpr::core::PrintClientSettings& settings,
+    const QString& fallbackTemplateKey)
+{
+    const auto rawTemplateKey = document.templateKey.trimmed().isEmpty() ? fallbackTemplateKey : document.templateKey.trimmed();
+    const auto labelPlan = sleekpr::core::LabelRenderPlanner().createPlan(
+        sleekpr::infrastructure::PreviewLabelFactory::createDemoLabel(
+            sleekpr::core::labelTemplateKeyFromOverrideKey(rawTemplateKey)));
+
+    sleekpr::core::TemplateRenderContext previewContext;
+    // 设置页只做正式预览：模板绑定的 sampleData 用于模拟接口数据，真实打印仍由接口传入值覆盖。
+    previewContext.values = document.sampleData;
+    const auto profile = sleekpr::core::DeviceProfileResolver::resolve(document.deviceProfiles, settings.defaultPrinter);
+    const auto drawingPlan = sleekpr::core::TemplateDocumentRenderer().render(
+        document,
+        labelPlan,
+        settings.labelOffset,
+        profile,
+        previewContext);
+    return sleekpr::infrastructure::LabelPreviewImageRenderer().renderImage(drawingPlan, drawingPlan.renderDpi);
+}
+
 SettingsWindow::SettingsWindow(QString settingsPath, SettingsAppliedCallback onSettingsApplied, QWidget* parent)
+    : SettingsWindow(std::move(settingsPath), std::move(onSettingsApplied), QString(), parent)
+{
+}
+
+SettingsWindow::SettingsWindow(
+    QString settingsPath,
+    SettingsAppliedCallback onSettingsApplied,
+    QString templateLibraryDirectoryPath,
+    QWidget* parent)
     : QWidget(parent)
     , m_settingsStore(std::move(settingsPath))
     , m_onSettingsApplied(std::move(onSettingsApplied))
+    , m_templateLibraryDirectoryPath(std::move(templateLibraryDirectoryPath))
 {
     setWindowTitle(QString::fromUtf8("sleekpr 设置"));
     resize(1320, 680);
@@ -114,18 +164,27 @@ void SettingsWindow::setOpenTemplateDesignerCallback(OpenTemplateDesignerCallbac
     m_openTemplateDesigner = std::move(callback);
 }
 
+void SettingsWindow::setOpenPaperSpecManagerCallback(OpenPaperSpecManagerCallback callback)
+{
+    m_openPaperSpecManager = std::move(callback);
+}
+
+void SettingsWindow::setOpenFieldPresetManagerCallback(OpenFieldPresetManagerCallback callback)
+{
+    m_openFieldPresetManager = std::move(callback);
+}
+
 void SettingsWindow::reloadFromDisk()
 {
+    const auto selectedTemplateKey = currentTemplateOverrideKey();
     m_settings = m_settingsStore.load();
-    m_currentTemplateOverrideKey = m_templateCombo->currentData().toString();
+    populateTemplateCombo(selectedTemplateKey);
     m_currentElementKey.clear();
     populatePrinters();
 
     m_offsetXSpin->setValue(m_settings.labelOffset.x);
     m_offsetYSpin->setValue(m_settings.labelOffset.y);
 
-    populateElements();
-    selectFirstElement();
     renderPreview(m_settings);
 }
 
@@ -138,11 +197,9 @@ void SettingsWindow::buildUi()
     auto* splitter = new QSplitter(Qt::Horizontal, this);
     splitter->addWidget(createPrinterPanel());
     splitter->addWidget(createPreviewPanel());
-    splitter->addWidget(createElementPanel());
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
-    splitter->setStretchFactor(2, 0);
-    splitter->setSizes({260, 760, 300});
+    splitter->setSizes({260, 1040});
     rootLayout->addWidget(splitter, 1);
 
     auto* buttonLayout = new QHBoxLayout;
@@ -150,19 +207,22 @@ void SettingsWindow::buildUi()
     auto* applyButton = new QPushButton(QString::fromUtf8("应用但不保存"));
     auto* refreshButton = new QPushButton(QString::fromUtf8("刷新预览"));
     auto* openDesignerButton = new QPushButton(QString::fromUtf8("模板设计器"));
-    auto* resetElementButton = new QPushButton(QString::fromUtf8("重置当前元素"));
-    auto* resetAllButton = new QPushButton(QString::fromUtf8("重置全部元素"));
     auto* closeButton = new QPushButton(QString::fromUtf8("关闭"));
+
+    auto* openPaperSpecManagerButton = new QPushButton(QString::fromUtf8("纸张规格"));
+    auto* openFieldPresetManagerButton = new QPushButton(QString::fromUtf8("字段预设"));
 
     saveButton->setObjectName(QStringLiteral("saveSettingsButton"));
     openDesignerButton->setObjectName(QStringLiteral("openTemplateDesignerButton"));
+    openPaperSpecManagerButton->setObjectName(QStringLiteral("openPaperSpecManagerButton"));
+    openFieldPresetManagerButton->setObjectName(QStringLiteral("openFieldPresetManagerButton"));
     buttonLayout->addWidget(saveButton);
     buttonLayout->addWidget(applyButton);
     buttonLayout->addWidget(refreshButton);
     buttonLayout->addWidget(openDesignerButton);
+    buttonLayout->addWidget(openPaperSpecManagerButton);
+    buttonLayout->addWidget(openFieldPresetManagerButton);
     buttonLayout->addStretch();
-    buttonLayout->addWidget(resetElementButton);
-    buttonLayout->addWidget(resetAllButton);
     buttonLayout->addWidget(closeButton);
     rootLayout->addLayout(buttonLayout);
 
@@ -174,8 +234,16 @@ void SettingsWindow::buildUi()
             m_openTemplateDesigner();
         }
     });
-    connect(resetElementButton, &QPushButton::clicked, this, [this] { resetCurrentElement(); });
-    connect(resetAllButton, &QPushButton::clicked, this, [this] { resetAllElements(); });
+    connect(openPaperSpecManagerButton, &QPushButton::clicked, this, [this] {
+        if (m_openPaperSpecManager) {
+            m_openPaperSpecManager();
+        }
+    });
+    connect(openFieldPresetManagerButton, &QPushButton::clicked, this, [this] {
+        if (m_openFieldPresetManager) {
+            m_openFieldPresetManager();
+        }
+    });
     connect(closeButton, &QPushButton::clicked, this, [this] { close(); });
 }
 
@@ -188,8 +256,8 @@ QWidget* SettingsWindow::createPrinterPanel()
     auto* templateGroup = new QGroupBox(QString::fromUtf8("模板"));
     auto* templateLayout = new QVBoxLayout(templateGroup);
     m_templateCombo = new QComboBox(templateGroup);
-    m_templateCombo->addItem(QString::fromUtf8("默认标签"), QStringLiteral("default"));
-    m_templateCombo->addItem(QString::fromUtf8("银标签 factoryNo=25003"), QStringLiteral("silver"));
+    m_templateCombo->setObjectName(QStringLiteral("settingsTemplateCombo"));
+    populateTemplateCombo();
     templateLayout->addWidget(m_templateCombo);
 
     auto* printerGroup = new QGroupBox(QString::fromUtf8("打印机"));
@@ -216,11 +284,8 @@ QWidget* SettingsWindow::createPrinterPanel()
         populatePrinters();
     });
     connect(m_templateCombo, &QComboBox::currentIndexChanged, this, [this] {
-        storeCurrentElementForm();
         m_currentTemplateOverrideKey = m_templateCombo->currentData().toString();
         m_currentElementKey.clear();
-        populateElements();
-        selectFirstElement();
         renderPreview(m_settings);
     });
 
@@ -237,23 +302,12 @@ QWidget* SettingsWindow::createPreviewPanel()
     m_statusLabel->setText(QString::fromUtf8("预览尺寸：80mm x 30mm"));
     layout->addWidget(m_statusLabel);
 
-    m_snapToGridCheck = new QCheckBox(QString::fromUtf8("网格吸附 0.5mm"), panel);
-    m_snapToGridCheck->setObjectName(QStringLiteral("snapToGridCheck"));
-    layout->addWidget(m_snapToGridCheck);
-
     m_previewLabel = new TemplatePreviewLabel(panel);
+    m_previewLabel->setObjectName(QStringLiteral("settingsPreviewLabel"));
     m_previewLabel->setAlignment(Qt::AlignCenter);
     m_previewLabel->setMinimumSize(945, 354);
     m_previewLabel->setStyleSheet(QStringLiteral("QLabel { background: white; border: 1px solid #111827; }"));
-    m_previewLabel->setDragStartCallback([this](QPoint position) {
-        return canStartPreviewDragAt(position);
-    });
-    m_previewLabel->setDragDeltaCallback([this](QPoint pixelDelta) {
-        applyPreviewDragDelta(pixelDelta);
-    });
-    m_previewLabel->setKeyboardNudgeCallback([this](QPoint direction, Qt::KeyboardModifiers modifiers) {
-        applyPreviewKeyboardNudge(direction, modifiers);
-    });
+    m_previewLabel->setDraggingEnabled(false);
 
     auto* scrollArea = new QScrollArea(panel);
     scrollArea->setWidgetResizable(true);
@@ -409,6 +463,59 @@ void SettingsWindow::populatePrinters()
     m_printerCombo->setCurrentIndex(selectedIndex >= 0 ? selectedIndex : 0);
 }
 
+void SettingsWindow::populateTemplateCombo(const QString& preferredTemplateKey)
+{
+    if (m_templateCombo == nullptr) {
+        return;
+    }
+
+    const auto selectedKey = preferredTemplateKey.trimmed().isEmpty()
+        ? currentTemplateOverrideKey()
+        : preferredTemplateKey.trimmed();
+    const QSignalBlocker blocker(m_templateCombo);
+    m_templateCombo->clear();
+    m_libraryTemplateDocuments.clear();
+
+    QSet<QString> addedKeys;
+    auto addItem = [this, &addedKeys](const QString& text, const QString& key) {
+        if (key.trimmed().isEmpty() || addedKeys.contains(key)) {
+            return;
+        }
+        m_templateCombo->addItem(text, key);
+        addedKeys.insert(key);
+    };
+    auto addDocumentItem = [&addItem](const QString& templateId, const sleekpr::core::TemplateDocument& document) {
+        addItem(templateDocumentComboText(document, templateId), templateId);
+    };
+
+    addItem(QString::fromUtf8("默认标签"), QStringLiteral("default"));
+    addItem(QString::fromUtf8("银标签 factoryNo=25003"), QStringLiteral("silver"));
+
+    for (auto it = m_settings.templateDocuments.constBegin(); it != m_settings.templateDocuments.constEnd(); ++it) {
+        addDocumentItem(it.key(), it.value());
+    }
+
+    if (!m_templateLibraryDirectoryPath.trimmed().isEmpty()) {
+        const sleekpr::core::TemplateLibraryStore templateStore(m_templateLibraryDirectoryPath);
+        for (const auto& templateId : templateStore.templateIds()) {
+            const auto document = templateStore.loadTemplate(templateId);
+            if (!document.has_value()) {
+                continue;
+            }
+            // 设置页下拉只引用模板库文档，不把它们隐式写入 settings.json。
+            m_libraryTemplateDocuments.insert(templateId, document.value());
+            addDocumentItem(templateId, document.value());
+        }
+    }
+
+    int selectedIndex = m_templateCombo->findData(selectedKey);
+    if (selectedIndex < 0) {
+        selectedIndex = m_templateCombo->findData(QStringLiteral("default"));
+    }
+    m_templateCombo->setCurrentIndex(selectedIndex >= 0 ? selectedIndex : 0);
+    m_currentTemplateOverrideKey = m_templateCombo->currentData().toString();
+}
+
 void SettingsWindow::populateElements()
 {
     const auto labelPlan = sleekpr::core::LabelRenderPlanner().createPlan(
@@ -532,7 +639,6 @@ QString SettingsWindow::currentTemplateOverrideKey() const
 
 void SettingsWindow::applyWithoutSaving()
 {
-    storeCurrentElementForm();
     collectGeneralSettings();
     renderPreview(m_settings);
     if (m_onSettingsApplied) {
@@ -543,7 +649,6 @@ void SettingsWindow::applyWithoutSaving()
 
 void SettingsWindow::saveSettings()
 {
-    storeCurrentElementForm();
     collectGeneralSettings();
     if (!m_settingsStore.save(m_settings)) {
         QMessageBox::warning(this, QString::fromUtf8("保存失败"), QString::fromUtf8("无法写入设置文件"));
@@ -664,8 +769,9 @@ void SettingsWindow::deleteCurrentCustomElement()
 
 void SettingsWindow::refreshPreviewOnly()
 {
-    storeCurrentElementForm();
+    const auto selectedTemplateKey = currentTemplateOverrideKey();
     collectGeneralSettings();
+    populateTemplateCombo(selectedTemplateKey);
     renderPreview(m_settings);
 }
 
@@ -739,8 +845,8 @@ void SettingsWindow::updatePreviewDraggingState()
         return;
     }
 
-    // 预览图存在时即可接收鼠标事件；是否真正开始拖拽由命中检测决定。
-    m_previewLabel->setDraggingEnabled(!m_previewImageSize.isEmpty());
+    // 设置窗口只负责正式预览，元素编辑统一进入模板设计器处理。
+    m_previewLabel->setDraggingEnabled(false);
 }
 
 QSizeF SettingsWindow::currentElementSizeMm() const
@@ -889,15 +995,24 @@ void SettingsWindow::renderPreview(const sleekpr::core::PrintClientSettings& set
     }
 
     m_previewImageSize = image.size();
-    auto displayImage = image;
-    drawSelectionOverlay(displayImage);
-    m_previewLabel->setPixmap(QPixmap::fromImage(displayImage));
+    m_previewLabel->setPixmap(QPixmap::fromImage(image));
     m_previewLabel->setFixedSize(image.size());
     updatePreviewDraggingState();
 }
 
 QImage SettingsWindow::createPreviewImage(const sleekpr::core::PrintClientSettings& settings) const
 {
+    const auto selectedTemplateKey = currentTemplateOverrideKey();
+    const auto settingsDocumentIt = settings.templateDocuments.constFind(selectedTemplateKey);
+    if (settingsDocumentIt != settings.templateDocuments.constEnd()) {
+        return renderTemplateDocumentPreviewImage(settingsDocumentIt.value(), settings, selectedTemplateKey);
+    }
+
+    const auto libraryDocumentIt = m_libraryTemplateDocuments.constFind(selectedTemplateKey);
+    if (libraryDocumentIt != m_libraryTemplateDocuments.constEnd()) {
+        return renderTemplateDocumentPreviewImage(libraryDocumentIt.value(), settings, selectedTemplateKey);
+    }
+
     return sleekpr::infrastructure::LabelPreviewService().renderDemoPreview(settings, currentLabelTemplateKey());
 }
 

@@ -18,9 +18,16 @@ struct QrSpec
     int version = 1;
     int matrixSize = 21;
     int dataCodewordCount = 13;
-    int errorCorrectionCodewordCount = 13;
+    int errorCorrectionCodewordsPerBlock = 13;
     int maxPayloadBytes = 11;
     std::vector<int> alignmentCenters;
+    std::vector<int> dataCodewordBlocks;
+};
+
+struct QrBlock
+{
+    std::vector<int> dataCodewords;
+    std::vector<int> errorCorrectionCodewords;
 };
 
 struct GaloisTables
@@ -67,12 +74,18 @@ struct WorkMatrix
 QrSpec specForPayloadSize(int payloadSize)
 {
     if (payloadSize <= 11) {
-        return QrSpec{1, 21, 13, 13, 11, {}};
+        return QrSpec{1, 21, 13, 13, 11, {}, {13}};
     }
     if (payloadSize <= 20) {
-        return QrSpec{2, 25, 22, 22, 20, {6, 18}};
+        return QrSpec{2, 25, 22, 22, 20, {6, 18}, {22}};
     }
-    throw std::length_error("QR Version 2-Q 当前最多支持 20 个 UTF-8 字节。");
+    if (payloadSize <= 32) {
+        return QrSpec{3, 29, 34, 18, 32, {6, 22}, {17, 17}};
+    }
+    if (payloadSize <= 46) {
+        return QrSpec{4, 33, 48, 26, 46, {6, 26}, {24, 24}};
+    }
+    throw std::length_error("QR Version 4-Q 当前最多支持 46 个 UTF-8 字节。");
 }
 
 void appendBits(std::vector<bool>& bits, int value, int bitCount)
@@ -159,20 +172,20 @@ std::vector<int> createGeneratorPolynomial(const GaloisTables& tables, int degre
     return polynomial;
 }
 
-std::vector<int> createErrorCorrectionCodewords(const std::vector<int>& dataCodewords, const QrSpec& spec)
+std::vector<int> createErrorCorrectionCodewords(const std::vector<int>& dataCodewords, int errorCorrectionCodewordCount)
 {
     const auto tables = createGaloisTables();
-    const auto generator = createGeneratorPolynomial(tables, spec.errorCorrectionCodewordCount);
-    std::vector<int> remainder(static_cast<size_t>(spec.errorCorrectionCodewordCount), 0);
+    const auto generator = createGeneratorPolynomial(tables, errorCorrectionCodewordCount);
+    std::vector<int> remainder(static_cast<size_t>(errorCorrectionCodewordCount), 0);
 
     // Reed-Solomon 长除法：数据码字逐个进入寄存器，最终寄存器内容就是纠错码字。
     for (const auto codeword : dataCodewords) {
         const int factor = codeword ^ remainder.front();
-        for (int index = 0; index < spec.errorCorrectionCodewordCount - 1; ++index) {
+        for (int index = 0; index < errorCorrectionCodewordCount - 1; ++index) {
             remainder[index] = remainder[index + 1];
         }
         remainder.back() = 0;
-        for (int index = 0; index < spec.errorCorrectionCodewordCount; ++index) {
+        for (int index = 0; index < errorCorrectionCodewordCount; ++index) {
             remainder[index] ^= gfMultiply(tables, generator[index + 1], factor);
         }
     }
@@ -180,14 +193,57 @@ std::vector<int> createErrorCorrectionCodewords(const std::vector<int>& dataCode
     return remainder;
 }
 
-std::vector<bool> codewordsToBits(const std::vector<int>& dataCodewords, const std::vector<int>& errorCorrectionCodewords)
+std::vector<QrBlock> createBlocks(const std::vector<int>& dataCodewords, const QrSpec& spec)
+{
+    std::vector<QrBlock> blocks;
+    blocks.reserve(spec.dataCodewordBlocks.size());
+
+    size_t cursor = 0;
+    for (const auto blockDataCodewordCount : spec.dataCodewordBlocks) {
+        const auto blockStart = dataCodewords.cbegin() + static_cast<std::ptrdiff_t>(cursor);
+        const auto blockEnd = blockStart + blockDataCodewordCount;
+        QrBlock block;
+        block.dataCodewords = std::vector<int>(blockStart, blockEnd);
+        block.errorCorrectionCodewords = createErrorCorrectionCodewords(block.dataCodewords, spec.errorCorrectionCodewordsPerBlock);
+        blocks.push_back(std::move(block));
+        cursor += static_cast<size_t>(blockDataCodewordCount);
+    }
+
+    return blocks;
+}
+
+std::vector<int> interleaveCodewords(const std::vector<QrBlock>& blocks, const QrSpec& spec)
+{
+    std::vector<int> codewords;
+    codewords.reserve(static_cast<size_t>(spec.dataCodewordCount + spec.errorCorrectionCodewordsPerBlock * blocks.size()));
+
+    int maxDataBlockSize = 0;
+    for (const auto& block : blocks) {
+        maxDataBlockSize = std::max(maxDataBlockSize, static_cast<int>(block.dataCodewords.size()));
+    }
+
+    // 多块 QR 需要按列交织数据码字和纠错码字；Version 1/2 只有一个块，仍会得到原顺序。
+    for (int index = 0; index < maxDataBlockSize; ++index) {
+        for (const auto& block : blocks) {
+            if (index < static_cast<int>(block.dataCodewords.size())) {
+                codewords.push_back(block.dataCodewords[static_cast<size_t>(index)]);
+            }
+        }
+    }
+    for (int index = 0; index < spec.errorCorrectionCodewordsPerBlock; ++index) {
+        for (const auto& block : blocks) {
+            codewords.push_back(block.errorCorrectionCodewords[static_cast<size_t>(index)]);
+        }
+    }
+
+    return codewords;
+}
+
+std::vector<bool> codewordsToBits(const std::vector<int>& codewords)
 {
     std::vector<bool> bits;
-    bits.reserve((dataCodewords.size() + errorCorrectionCodewords.size()) * 8);
-    for (const auto codeword : dataCodewords) {
-        appendBits(bits, codeword, 8);
-    }
-    for (const auto codeword : errorCorrectionCodewords) {
+    bits.reserve(codewords.size() * 8);
+    for (const auto codeword : codewords) {
         appendBits(bits, codeword, 8);
     }
     return bits;
@@ -255,7 +311,7 @@ void drawFunctionPatterns(WorkMatrix& matrix, const QrSpec& spec)
     drawFinderPattern(matrix, matrix.matrixSize - 7, 0);
     drawFinderPattern(matrix, 0, matrix.matrixSize - 7);
 
-    // Version 1-2 的横纵定时线规则一致，Version 2 额外补一个校正图形。
+    // Version 1-4 的横纵定时线规则一致；Version 2 及以上按规格补校正图形。
     for (int index = 8; index < matrix.matrixSize - 8; ++index) {
         const bool dark = (index % 2) == 0;
         matrix.setFunctionModule(6, index, dark);
@@ -453,8 +509,8 @@ QrCodeMatrix QrCodeMatrixRenderer::render(const QString& payload) const
     const auto payloadBytes = trimmed.toUtf8();
     const auto spec = specForPayloadSize(payloadBytes.size());
     const auto dataCodewords = createDataCodewords(payloadBytes, spec);
-    const auto errorCorrectionCodewords = createErrorCorrectionCodewords(dataCodewords, spec);
-    return buildBestMatrix(codewordsToBits(dataCodewords, errorCorrectionCodewords), spec);
+    const auto blocks = createBlocks(dataCodewords, spec);
+    return buildBestMatrix(codewordsToBits(interleaveCodewords(blocks, spec)), spec);
 }
 
 } // 命名空间 sleekpr::infrastructure

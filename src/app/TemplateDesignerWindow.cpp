@@ -5,6 +5,7 @@
 #include "sleekpr/app/TemplatePreviewLabel.h"
 #include "sleekpr/core/labels/LabelRenderPlanner.h"
 #include "sleekpr/core/native/NativeLabelDrawingPlanner.h"
+#include "sleekpr/core/settings/PrinterSelectionResolver.h"
 #include "sleekpr/core/settings/TemplateElement.h"
 #include "sleekpr/core/templates/DeviceProfileResolver.h"
 #include "sleekpr/core/templates/PaperSpecStore.h"
@@ -12,9 +13,11 @@
 #include "sleekpr/core/templates/TemplateDocumentEditModel.h"
 #include "sleekpr/core/templates/TemplateDocumentJson.h"
 #include "sleekpr/core/templates/TemplateDocumentRenderer.h"
+#include "sleekpr/core/templates/TemplateDocumentValidator.h"
 #include "sleekpr/core/templates/TemplateLibraryStore.h"
 #include "sleekpr/infrastructure/preview/LabelPreviewImageRenderer.h"
 #include "sleekpr/infrastructure/preview/PreviewLabelFactory.h"
+#include "sleekpr/infrastructure/printing/QtLabelPrintEngine.h"
 
 #include <QDateTime>
 #include <QCheckBox>
@@ -26,16 +29,22 @@
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QJsonDocument>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QJsonParseError>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QMessageBox>
 #include <QPixmap>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSaveFile>
+#include <QScrollArea>
 #include <QSizePolicy>
 #include <QSignalBlocker>
+#include <QSpinBox>
 #include <QStringList>
 #include <QUuid>
 #include <QVBoxLayout>
@@ -52,6 +61,32 @@ constexpr auto kDefaultPaperSpecId = "label-80x30";
 QSizeF defaultPaperSizeMm()
 {
     return QSizeF(80.0, 30.0);
+}
+
+QJsonObject defaultSampleDataObject()
+{
+    QJsonObject sampleData;
+    sampleData.insert(QStringLiteral("sales_code"), QStringLiteral("606178PD35"));
+    sampleData.insert(QStringLiteral("sale_attach_text"), QString::fromUtf8("附加:¥140.00"));
+    sampleData.insert(QStringLiteral("identifier_code"), QStringLiteral("1210005822"));
+    sampleData.insert(QStringLiteral("product_name"), QString::fromUtf8("足金串搭项链"));
+    sampleData.insert(QStringLiteral("header_items"), QJsonArray{
+        QJsonObject{{QStringLiteral("value"), QStringLiteral("2.99")}, {QStringLiteral("text"), QString::fromUtf8("素金KA")}},
+        QJsonObject{{QStringLiteral("value"), QStringLiteral("4.13")}, {QStringLiteral("text"), QString::fromUtf8("素金PC")}},
+        QJsonObject{{QStringLiteral("value"), QStringLiteral("3.91")}, {QStringLiteral("text"), QString::fromUtf8("素金PA")}},
+        QJsonObject{{QStringLiteral("value"), QStringLiteral("11.49")}, {QStringLiteral("text"), QString::fromUtf8("素金PD")}},
+    });
+    return sampleData;
+}
+
+QString sampleDataJson(const QJsonObject& sampleData)
+{
+    return QString::fromUtf8(QJsonDocument(sampleData).toJson(QJsonDocument::Indented));
+}
+
+QString defaultSampleDataJson()
+{
+    return sampleDataJson(defaultSampleDataObject());
 }
 
 QString paperSpecDisplayName(const sleekpr::core::PaperSpec& spec)
@@ -79,6 +114,33 @@ QString nextLayerName(int layerCount)
     return QString::fromUtf8("图层 %1").arg(layerCount + 1);
 }
 
+sleekpr::core::TemplateDocument createBlankTemplateDocument(
+    const QString& id,
+    const QString& name,
+    const QString& templateKey,
+    const QString& paperSpecId,
+    const QList<sleekpr::core::DeviceProfile>& deviceProfiles)
+{
+    sleekpr::core::TemplateLayer baseLayer;
+    baseLayer.id = QStringLiteral("base");
+    baseLayer.name = QString::fromUtf8("基础图层");
+    baseLayer.visible = true;
+
+    sleekpr::core::TemplateDocument document;
+    document.id = id;
+    document.name = name;
+    document.templateKey = templateKey;
+    document.category = QStringLiteral("label");
+    // 新建模板只继承纸张和设备校准上下文，版式内容必须从空白画布开始。
+    document.paperSpecId = paperSpecId.trimmed().isEmpty()
+        ? QString::fromLatin1(kDefaultPaperSpecId)
+        : paperSpecId;
+    document.layers = {baseLayer};
+    document.sampleData = defaultSampleDataObject();
+    document.deviceProfiles = deviceProfiles;
+    return document;
+}
+
 QString elementTypeKey(sleekpr::core::TemplateElementType type)
 {
     switch (type) {
@@ -90,6 +152,8 @@ QString elementTypeKey(sleekpr::core::TemplateElementType type)
         return QStringLiteral("qrCode");
     case sleekpr::core::TemplateElementType::Rectangle:
         return QStringLiteral("rectangle");
+    case sleekpr::core::TemplateElementType::ArrayGrid:
+        return QStringLiteral("arrayGrid");
     }
     return QStringLiteral("fixedText");
 }
@@ -105,6 +169,8 @@ QString elementTypeName(sleekpr::core::TemplateElementType type)
         return QString::fromUtf8("二维码");
     case sleekpr::core::TemplateElementType::Rectangle:
         return QString::fromUtf8("矩形");
+    case sleekpr::core::TemplateElementType::ArrayGrid:
+        return QString::fromUtf8("数组网格");
     }
     return QString::fromUtf8("固定文本");
 }
@@ -137,6 +203,28 @@ QString tableDisplayName(const sleekpr::core::TableElement& table, int index)
         suffixes.append(QString::fromUtf8("锁定"));
     }
     return suffixes.isEmpty() ? baseName : QStringLiteral("%1 (%2)").arg(baseName, suffixes.join(QStringLiteral(", ")));
+}
+
+bool templateMatchesLibrarySearch(
+    const sleekpr::core::TemplateDocument& document,
+    const QString& templateId,
+    const QString& query)
+{
+    const auto normalizedQuery = query.trimmed();
+    if (normalizedQuery.isEmpty()) {
+        return true;
+    }
+
+    const QStringList searchableParts = {
+        templateId,
+        document.id,
+        document.name,
+        document.templateKey,
+        document.category,
+    };
+    return std::any_of(searchableParts.cbegin(), searchableParts.cend(), [&normalizedQuery](const QString& part) {
+        return part.contains(normalizedQuery, Qt::CaseInsensitive);
+    });
 }
 
 QPushButton* createButton(const QString& text, const QString& objectName, QWidget* parent)
@@ -178,6 +266,15 @@ QDoubleSpinBox* createTableSpinBox(
     return spinBox;
 }
 
+QSpinBox* createGridSpinBox(const QString& objectName, int minimum, int maximum, int value, QWidget* parent)
+{
+    auto* spinBox = new QSpinBox(parent);
+    spinBox->setObjectName(objectName);
+    spinBox->setRange(minimum, maximum);
+    spinBox->setValue(value);
+    return spinBox;
+}
+
 sleekpr::core::TemplateElement createDefaultElement(sleekpr::core::TemplateElementType type)
 {
     sleekpr::core::TemplateElement element;
@@ -214,6 +311,18 @@ sleekpr::core::TemplateElement createDefaultElement(sleekpr::core::TemplateEleme
         element.displayName = QString::fromUtf8("矩形");
         element.width = 16.0;
         element.height = 6.0;
+        break;
+    case sleekpr::core::TemplateElementType::ArrayGrid:
+        element.id = generatedElementId(QStringLiteral("arrayGrid"));
+        element.displayName = QString::fromUtf8("数组网格");
+        element.width = 45.0;
+        element.height = 12.0;
+        element.fontSizePt = 4.0;
+        element.dataPath = QStringLiteral("header_items");
+        element.arrayGridRows = 2;
+        element.arrayGridColumns = 3;
+        element.arrayGridCellTemplate = QStringLiteral("${text}:${value}");
+        element.arrayGridDrawBorders = true;
         break;
     }
 
@@ -305,15 +414,32 @@ TemplateDesignerWindow::TemplateDesignerWindow(
     SettingsChangedCallback onSettingsChanged,
     QString templateLibraryDirectoryPath,
     QWidget* parent)
+    : TemplateDesignerWindow(
+        std::move(settings),
+        std::move(onSettingsChanged),
+        std::move(templateLibraryDirectoryPath),
+        nullptr,
+        parent)
+{
+}
+
+TemplateDesignerWindow::TemplateDesignerWindow(
+    sleekpr::core::PrintClientSettings settings,
+    SettingsChangedCallback onSettingsChanged,
+    QString templateLibraryDirectoryPath,
+    PrePrintCallback prePrintCallback,
+    QWidget* parent)
     : QWidget(parent)
     , m_settings(std::move(settings))
     , m_onSettingsChanged(std::move(onSettingsChanged))
+    , m_prePrintCallback(std::move(prePrintCallback))
     , m_templateLibraryDirectoryPath(std::move(templateLibraryDirectoryPath))
 {
     setWindowTitle(QString::fromUtf8("sleekpr 模板设计器"));
     resize(1180, 680);
     buildUi();
     ensureCurrentTemplateDocument();
+    refreshSampleDataEditor();
     refreshPaperSpecSelector();
     refreshTemplateLibraryList();
     refreshLayerList();
@@ -360,6 +486,22 @@ bool TemplateDesignerWindow::importTemplateFromFile(const QString& path)
     return true;
 }
 
+void TemplateDesignerWindow::setOpenPaperSpecManagerCallback(OpenPaperSpecManagerCallback callback)
+{
+    m_openPaperSpecManager = std::move(callback);
+}
+
+void TemplateDesignerWindow::setOpenFieldPresetManagerCallback(OpenFieldPresetManagerCallback callback)
+{
+    m_openFieldPresetManager = std::move(callback);
+}
+
+void TemplateDesignerWindow::reloadPaperSpecsFromDisk()
+{
+    refreshPaperSpecSelector();
+    refreshPreview();
+}
+
 void TemplateDesignerWindow::buildUi()
 {
     auto* rootLayout = new QHBoxLayout(this);
@@ -381,16 +523,28 @@ void TemplateDesignerWindow::buildUi()
     auto* restoreVersionButton = createButton(QString::fromUtf8("恢复版本"), QStringLiteral("restoreTemplateVersionButton"), layerPanel);
     auto* importTemplateButton = createButton(QString::fromUtf8("导入模板"), QStringLiteral("importTemplateButton"), layerPanel);
     auto* exportTemplateButton = createButton(QString::fromUtf8("导出模板"), QStringLiteral("exportTemplateButton"), layerPanel);
+    auto* prePrintTemplateButton = createButton(QString::fromUtf8("预打印当前模板"), QStringLiteral("prePrintCurrentTemplateButton"), layerPanel);
     auto* paperSpecTitleLabel = new QLabel(QString::fromUtf8("纸张规格"), layerPanel);
     m_paperSpecCombo = new QComboBox(layerPanel);
     m_paperSpecCombo->setObjectName(QStringLiteral("paperSpecCombo"));
+    auto* openPaperSpecManagerButton = createButton(
+        QString::fromUtf8("管理纸张规格"),
+        QStringLiteral("openPaperSpecManagerFromDesignerButton"),
+        layerPanel);
+    auto* openFieldPresetManagerButton = createButton(
+        QString::fromUtf8("管理字段预设"),
+        QStringLiteral("openFieldPresetManagerFromDesignerButton"),
+        layerPanel);
 
     auto* saveToLibraryButton = createButton(QString::fromUtf8("保存到模板库"), QStringLiteral("saveTemplateToLibraryButton"), layerPanel);
     auto* loadFromLibraryButton = createButton(QString::fromUtf8("从模板库加载"), QStringLiteral("loadTemplateFromLibraryButton"), layerPanel);
     auto* libraryTitleLabel = new QLabel(QString::fromUtf8("模板库"), layerPanel);
+    m_templateLibrarySearchEdit = new QLineEdit(layerPanel);
+    m_templateLibrarySearchEdit->setObjectName(QStringLiteral("templateLibrarySearchEdit"));
+    m_templateLibrarySearchEdit->setPlaceholderText(QString::fromUtf8("搜索名称、分类或模板键"));
     m_templateLibraryNameEdit = new QLineEdit(layerPanel);
     m_templateLibraryNameEdit->setObjectName(QStringLiteral("templateLibraryNameEdit"));
-    m_templateLibraryNameEdit->setPlaceholderText(QString::fromUtf8("新模板名称"));
+    m_templateLibraryNameEdit->setPlaceholderText(QString::fromUtf8("新建或重命名模板名称"));
     m_templateLibraryList = new QListWidget(layerPanel);
     m_templateLibraryList->setObjectName(QStringLiteral("templateLibraryList"));
     m_templateLibraryList->setMinimumHeight(84);
@@ -404,6 +558,14 @@ void TemplateDesignerWindow::buildUi()
     auto* deleteLibraryButton = createButton(
         QString::fromUtf8("删除选中模板"),
         QStringLiteral("deleteSelectedTemplateFromLibraryButton"),
+        layerPanel);
+    auto* duplicateLibraryButton = createButton(
+        QString::fromUtf8("复制选中模板"),
+        QStringLiteral("duplicateSelectedTemplateFromLibraryButton"),
+        layerPanel);
+    auto* renameLibraryButton = createButton(
+        QString::fromUtf8("重命名模板"),
+        QStringLiteral("renameSelectedTemplateFromLibraryButton"),
         layerPanel);
 
     m_layerList = new QListWidget(layerPanel);
@@ -426,6 +588,7 @@ void TemplateDesignerWindow::buildUi()
     documentButtonGrid->addWidget(exportTemplateButton, 1, 1);
     documentButtonGrid->addWidget(saveToLibraryButton, 2, 0);
     documentButtonGrid->addWidget(loadFromLibraryButton, 2, 1);
+    documentButtonGrid->addWidget(prePrintTemplateButton, 3, 0, 1, 2);
 
     layerLayout->addWidget(titleLabel);
     layerLayout->addWidget(m_layerList, 1);
@@ -433,7 +596,10 @@ void TemplateDesignerWindow::buildUi()
     layerLayout->addLayout(documentButtonGrid);
     layerLayout->addWidget(paperSpecTitleLabel);
     layerLayout->addWidget(m_paperSpecCombo);
+    layerLayout->addWidget(openPaperSpecManagerButton);
+    layerLayout->addWidget(openFieldPresetManagerButton);
     layerLayout->addWidget(libraryTitleLabel);
+    layerLayout->addWidget(m_templateLibrarySearchEdit);
     layerLayout->addWidget(m_templateLibraryNameEdit);
     layerLayout->addWidget(m_templateLibraryList);
     auto* libraryButtonGrid = new QGridLayout();
@@ -442,6 +608,8 @@ void TemplateDesignerWindow::buildUi()
     libraryButtonGrid->addWidget(loadSelectedLibraryButton, 0, 1);
     libraryButtonGrid->addWidget(createLibraryButton, 1, 0);
     libraryButtonGrid->addWidget(deleteLibraryButton, 1, 1);
+    libraryButtonGrid->addWidget(duplicateLibraryButton, 2, 0);
+    libraryButtonGrid->addWidget(renameLibraryButton, 2, 1);
     layerLayout->addLayout(libraryButtonGrid);
 
     auto* workspacePanel = new QWidget(this);
@@ -452,14 +620,58 @@ void TemplateDesignerWindow::buildUi()
     m_previewLabel->setMinimumSize(800, 300);
     m_previewLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_previewLabel->setAlignment(Qt::AlignCenter);
-    m_previewLabel->setScaledContents(true);
+    m_previewLabel->setScaledContents(false);
     m_previewLabel->setDraggingEnabled(true);
+    m_previewLabel->setRulerVisible(true);
+    m_previewLabel->setRulerPrecisionMm(1.0);
+    m_previewLabel->setDesignAidVisible(true);
+    auto* rulerOptionsLayout = new QHBoxLayout();
+    rulerOptionsLayout->setContentsMargins(0, 0, 0, 0);
+    rulerOptionsLayout->addWidget(new QLabel(QString::fromUtf8("标尺精度"), workspacePanel));
+    m_rulerPrecisionCombo = new QComboBox(workspacePanel);
+    m_rulerPrecisionCombo->setObjectName(QStringLiteral("designerRulerPrecisionCombo"));
+    m_rulerPrecisionCombo->addItem(QStringLiteral("0.5 mm"), 0.5);
+    m_rulerPrecisionCombo->addItem(QStringLiteral("1 mm"), 1.0);
+    m_rulerPrecisionCombo->addItem(QStringLiteral("5 mm"), 5.0);
+    m_rulerPrecisionCombo->setCurrentIndex(m_rulerPrecisionCombo->findData(1.0));
+    rulerOptionsLayout->addWidget(m_rulerPrecisionCombo);
+    m_designAidCheck = new QCheckBox(QString::fromUtf8("辅助线/尺寸"), workspacePanel);
+    m_designAidCheck->setObjectName(QStringLiteral("designerDesignAidCheck"));
+    m_designAidCheck->setChecked(true);
+    rulerOptionsLayout->addWidget(m_designAidCheck);
+    rulerOptionsLayout->addStretch(1);
+    auto* previewScrollArea = new QScrollArea(workspacePanel);
+    previewScrollArea->setWidgetResizable(false);
+    previewScrollArea->setAlignment(Qt::AlignCenter);
+    // 预览标签保持渲染图原始比例，滚动区只负责承载大纸张，不参与缩放。
+    previewScrollArea->setWidget(m_previewLabel);
+
+    auto* sampleDataTitleLabel = new QLabel(QString::fromUtf8("模拟数据"), workspacePanel);
+    auto* sampleDataHeaderLayout = new QHBoxLayout();
+    sampleDataHeaderLayout->setContentsMargins(0, 0, 0, 0);
+    auto* saveSampleDataButton = createButton(QString::fromUtf8("保存模拟数据"), QStringLiteral("saveTemplateSampleDataButton"), workspacePanel);
+    sampleDataHeaderLayout->addWidget(sampleDataTitleLabel);
+    sampleDataHeaderLayout->addStretch(1);
+    sampleDataHeaderLayout->addWidget(saveSampleDataButton);
+    m_sampleDataEdit = new QPlainTextEdit(workspacePanel);
+    m_sampleDataEdit->setObjectName(QStringLiteral("templateSampleDataEdit"));
+    m_sampleDataEdit->setFixedHeight(124);
+    m_sampleDataEdit->setPlaceholderText(QString::fromUtf8("输入 JSON，例如：{\"product_name\":\"足金串搭项链\"}"));
+    m_sampleDataEdit->setPlainText(defaultSampleDataJson());
+    connect(m_sampleDataEdit, &QPlainTextEdit::destroyed, this, [this] { m_sampleDataEdit = nullptr; });
 
     m_statusLabel = new QLabel(QString::fromUtf8("模板设计器已就绪"), workspacePanel);
-    workspaceLayout->addWidget(m_previewLabel, 1);
+    m_statusLabel->setObjectName(QStringLiteral("designerStatusLabel"));
+    workspaceLayout->addLayout(rulerOptionsLayout);
+    workspaceLayout->addWidget(previewScrollArea, 1);
+    workspaceLayout->addLayout(sampleDataHeaderLayout);
+    workspaceLayout->addWidget(m_sampleDataEdit);
     workspaceLayout->addWidget(m_statusLabel);
 
-    auto* elementPanel = new QWidget(this);
+    auto* elementScrollArea = new QScrollArea(this);
+    elementScrollArea->setWidgetResizable(true);
+    elementScrollArea->setMinimumWidth(320);
+    auto* elementPanel = new QWidget(elementScrollArea);
     auto* elementLayout = new QVBoxLayout(elementPanel);
     elementLayout->setContentsMargins(8, 0, 0, 0);
     auto* elementTitleLabel = new QLabel(QString::fromUtf8("元素"), elementPanel);
@@ -471,6 +683,7 @@ void TemplateDesignerWindow::buildUi()
     auto* addQrCodeButton = createButton(QString::fromUtf8("二维码"), QStringLiteral("designerAddQrCodeButton"), elementPanel);
     auto* addRectangleButton = createButton(QString::fromUtf8("矩形"), QStringLiteral("designerAddRectangleButton"), elementPanel);
     auto* addTableButton = createButton(QString::fromUtf8("表格"), QStringLiteral("designerAddTableButton"), elementPanel);
+    auto* addArrayGridButton = createButton(QString::fromUtf8("数组网格"), QStringLiteral("designerAddArrayGridButton"), elementPanel);
     auto* deleteElementButton = createButton(QString::fromUtf8("删除元素"), QStringLiteral("deleteElementButton"), elementPanel);
     auto* lockElementButton = createButton(QString::fromUtf8("锁定元素"), QStringLiteral("lockElementButton"), elementPanel);
     auto* hideElementButton = createButton(QString::fromUtf8("隐藏元素"), QStringLiteral("hideElementButton"), elementPanel);
@@ -509,6 +722,14 @@ void TemplateDesignerWindow::buildUi()
     m_deviceProfileScaleYSpin = createProfileSpinBox(QStringLiteral("deviceProfileScaleYSpin"), 0.5, 2.0, 1.0, elementPanel);
     m_deviceProfileOffsetXSpin = createProfileSpinBox(QStringLiteral("deviceProfileOffsetXSpin"), -50.0, 50.0, 0.0, elementPanel);
     m_deviceProfileOffsetYSpin = createProfileSpinBox(QStringLiteral("deviceProfileOffsetYSpin"), -50.0, 50.0, 0.0, elementPanel);
+    m_deviceCalibrationExpectedWidthSpin = createProfileSpinBox(QStringLiteral("deviceCalibrationExpectedWidthSpin"), 1.0, 1000.0, 80.0, elementPanel);
+    m_deviceCalibrationActualWidthSpin = createProfileSpinBox(QStringLiteral("deviceCalibrationActualWidthSpin"), 1.0, 1000.0, 80.0, elementPanel);
+    m_deviceCalibrationExpectedHeightSpin = createProfileSpinBox(QStringLiteral("deviceCalibrationExpectedHeightSpin"), 1.0, 1000.0, 30.0, elementPanel);
+    m_deviceCalibrationActualHeightSpin = createProfileSpinBox(QStringLiteral("deviceCalibrationActualHeightSpin"), 1.0, 1000.0, 30.0, elementPanel);
+    auto* calculateDeviceCalibrationButton = createButton(
+        QString::fromUtf8("按测量值计算缩放"),
+        QStringLiteral("calculateDeviceCalibrationScaleButton"),
+        elementPanel);
     auto* saveDeviceProfileButton = createButton(QString::fromUtf8("保存校准"), QStringLiteral("saveDeviceProfileButton"), elementPanel);
 
     auto* addElementGrid = new QGridLayout();
@@ -517,7 +738,8 @@ void TemplateDesignerWindow::buildUi()
     addElementGrid->addWidget(addBoundFieldButton, 0, 1);
     addElementGrid->addWidget(addQrCodeButton, 1, 0);
     addElementGrid->addWidget(addRectangleButton, 1, 1);
-    addElementGrid->addWidget(addTableButton, 2, 0, 1, 2);
+    addElementGrid->addWidget(addTableButton, 2, 0);
+    addElementGrid->addWidget(addArrayGridButton, 2, 1);
 
     auto* editElementGrid = new QGridLayout();
     editElementGrid->setContentsMargins(0, 0, 0, 0);
@@ -526,6 +748,40 @@ void TemplateDesignerWindow::buildUi()
     editElementGrid->addWidget(hideElementButton, 1, 0);
     editElementGrid->addWidget(moveElementUpButton, 1, 1);
     editElementGrid->addWidget(moveElementDownButton, 2, 0, 1, 2);
+
+    auto* elementPropertyTitleLabel = new QLabel(QString::fromUtf8("元素属性"), elementPanel);
+    auto* elementValueLabel = new QLabel(QString::fromUtf8("内容（可用 ${fieldKey} 占位）"), elementPanel);
+    m_elementValueEdit = new QPlainTextEdit(elementPanel);
+    m_elementValueEdit->setObjectName(QStringLiteral("elementValueEdit"));
+    m_elementValueEdit->setFixedHeight(72);
+    m_elementValueEdit->setPlaceholderText(QString::fromUtf8("例如：地址:${address}"));
+    connect(m_elementValueEdit, &QPlainTextEdit::destroyed, this, [this] { m_elementValueEdit = nullptr; });
+    m_elementXSpin = createTableSpinBox(QStringLiteral("elementXSpin"), 0.0, 1000.0, 5.0, elementPanel);
+    m_elementYSpin = createTableSpinBox(QStringLiteral("elementYSpin"), 0.0, 1000.0, 5.0, elementPanel);
+    m_elementWidthSpin = createTableSpinBox(QStringLiteral("elementWidthSpin"), 0.1, 1000.0, 10.0, elementPanel);
+    m_elementHeightSpin = createTableSpinBox(QStringLiteral("elementHeightSpin"), 0.1, 1000.0, 3.0, elementPanel);
+    m_elementFontSizeSpin = createTableSpinBox(QStringLiteral("elementFontSizeSpin"), 1.0, 96.0, 4.0, elementPanel);
+    m_elementRotationSpin = createTableSpinBox(QStringLiteral("elementRotationSpin"), -360.0, 360.0, 0.0, elementPanel);
+    m_elementBoldCheck = new QCheckBox(QString::fromUtf8("加粗"), elementPanel);
+    m_elementBoldCheck->setObjectName(QStringLiteral("elementBoldCheck"));
+    m_elementVerticalTextCheck = new QCheckBox(QString::fromUtf8("竖排文本"), elementPanel);
+    m_elementVerticalTextCheck->setObjectName(QStringLiteral("elementVerticalTextCheck"));
+    auto* arrayGridPropertyTitleLabel = new QLabel(QString::fromUtf8("数组网格属性"), elementPanel);
+    m_arrayGridDataPathEdit = new QLineEdit(elementPanel);
+    m_arrayGridDataPathEdit->setObjectName(QStringLiteral("arrayGridDataPathEdit"));
+    m_arrayGridDataPathEdit->setPlaceholderText(QStringLiteral("header_items"));
+    m_arrayGridRowsSpin = createGridSpinBox(QStringLiteral("arrayGridRowsSpin"), 1, 20, 2, elementPanel);
+    m_arrayGridColumnsSpin = createGridSpinBox(QStringLiteral("arrayGridColumnsSpin"), 1, 20, 3, elementPanel);
+    m_arrayGridCellTemplateEdit = new QPlainTextEdit(elementPanel);
+    m_arrayGridCellTemplateEdit->setObjectName(QStringLiteral("arrayGridCellTemplateEdit"));
+    m_arrayGridCellTemplateEdit->setFixedHeight(56);
+    m_arrayGridCellTemplateEdit->setPlaceholderText(QStringLiteral("${text}:${value}"));
+    m_arrayGridDrawBordersCheck = new QCheckBox(QString::fromUtf8("绘制网格边框"), elementPanel);
+    m_arrayGridDrawBordersCheck->setObjectName(QStringLiteral("arrayGridDrawBordersCheck"));
+    auto* applyElementPropertiesButton = createButton(
+        QString::fromUtf8("应用元素属性"),
+        QStringLiteral("applyElementPropertiesButton"),
+        elementPanel);
 
     auto* tablePropertyGrid = new QGridLayout();
     tablePropertyGrid->setContentsMargins(0, 0, 0, 0);
@@ -550,6 +806,35 @@ void TemplateDesignerWindow::buildUi()
     tablePropertyGrid->addWidget(new QLabel(QString::fromUtf8("列"), elementPanel), 10, 0);
     tablePropertyGrid->addWidget(m_tableColumnsEdit, 10, 1);
 
+    auto* elementGeometryGrid = new QGridLayout();
+    elementGeometryGrid->setContentsMargins(0, 0, 0, 0);
+    elementGeometryGrid->addWidget(new QLabel(QStringLiteral("X"), elementPanel), 0, 0);
+    elementGeometryGrid->addWidget(m_elementXSpin, 0, 1);
+    elementGeometryGrid->addWidget(new QLabel(QStringLiteral("Y"), elementPanel), 1, 0);
+    elementGeometryGrid->addWidget(m_elementYSpin, 1, 1);
+    elementGeometryGrid->addWidget(new QLabel(QString::fromUtf8("宽"), elementPanel), 2, 0);
+    elementGeometryGrid->addWidget(m_elementWidthSpin, 2, 1);
+    elementGeometryGrid->addWidget(new QLabel(QString::fromUtf8("高"), elementPanel), 3, 0);
+    elementGeometryGrid->addWidget(m_elementHeightSpin, 3, 1);
+    elementGeometryGrid->addWidget(new QLabel(QString::fromUtf8("字号"), elementPanel), 4, 0);
+    elementGeometryGrid->addWidget(m_elementFontSizeSpin, 4, 1);
+    elementGeometryGrid->addWidget(new QLabel(QString::fromUtf8("旋转"), elementPanel), 5, 0);
+    elementGeometryGrid->addWidget(m_elementRotationSpin, 5, 1);
+    elementGeometryGrid->addWidget(m_elementBoldCheck, 6, 0, 1, 2);
+    elementGeometryGrid->addWidget(m_elementVerticalTextCheck, 7, 0, 1, 2);
+
+    auto* arrayGridPropertyGrid = new QGridLayout();
+    arrayGridPropertyGrid->setContentsMargins(0, 0, 0, 0);
+    arrayGridPropertyGrid->addWidget(new QLabel(QStringLiteral("dataPath"), elementPanel), 0, 0);
+    arrayGridPropertyGrid->addWidget(m_arrayGridDataPathEdit, 0, 1);
+    arrayGridPropertyGrid->addWidget(new QLabel(QString::fromUtf8("行数"), elementPanel), 1, 0);
+    arrayGridPropertyGrid->addWidget(m_arrayGridRowsSpin, 1, 1);
+    arrayGridPropertyGrid->addWidget(new QLabel(QString::fromUtf8("列数"), elementPanel), 2, 0);
+    arrayGridPropertyGrid->addWidget(m_arrayGridColumnsSpin, 2, 1);
+    arrayGridPropertyGrid->addWidget(new QLabel(QString::fromUtf8("单元格模板"), elementPanel), 3, 0, 1, 2);
+    arrayGridPropertyGrid->addWidget(m_arrayGridCellTemplateEdit, 4, 0, 1, 2);
+    arrayGridPropertyGrid->addWidget(m_arrayGridDrawBordersCheck, 5, 0, 1, 2);
+
     auto* deviceProfileGrid = new QGridLayout();
     deviceProfileGrid->setContentsMargins(0, 0, 0, 0);
     deviceProfileGrid->addWidget(new QLabel(QString::fromUtf8("打印机"), elementPanel), 0, 0);
@@ -564,21 +849,38 @@ void TemplateDesignerWindow::buildUi()
     deviceProfileGrid->addWidget(m_deviceProfileOffsetXSpin, 4, 1);
     deviceProfileGrid->addWidget(new QLabel(QString::fromUtf8("纵向偏移"), elementPanel), 5, 0);
     deviceProfileGrid->addWidget(m_deviceProfileOffsetYSpin, 5, 1);
+    deviceProfileGrid->addWidget(new QLabel(QString::fromUtf8("期望宽度"), elementPanel), 6, 0);
+    deviceProfileGrid->addWidget(m_deviceCalibrationExpectedWidthSpin, 6, 1);
+    deviceProfileGrid->addWidget(new QLabel(QString::fromUtf8("实际宽度"), elementPanel), 7, 0);
+    deviceProfileGrid->addWidget(m_deviceCalibrationActualWidthSpin, 7, 1);
+    deviceProfileGrid->addWidget(new QLabel(QString::fromUtf8("期望高度"), elementPanel), 8, 0);
+    deviceProfileGrid->addWidget(m_deviceCalibrationExpectedHeightSpin, 8, 1);
+    deviceProfileGrid->addWidget(new QLabel(QString::fromUtf8("实际高度"), elementPanel), 9, 0);
+    deviceProfileGrid->addWidget(m_deviceCalibrationActualHeightSpin, 9, 1);
 
     elementLayout->addWidget(elementTitleLabel);
     elementLayout->addWidget(m_elementList, 1);
     elementLayout->addLayout(addElementGrid);
     elementLayout->addLayout(editElementGrid);
+    elementLayout->addWidget(elementPropertyTitleLabel);
+    elementLayout->addWidget(elementValueLabel);
+    elementLayout->addWidget(m_elementValueEdit);
+    elementLayout->addLayout(elementGeometryGrid);
+    elementLayout->addWidget(arrayGridPropertyTitleLabel);
+    elementLayout->addLayout(arrayGridPropertyGrid);
+    elementLayout->addWidget(applyElementPropertiesButton);
     elementLayout->addWidget(tablePropertyTitleLabel);
     elementLayout->addLayout(tablePropertyGrid);
     elementLayout->addWidget(applyTablePropertiesButton);
     elementLayout->addWidget(deviceProfileTitleLabel);
     elementLayout->addLayout(deviceProfileGrid);
+    elementLayout->addWidget(calculateDeviceCalibrationButton);
     elementLayout->addWidget(saveDeviceProfileButton);
 
     rootLayout->addWidget(layerPanel, 0);
     rootLayout->addWidget(workspacePanel, 1);
-    rootLayout->addWidget(elementPanel, 0);
+    elementScrollArea->setWidget(elementPanel);
+    rootLayout->addWidget(elementScrollArea, 0);
 
     connect(addLayerButton, &QPushButton::clicked, this, [this] { addLayer(); });
     connect(deleteLayerButton, &QPushButton::clicked, this, [this] { deleteCurrentLayer(); });
@@ -590,31 +892,77 @@ void TemplateDesignerWindow::buildUi()
     connect(restoreVersionButton, &QPushButton::clicked, this, [this] { restoreActiveTemplateVersion(); });
     connect(importTemplateButton, &QPushButton::clicked, this, [this] { importTemplateWithDialog(); });
     connect(exportTemplateButton, &QPushButton::clicked, this, [this] { exportTemplateWithDialog(); });
+    connect(prePrintTemplateButton, &QPushButton::clicked, this, [this] { prePrintCurrentTemplate(); });
     connect(saveToLibraryButton, &QPushButton::clicked, this, [this] { saveCurrentTemplateToLibrary(); });
     connect(loadFromLibraryButton, &QPushButton::clicked, this, [this] { loadCurrentTemplateFromLibrary(); });
     connect(m_paperSpecCombo, &QComboBox::currentIndexChanged, this, [this] { applySelectedPaperSpec(); });
+    connect(openPaperSpecManagerButton, &QPushButton::clicked, this, [this] {
+        if (m_openPaperSpecManager) {
+            m_openPaperSpecManager();
+        }
+    });
+    connect(openFieldPresetManagerButton, &QPushButton::clicked, this, [this] {
+        if (m_openFieldPresetManager) {
+            m_openFieldPresetManager();
+        }
+    });
     connect(refreshLibraryButton, &QPushButton::clicked, this, [this] { refreshTemplateLibraryList(); });
     connect(loadSelectedLibraryButton, &QPushButton::clicked, this, [this] { loadSelectedTemplateFromLibrary(); });
     connect(createLibraryButton, &QPushButton::clicked, this, [this] { createTemplateInLibrary(); });
     connect(deleteLibraryButton, &QPushButton::clicked, this, [this] { deleteSelectedTemplateFromLibrary(); });
+    connect(duplicateLibraryButton, &QPushButton::clicked, this, [this] { duplicateSelectedTemplateFromLibrary(); });
+    connect(renameLibraryButton, &QPushButton::clicked, this, [this] { renameSelectedTemplateFromLibrary(); });
+    connect(m_templateLibrarySearchEdit, &QLineEdit::textChanged, this, [this] { refreshTemplateLibraryList(); });
+    connect(m_templateLibraryList, &QListWidget::currentItemChanged, this, [this](QListWidgetItem* current) {
+        if (current == nullptr) {
+            return;
+        }
+
+        loadTemplateFromLibraryById(current->data(Qt::UserRole).toString());
+    });
     connect(m_templateLibraryList, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem*) { loadSelectedTemplateFromLibrary(); });
     connect(addFixedTextButton, &QPushButton::clicked, this, [this] { addFixedTextElement(); });
     connect(addBoundFieldButton, &QPushButton::clicked, this, [this] { addBoundFieldElement(); });
     connect(addQrCodeButton, &QPushButton::clicked, this, [this] { addQrCodeElement(); });
     connect(addRectangleButton, &QPushButton::clicked, this, [this] { addRectangleElement(); });
     connect(addTableButton, &QPushButton::clicked, this, [this] { addTableElement(); });
+    connect(addArrayGridButton, &QPushButton::clicked, this, [this] { addArrayGridElement(); });
     connect(deleteElementButton, &QPushButton::clicked, this, [this] { deleteCurrentElement(); });
     connect(lockElementButton, &QPushButton::clicked, this, [this] { toggleCurrentElementLocked(); });
     connect(hideElementButton, &QPushButton::clicked, this, [this] { toggleCurrentElementVisible(); });
     connect(moveElementUpButton, &QPushButton::clicked, this, [this] { moveCurrentElementUp(); });
     connect(moveElementDownButton, &QPushButton::clicked, this, [this] { moveCurrentElementDown(); });
+    connect(applyElementPropertiesButton, &QPushButton::clicked, this, [this] { applyCurrentElementProperties(); });
     connect(applyTablePropertiesButton, &QPushButton::clicked, this, [this] { applyCurrentTableProperties(); });
+    connect(calculateDeviceCalibrationButton, &QPushButton::clicked, this, [this] { calculateDeviceCalibrationScale(); });
     connect(saveDeviceProfileButton, &QPushButton::clicked, this, [this] { saveDeviceProfile(); });
+    connect(saveSampleDataButton, &QPushButton::clicked, this, [this] { saveSampleDataFromEditor(); });
+    connect(m_rulerPrecisionCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (m_previewLabel == nullptr || m_rulerPrecisionCombo == nullptr || index < 0) {
+            return;
+        }
+        m_previewLabel->setRulerPrecisionMm(m_rulerPrecisionCombo->itemData(index).toDouble());
+    });
+    connect(m_designAidCheck, &QCheckBox::toggled, this, [this](bool checked) {
+        if (m_previewLabel != nullptr) {
+            m_previewLabel->setDesignAidVisible(checked);
+        }
+    });
+    connect(m_sampleDataEdit, &QPlainTextEdit::textChanged, this, [this] {
+        bool sampleDataOk = true;
+        QString sampleDataErrorMessage;
+        syncSampleDataFromEditor(&sampleDataOk, &sampleDataErrorMessage);
+        refreshPreview();
+        if (!sampleDataOk && m_statusLabel != nullptr) {
+            m_statusLabel->setText(sampleDataErrorMessage);
+        }
+    });
     connect(m_layerList, &QListWidget::currentRowChanged, this, [this] {
         refreshElementList();
         refreshPreview();
     });
     connect(m_elementList, &QListWidget::currentRowChanged, this, [this] {
+        refreshElementPropertyEditor();
         refreshTablePropertyEditor();
         refreshPreview();
     });
@@ -624,8 +972,8 @@ void TemplateDesignerWindow::buildUi()
         const auto hit = TemplateElementHitTester().hitTest(
             m_previewCommands,
             paperSize,
-            m_previewLabel->size(),
-            position);
+            m_previewLabel->printableImageSizePx(),
+            m_previewLabel->mapToPrintableImagePx(position));
         if (!hit.has_value() || !canEditElement(hit.value())) {
             return false;
         }
@@ -660,6 +1008,7 @@ void TemplateDesignerWindow::ensureCurrentTemplateDocument()
         drawingPlan,
         m_settings.templateElements.value(m_templateKey));
     m_settings.templateDocuments[m_templateKey].paperSpecId = QString::fromLatin1(kDefaultPaperSpecId);
+    m_settings.templateDocuments[m_templateKey].sampleData = defaultSampleDataObject();
 }
 
 void TemplateDesignerWindow::addLayer()
@@ -780,6 +1129,11 @@ void TemplateDesignerWindow::addRectangleElement()
 void TemplateDesignerWindow::addTableElement()
 {
     addTable(createDefaultTable());
+}
+
+void TemplateDesignerWindow::addArrayGridElement()
+{
+    addElement(createDefaultElement(sleekpr::core::TemplateElementType::ArrayGrid));
 }
 
 void TemplateDesignerWindow::deleteCurrentElement()
@@ -935,6 +1289,13 @@ void TemplateDesignerWindow::saveCurrentTemplateToLibrary()
         return;
     }
 
+    bool sampleDataOk = true;
+    QString sampleDataErrorMessage;
+    if (!syncSampleDataFromEditor(&sampleDataOk, &sampleDataErrorMessage)) {
+        m_statusLabel->setText(sampleDataErrorMessage);
+        return;
+    }
+
     QString errorMessage;
     const auto& document = m_settings.templateDocuments[m_templateKey];
     // 设计器只负责发起保存，模板 id 安全性、目录创建和原子写入都交给模板库存储层。
@@ -968,16 +1329,19 @@ void TemplateDesignerWindow::createTemplateInLibrary()
         return;
     }
 
-    auto document = m_settings.templateDocuments[m_templateKey];
     const auto requestedName = m_templateLibraryNameEdit == nullptr
         ? QString()
         : m_templateLibraryNameEdit->text().trimmed();
-    document.id = QStringLiteral("template-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
-    document.name = requestedName.isEmpty() ? QString::fromUtf8("未命名模板") : requestedName;
-    document.templateKey = m_templateKey;
+    const auto& currentDocument = m_settings.templateDocuments[m_templateKey];
+    const auto document = createBlankTemplateDocument(
+        QStringLiteral("template-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)),
+        requestedName.isEmpty() ? QString::fromUtf8("未命名模板") : requestedName,
+        m_templateKey,
+        currentDocument.paperSpecId,
+        currentDocument.deviceProfiles);
 
     QString errorMessage;
-    // 新建模板复用当前画布内容，但生成独立 id，避免误覆盖已保存模板。
+    // 新建模板必须清空画布内容，只保留纸张和校准上下文，避免把上一张标签误当成新模板。
     if (!sleekpr::core::TemplateLibraryStore(m_templateLibraryDirectoryPath).saveTemplate(document, &errorMessage)) {
         m_statusLabel->setText(errorMessage.isEmpty() ? QString::fromUtf8("新建模板失败") : errorMessage);
         return;
@@ -1025,6 +1389,90 @@ void TemplateDesignerWindow::deleteSelectedTemplateFromLibrary()
 
     refreshTemplateLibraryList();
     m_statusLabel->setText(QString::fromUtf8("已删除模板：%1").arg(templateId));
+}
+
+void TemplateDesignerWindow::duplicateSelectedTemplateFromLibrary()
+{
+    if (m_templateLibraryDirectoryPath.trimmed().isEmpty()) {
+        m_statusLabel->setText(QString::fromUtf8("未配置模板库目录"));
+        return;
+    }
+    if (m_templateLibraryList == nullptr || m_templateLibraryList->currentItem() == nullptr) {
+        m_statusLabel->setText(QString::fromUtf8("请先选择模板库中的模板"));
+        return;
+    }
+
+    const auto sourceTemplateId = m_templateLibraryList->currentItem()->data(Qt::UserRole).toString();
+    if (sourceTemplateId.trimmed().isEmpty()) {
+        m_statusLabel->setText(QString::fromUtf8("模板 id 不能为空"));
+        return;
+    }
+
+    sleekpr::core::TemplateLibraryStore store(m_templateLibraryDirectoryPath);
+    QString errorMessage;
+    auto document = store.loadTemplate(sourceTemplateId, &errorMessage);
+    if (!document.has_value()) {
+        m_statusLabel->setText(errorMessage.isEmpty() ? QString::fromUtf8("读取模板失败") : errorMessage);
+        return;
+    }
+
+    const auto sourceName = document->name.trimmed().isEmpty() ? sourceTemplateId : document->name.trimmed();
+    document->id = QStringLiteral("template-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    document->name = QString::fromUtf8("%1 副本").arg(sourceName);
+
+    // 复制只产生一个新的模板库文件，不切换当前画布，避免覆盖用户正在编辑的内容。
+    if (!store.saveTemplate(document.value(), &errorMessage)) {
+        m_statusLabel->setText(errorMessage.isEmpty() ? QString::fromUtf8("复制模板失败") : errorMessage);
+        return;
+    }
+
+    refreshTemplateLibraryList();
+    selectTemplateInLibraryList(document->id);
+    m_statusLabel->setText(QString::fromUtf8("已复制模板：%1").arg(document->name));
+}
+
+void TemplateDesignerWindow::renameSelectedTemplateFromLibrary()
+{
+    if (m_templateLibraryDirectoryPath.trimmed().isEmpty()) {
+        m_statusLabel->setText(QString::fromUtf8("未配置模板库目录"));
+        return;
+    }
+    if (m_templateLibraryList == nullptr || m_templateLibraryList->currentItem() == nullptr) {
+        m_statusLabel->setText(QString::fromUtf8("请先选择模板库中的模板"));
+        return;
+    }
+
+    const auto templateId = m_templateLibraryList->currentItem()->data(Qt::UserRole).toString();
+    const auto requestedName = m_templateLibraryNameEdit == nullptr
+        ? QString()
+        : m_templateLibraryNameEdit->text().trimmed();
+    if (templateId.trimmed().isEmpty()) {
+        m_statusLabel->setText(QString::fromUtf8("模板 id 不能为空"));
+        return;
+    }
+    if (requestedName.isEmpty()) {
+        m_statusLabel->setText(QString::fromUtf8("请输入模板名称"));
+        return;
+    }
+
+    sleekpr::core::TemplateLibraryStore store(m_templateLibraryDirectoryPath);
+    QString errorMessage;
+    auto document = store.loadTemplate(templateId, &errorMessage);
+    if (!document.has_value()) {
+        m_statusLabel->setText(errorMessage.isEmpty() ? QString::fromUtf8("读取模板失败") : errorMessage);
+        return;
+    }
+
+    document->name = requestedName;
+    // 重命名保留模板 id，外部接口和历史引用不会因为显示名变化而失效。
+    if (!store.saveTemplate(document.value(), &errorMessage)) {
+        m_statusLabel->setText(errorMessage.isEmpty() ? QString::fromUtf8("重命名模板失败") : errorMessage);
+        return;
+    }
+
+    refreshTemplateLibraryList();
+    selectTemplateInLibraryList(templateId);
+    m_statusLabel->setText(QString::fromUtf8("已重命名模板：%1").arg(requestedName));
 }
 
 void TemplateDesignerWindow::loadSelectedTemplateFromLibrary()
@@ -1077,13 +1525,24 @@ void TemplateDesignerWindow::refreshTemplateLibraryList()
 
     if (!m_templateLibraryDirectoryPath.trimmed().isEmpty()) {
         const sleekpr::core::TemplateLibraryStore store(m_templateLibraryDirectoryPath);
+        const auto searchQuery = m_templateLibrarySearchEdit == nullptr
+            ? QString()
+            : m_templateLibrarySearchEdit->text().trimmed();
         for (const auto& templateId : store.templateIds()) {
             const auto loadedDocument = store.loadTemplate(templateId);
+            if (!loadedDocument.has_value() && !searchQuery.isEmpty()
+                && !templateId.contains(searchQuery, Qt::CaseInsensitive)) {
+                continue;
+            }
+            if (loadedDocument.has_value()
+                && !templateMatchesLibrarySearch(loadedDocument.value(), templateId, searchQuery)) {
+                continue;
+            }
             const auto displayName = loadedDocument.has_value() && !loadedDocument->name.trimmed().isEmpty()
                 ? QStringLiteral("%1 (%2)").arg(loadedDocument->name.trimmed(), templateId)
                 : templateId;
             auto* item = new QListWidgetItem(displayName, m_templateLibraryList);
-            // 列表显示可调整，但真正加载必须始终使用稳定模板 id。
+            // 列表显示可搜索、可重命名，但真正加载必须始终使用稳定模板 id。
             item->setData(Qt::UserRole, templateId);
         }
     }
@@ -1157,6 +1616,93 @@ void TemplateDesignerWindow::exportTemplateWithDialog()
     m_statusLabel->setText(QString::fromUtf8("导出模板失败"));
 }
 
+void TemplateDesignerWindow::prePrintCurrentTemplate()
+{
+    ensureCurrentTemplateDocument();
+
+    bool sampleDataOk = true;
+    QString sampleDataErrorMessage;
+    const auto renderContext = sampleRenderContext(&sampleDataOk, &sampleDataErrorMessage);
+    if (!sampleDataOk) {
+        if (m_statusLabel != nullptr) {
+            m_statusLabel->setText(sampleDataErrorMessage);
+        }
+        return;
+    }
+
+    const auto requestedPrinter = m_deviceProfilePrinterEdit == nullptr ? QString() : m_deviceProfilePrinterEdit->text();
+    const auto printerName = sleekpr::core::PrinterSelectionResolver().resolve(m_settings, requestedPrinter);
+    const auto printPlan = createCurrentPrintPlan(renderContext, printerName);
+
+    bool printed = false;
+    if (m_prePrintCallback) {
+        printed = m_prePrintCallback(printPlan, printerName);
+    } else {
+        // 设计器预打印必须复用 Qt 原生打印引擎，避免出现一套预览坐标、一套真实打印坐标。
+        sleekpr::infrastructure::QtLabelPrintEngine printEngine;
+        printed = printEngine.print(printPlan, printerName);
+    }
+
+    if (m_statusLabel != nullptr) {
+        m_statusLabel->setText(printed
+                ? QString::fromUtf8("预打印已发送")
+                : QString::fromUtf8("预打印失败，请检查打印机或模板数据"));
+    }
+}
+
+void TemplateDesignerWindow::saveSampleDataFromEditor()
+{
+    bool sampleDataOk = true;
+    QString sampleDataErrorMessage;
+    if (!syncSampleDataFromEditor(&sampleDataOk, &sampleDataErrorMessage)) {
+        if (m_statusLabel != nullptr) {
+            m_statusLabel->setText(sampleDataErrorMessage);
+        }
+        return;
+    }
+
+    refreshPreview();
+    if (m_statusLabel != nullptr) {
+        m_statusLabel->setText(QString::fromUtf8("已保存模拟数据"));
+    }
+}
+
+void TemplateDesignerWindow::calculateDeviceCalibrationScale()
+{
+    if (m_deviceCalibrationExpectedWidthSpin == nullptr
+        || m_deviceCalibrationActualWidthSpin == nullptr
+        || m_deviceCalibrationExpectedHeightSpin == nullptr
+        || m_deviceCalibrationActualHeightSpin == nullptr
+        || m_deviceProfileScaleXSpin == nullptr
+        || m_deviceProfileScaleYSpin == nullptr) {
+        return;
+    }
+
+    const auto expectedWidth = m_deviceCalibrationExpectedWidthSpin->value();
+    const auto actualWidth = m_deviceCalibrationActualWidthSpin->value();
+    const auto expectedHeight = m_deviceCalibrationExpectedHeightSpin->value();
+    const auto actualHeight = m_deviceCalibrationActualHeightSpin->value();
+    if (expectedWidth <= 0.0 || actualWidth <= 0.0 || expectedHeight <= 0.0 || actualHeight <= 0.0) {
+        m_statusLabel->setText(QString::fromUtf8("校准尺寸必须大于 0"));
+        return;
+    }
+
+    // 打印结果偏大时 scale 小于 1，偏小时 scale 大于 1，渲染层会统一应用该缩放。
+    const auto scaleX = expectedWidth / actualWidth;
+    const auto scaleY = expectedHeight / actualHeight;
+    if (scaleX < m_deviceProfileScaleXSpin->minimum()
+        || scaleX > m_deviceProfileScaleXSpin->maximum()
+        || scaleY < m_deviceProfileScaleYSpin->minimum()
+        || scaleY > m_deviceProfileScaleYSpin->maximum()) {
+        m_statusLabel->setText(QString::fromUtf8("测量结果超出当前缩放范围"));
+        return;
+    }
+
+    m_deviceProfileScaleXSpin->setValue(scaleX);
+    m_deviceProfileScaleYSpin->setValue(scaleY);
+    m_statusLabel->setText(QString::fromUtf8("已按测量尺寸计算缩放"));
+}
+
 void TemplateDesignerWindow::saveDeviceProfile()
 {
     ensureCurrentTemplateDocument();
@@ -1174,6 +1720,16 @@ void TemplateDesignerWindow::saveDeviceProfile()
     profile.offsetX = m_deviceProfileOffsetXSpin->value();
     profile.offsetY = m_deviceProfileOffsetYSpin->value();
     profile.notes = QString::fromUtf8("模板设计器校准");
+    if (m_deviceCalibrationExpectedWidthSpin != nullptr
+        && m_deviceCalibrationExpectedHeightSpin != nullptr
+        && m_deviceCalibrationActualWidthSpin != nullptr
+        && m_deviceCalibrationActualHeightSpin != nullptr) {
+        profile.notes = QString::fromUtf8("校准测量：期望 %1x%2 mm，实际 %3x%4 mm")
+                            .arg(m_deviceCalibrationExpectedWidthSpin->value(), 0, 'f', 3)
+                            .arg(m_deviceCalibrationExpectedHeightSpin->value(), 0, 'f', 3)
+                            .arg(m_deviceCalibrationActualWidthSpin->value(), 0, 'f', 3)
+                            .arg(m_deviceCalibrationActualHeightSpin->value(), 0, 'f', 3);
+    }
 
     auto profileIt = std::find_if(document.deviceProfiles.begin(), document.deviceProfiles.end(), [&printerName](const auto& item) {
         return item.printerName.trimmed().compare(printerName, Qt::CaseInsensitive) == 0;
@@ -1277,7 +1833,141 @@ void TemplateDesignerWindow::refreshElementList()
         m_elementList->setCurrentRow(0);
     }
     m_elementList->blockSignals(wasBlocked);
+    refreshElementPropertyEditor();
     refreshTablePropertyEditor();
+}
+
+void TemplateDesignerWindow::refreshElementPropertyEditor()
+{
+    if (m_elementValueEdit == nullptr) {
+        return;
+    }
+
+    const auto* element = currentElement();
+    const QList<QWidget*> propertyControls{
+        m_elementValueEdit,
+        m_elementXSpin,
+        m_elementYSpin,
+        m_elementWidthSpin,
+        m_elementHeightSpin,
+        m_elementFontSizeSpin,
+        m_elementRotationSpin,
+        m_elementBoldCheck,
+        m_elementVerticalTextCheck,
+    };
+    const QList<QWidget*> arrayGridControls{
+        m_arrayGridDataPathEdit,
+        m_arrayGridRowsSpin,
+        m_arrayGridColumnsSpin,
+        m_arrayGridCellTemplateEdit,
+        m_arrayGridDrawBordersCheck,
+    };
+    if (element == nullptr || currentSelectionIsTable()) {
+        m_elementValueEdit->clear();
+        m_elementValueEdit->setPlaceholderText(QString::fromUtf8("请选择固定文本或绑定字段"));
+        for (auto* control : propertyControls) {
+            if (control != nullptr) {
+                control->setEnabled(false);
+            }
+        }
+        for (auto* control : arrayGridControls) {
+            if (control != nullptr) {
+                control->setEnabled(false);
+            }
+        }
+        return;
+    }
+
+    const auto isTextElement = element->type == sleekpr::core::TemplateElementType::FixedText
+        || element->type == sleekpr::core::TemplateElementType::BoundField;
+    const auto isArrayGrid = element->type == sleekpr::core::TemplateElementType::ArrayGrid;
+    const auto canEditValue = isTextElement || element->type == sleekpr::core::TemplateElementType::QrCode;
+    for (auto* control : propertyControls) {
+        if (control != nullptr) {
+            control->setEnabled(true);
+        }
+    }
+    m_elementValueEdit->setEnabled(canEditValue);
+    for (auto* control : arrayGridControls) {
+        if (control != nullptr) {
+            control->setEnabled(isArrayGrid);
+        }
+    }
+    if (m_elementFontSizeSpin != nullptr) {
+        m_elementFontSizeSpin->setEnabled(isTextElement || isArrayGrid);
+    }
+    if (m_elementBoldCheck != nullptr) {
+        m_elementBoldCheck->setEnabled(isTextElement || isArrayGrid);
+    }
+    if (m_elementVerticalTextCheck != nullptr) {
+        m_elementVerticalTextCheck->setEnabled(element->type == sleekpr::core::TemplateElementType::FixedText);
+    }
+    if (m_elementXSpin != nullptr) {
+        m_elementXSpin->setValue(element->x);
+    }
+    if (m_elementYSpin != nullptr) {
+        m_elementYSpin->setValue(element->y);
+    }
+    if (m_elementWidthSpin != nullptr) {
+        m_elementWidthSpin->setValue(element->width);
+    }
+    if (m_elementHeightSpin != nullptr) {
+        m_elementHeightSpin->setValue(element->height);
+    }
+    if (m_elementFontSizeSpin != nullptr) {
+        m_elementFontSizeSpin->setValue(element->fontSizePt);
+    }
+    if (m_elementRotationSpin != nullptr) {
+        m_elementRotationSpin->setValue(element->rotationDegrees);
+    }
+    if (m_elementBoldCheck != nullptr) {
+        m_elementBoldCheck->setChecked(element->bold);
+    }
+    if (m_elementVerticalTextCheck != nullptr) {
+        m_elementVerticalTextCheck->setChecked(element->verticalText);
+    }
+    if (m_arrayGridDataPathEdit != nullptr) {
+        m_arrayGridDataPathEdit->setText(element->dataPath);
+    }
+    if (m_arrayGridRowsSpin != nullptr) {
+        m_arrayGridRowsSpin->setValue(element->arrayGridRows);
+    }
+    if (m_arrayGridColumnsSpin != nullptr) {
+        m_arrayGridColumnsSpin->setValue(element->arrayGridColumns);
+    }
+    if (m_arrayGridCellTemplateEdit != nullptr) {
+        const QSignalBlocker cellTemplateBlocker(m_arrayGridCellTemplateEdit);
+        m_arrayGridCellTemplateEdit->setPlainText(element->arrayGridCellTemplate);
+    }
+    if (m_arrayGridDrawBordersCheck != nullptr) {
+        m_arrayGridDrawBordersCheck->setChecked(element->arrayGridDrawBorders);
+    }
+
+    const QSignalBlocker blocker(m_elementValueEdit);
+    switch (element->type) {
+    case sleekpr::core::TemplateElementType::FixedText:
+        m_elementValueEdit->setPlainText(element->text);
+        m_elementValueEdit->setPlaceholderText(QString::fromUtf8("例如：地址:${address}"));
+        break;
+    case sleekpr::core::TemplateElementType::BoundField:
+        m_elementValueEdit->setPlainText(element->fieldKey);
+        m_elementValueEdit->setPlaceholderText(QString::fromUtf8("字段 key，例如 productName"));
+        break;
+    case sleekpr::core::TemplateElementType::QrCode:
+        m_elementValueEdit->setPlainText(element->payload.trimmed().isEmpty() && !element->fieldKey.trimmed().isEmpty()
+                ? QStringLiteral("${%1}").arg(element->fieldKey.trimmed())
+                : element->payload);
+        m_elementValueEdit->setPlaceholderText(QString::fromUtf8("例如：${qrPayload} 或 地址:${address}"));
+        break;
+    case sleekpr::core::TemplateElementType::ArrayGrid:
+        m_elementValueEdit->clear();
+        m_elementValueEdit->setPlaceholderText(QString::fromUtf8("数组网格请编辑下方 dataPath 和单元格模板"));
+        break;
+    default:
+        m_elementValueEdit->clear();
+        m_elementValueEdit->setPlaceholderText(QString::fromUtf8("当前元素可编辑位置和尺寸"));
+        break;
+    }
 }
 
 void TemplateDesignerWindow::refreshTablePropertyEditor()
@@ -1393,17 +2083,39 @@ void TemplateDesignerWindow::refreshPreview()
     const auto& document = m_settings.templateDocuments[m_templateKey];
     const auto printerName = m_deviceProfilePrinterEdit == nullptr ? QString() : m_deviceProfilePrinterEdit->text();
     const auto profile = sleekpr::core::DeviceProfileResolver::resolve(document.deviceProfiles, printerName);
-    const auto drawingPlan = sleekpr::core::TemplateDocumentRenderer().render(document, labelPlan, m_settings.labelOffset, profile);
+    bool sampleDataOk = true;
+    QString sampleDataErrorMessage;
+    const auto renderContext = sampleRenderContext(&sampleDataOk, &sampleDataErrorMessage);
+    const auto drawingPlan = sleekpr::core::TemplateDocumentRenderer().render(
+        document,
+        labelPlan,
+        m_settings.labelOffset,
+        profile,
+        renderContext);
     m_previewCommands = drawingPlan.commands;
 
     const auto image = sleekpr::infrastructure::LabelPreviewImageRenderer().renderImage(drawingPlan, drawingPlan.renderDpi);
     m_previewLabel->setPixmap(QPixmap::fromImage(image));
+    m_previewLabel->setRulerPaperSizeMm(paperSize);
+    m_previewLabel->setDesignAidCommands(m_previewCommands);
+    m_previewLabel->setDesignAidSelectedElementKey(currentElementId());
+    const auto previewOrigin = m_previewLabel->printableImageOriginPx();
+    // 预览控件尺寸包含外置标尺边距，打印图层本身仍保持渲染图原始比例，避免标签变形。
+    m_previewLabel->setFixedSize(image.width() + previewOrigin.x(), image.height() + previewOrigin.y());
+
+    const auto validation = sleekpr::core::TemplateDocumentValidator().validate(document, paperSize);
+    if (!sampleDataOk && m_statusLabel != nullptr) {
+        m_statusLabel->setText(sampleDataErrorMessage);
+    } else if (validation.hasErrors() && m_statusLabel != nullptr) {
+        m_statusLabel->setText(QString::fromUtf8("模板校验失败：%1").arg(validation.firstErrorMessage()));
+    }
 }
 
 void TemplateDesignerWindow::refreshAll()
 {
     const auto layerId = currentLayerId();
     const auto elementId = currentElementId();
+    refreshSampleDataEditor();
     refreshPaperSpecSelector();
     refreshLayerList();
     selectLayer(layerId);
@@ -1435,6 +2147,21 @@ void TemplateDesignerWindow::applySelectedPaperSpec()
         m_statusLabel->setText(QString::fromUtf8("已切换纸张规格"));
     }
     notifySettingsChanged();
+}
+
+void TemplateDesignerWindow::refreshSampleDataEditor()
+{
+    ensureCurrentTemplateDocument();
+    if (m_sampleDataEdit == nullptr) {
+        return;
+    }
+
+    const auto& document = m_settings.templateDocuments[m_templateKey];
+    const auto sampleData = document.sampleData.isEmpty()
+        ? defaultSampleDataObject()
+        : document.sampleData;
+    const QSignalBlocker blocker(m_sampleDataEdit);
+    m_sampleDataEdit->setPlainText(sampleDataJson(sampleData));
 }
 
 void TemplateDesignerWindow::notifySettingsChanged()
@@ -1525,6 +2252,121 @@ QSizeF TemplateDesignerWindow::currentPaperSizeMm() const
     return defaultPaperSizeMm();
 }
 
+sleekpr::core::NativePrintDrawingPlan TemplateDesignerWindow::createCurrentPrintPlan(
+    const sleekpr::core::TemplateRenderContext& renderContext,
+    const QString& printerName) const
+{
+    const_cast<TemplateDesignerWindow*>(this)->ensureCurrentTemplateDocument();
+
+    const auto labelItem = sleekpr::infrastructure::PreviewLabelFactory::createDemoLabel(
+        sleekpr::core::LabelTemplateKey::Default80x30);
+    auto labelPlan = sleekpr::core::LabelRenderPlanner().createPlan(labelItem);
+    const auto paperSize = currentPaperSizeMm();
+    labelPlan.paperSize = sleekpr::core::LabelPaperSize(paperSize.width(), paperSize.height());
+
+    const auto documentIt = m_settings.templateDocuments.constFind(m_templateKey);
+    if (documentIt == m_settings.templateDocuments.constEnd()) {
+        return {};
+    }
+
+    const auto profile = sleekpr::core::DeviceProfileResolver::resolve(documentIt.value().deviceProfiles, printerName);
+    return sleekpr::core::TemplateDocumentRenderer().renderPrint(
+        documentIt.value(),
+        labelPlan,
+        m_settings.labelOffset,
+        profile,
+        renderContext);
+}
+
+QJsonObject TemplateDesignerWindow::sampleDataFromEditor(bool* ok, QString* errorMessage) const
+{
+    if (ok != nullptr) {
+        *ok = true;
+    }
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+
+    if (m_sampleDataEdit == nullptr) {
+        return {};
+    }
+
+    const auto sampleDataText = m_sampleDataEdit->toPlainText().trimmed();
+    if (sampleDataText.isEmpty()) {
+        return {};
+    }
+
+    QJsonParseError parseError;
+    const auto document = QJsonDocument::fromJson(sampleDataText.toUtf8(), &parseError);
+    if (parseError.error != QJsonParseError::NoError) {
+        if (ok != nullptr) {
+            *ok = false;
+        }
+        if (errorMessage != nullptr) {
+            *errorMessage = QString::fromUtf8("模拟数据 JSON 解析失败：%1").arg(parseError.errorString());
+        }
+        return {};
+    }
+
+    if (!document.isObject()) {
+        if (ok != nullptr) {
+            *ok = false;
+        }
+        if (errorMessage != nullptr) {
+            *errorMessage = QString::fromUtf8("模拟数据 JSON 解析失败：根节点必须是对象");
+        }
+        return {};
+    }
+
+    return document.object();
+}
+
+bool TemplateDesignerWindow::syncSampleDataFromEditor(bool* ok, QString* errorMessage)
+{
+    ensureCurrentTemplateDocument();
+    bool parseOk = true;
+    QString parseErrorMessage;
+    const auto sampleData = sampleDataFromEditor(&parseOk, &parseErrorMessage);
+    if (ok != nullptr) {
+        *ok = parseOk;
+    }
+    if (errorMessage != nullptr) {
+        *errorMessage = parseErrorMessage;
+    }
+    if (!parseOk) {
+        return false;
+    }
+
+    auto& document = m_settings.templateDocuments[m_templateKey];
+    if (document.sampleData != sampleData) {
+        // 样例数据跟随模板保存，但只参与设计器预览；正式打印仍由接口 values 提供真实数据。
+        document.sampleData = sampleData;
+        notifySettingsChanged();
+    }
+    return true;
+}
+
+sleekpr::core::TemplateRenderContext TemplateDesignerWindow::sampleRenderContext(bool* ok, QString* errorMessage) const
+{
+    sleekpr::core::TemplateRenderContext context;
+    bool parseOk = true;
+    QString parseErrorMessage;
+    const auto sampleData = sampleDataFromEditor(&parseOk, &parseErrorMessage);
+    if (ok != nullptr) {
+        *ok = parseOk;
+    }
+    if (errorMessage != nullptr) {
+        *errorMessage = parseErrorMessage;
+    }
+    if (!parseOk) {
+        return context;
+    }
+
+    // 设计器预览只读取模板绑定的样例数据；正式打印链路不会读取 sampleData。
+    context.values = sampleData;
+    return context;
+}
+
 bool TemplateDesignerWindow::selectLayer(const QString& layerId)
 {
     if (layerId.isEmpty()) {
@@ -1583,6 +2425,21 @@ bool TemplateDesignerWindow::selectElementInCurrentList(const QString& elementId
     for (int row = 0; row < m_elementList->count(); ++row) {
         if (m_elementList->item(row)->data(Qt::UserRole).toString() == elementId) {
             m_elementList->setCurrentRow(row);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool TemplateDesignerWindow::selectTemplateInLibraryList(const QString& templateId)
+{
+    if (m_templateLibraryList == nullptr || templateId.trimmed().isEmpty()) {
+        return false;
+    }
+
+    for (int row = 0; row < m_templateLibraryList->count(); ++row) {
+        if (m_templateLibraryList->item(row)->data(Qt::UserRole).toString() == templateId) {
+            m_templateLibraryList->setCurrentRow(row);
             return true;
         }
     }
@@ -1734,6 +2591,64 @@ void TemplateDesignerWindow::addTable(sleekpr::core::TableElement table)
     notifySettingsChanged();
 }
 
+void TemplateDesignerWindow::applyCurrentElementProperties()
+{
+    auto* element = currentElement();
+    if (element == nullptr || currentSelectionIsTable()) {
+        m_statusLabel->setText(QString::fromUtf8("请先选择固定文本或绑定字段"));
+        return;
+    }
+    if (!canEditElement(element->id)) {
+        m_statusLabel->setText(QString::fromUtf8("当前元素不可编辑"));
+        return;
+    }
+
+    const auto elementId = element->id;
+    const auto value = m_elementValueEdit == nullptr ? QString() : m_elementValueEdit->toPlainText();
+    switch (element->type) {
+    case sleekpr::core::TemplateElementType::FixedText:
+        // 固定文本保存原始模板内容，${字段名} 会在预览和打印渲染阶段替换。
+        element->text = value;
+        break;
+    case sleekpr::core::TemplateElementType::BoundField:
+        element->fieldKey = value.trimmed();
+        break;
+    case sleekpr::core::TemplateElementType::QrCode:
+        // 二维码保存原始模板内容，${字段名} 会在生成二维码矩阵前替换成接口传入值。
+        element->payload = value;
+        break;
+    case sleekpr::core::TemplateElementType::ArrayGrid:
+        element->dataPath = m_arrayGridDataPathEdit == nullptr ? element->dataPath : m_arrayGridDataPathEdit->text().trimmed();
+        element->arrayGridRows = m_arrayGridRowsSpin == nullptr ? element->arrayGridRows : m_arrayGridRowsSpin->value();
+        element->arrayGridColumns = m_arrayGridColumnsSpin == nullptr ? element->arrayGridColumns : m_arrayGridColumnsSpin->value();
+        element->arrayGridCellTemplate = m_arrayGridCellTemplateEdit == nullptr
+            ? element->arrayGridCellTemplate
+            : m_arrayGridCellTemplateEdit->toPlainText();
+        element->arrayGridDrawBorders = m_arrayGridDrawBordersCheck == nullptr
+            ? element->arrayGridDrawBorders
+            : m_arrayGridDrawBordersCheck->isChecked();
+        break;
+    default:
+        break;
+    }
+    // 普通元素的几何和文本样式统一在属性面板回写；表格仍使用独立的表格属性面板。
+    element->x = m_elementXSpin == nullptr ? element->x : m_elementXSpin->value();
+    element->y = m_elementYSpin == nullptr ? element->y : m_elementYSpin->value();
+    element->width = m_elementWidthSpin == nullptr ? element->width : m_elementWidthSpin->value();
+    element->height = m_elementHeightSpin == nullptr ? element->height : m_elementHeightSpin->value();
+    element->fontSizePt = m_elementFontSizeSpin == nullptr ? element->fontSizePt : m_elementFontSizeSpin->value();
+    element->rotationDegrees = m_elementRotationSpin == nullptr ? element->rotationDegrees : m_elementRotationSpin->value();
+    element->bold = m_elementBoldCheck == nullptr ? element->bold : m_elementBoldCheck->isChecked();
+    element->verticalText = element->type == sleekpr::core::TemplateElementType::FixedText
+        && m_elementVerticalTextCheck != nullptr
+        && m_elementVerticalTextCheck->isChecked();
+
+    refreshAll();
+    selectElement(elementId);
+    m_statusLabel->setText(QString::fromUtf8("已更新元素属性"));
+    notifySettingsChanged();
+}
+
 void TemplateDesignerWindow::applyCurrentTableProperties()
 {
     // 属性面板回写整张表格，但 id、所属图层和层内顺序仍由编辑模型保护。
@@ -1784,7 +2699,7 @@ void TemplateDesignerWindow::moveSelectedElementByPixels(QPoint delta)
             return;
         }
 
-        const TemplateDragCoordinateMapper mapper(currentPaperSizeMm(), m_previewLabel->size());
+        const TemplateDragCoordinateMapper mapper(currentPaperSizeMm(), m_previewLabel->printableImageSizePx());
         const auto tableId = table->id;
         const auto moved = mapper.movedTopLeftMm(
             QPointF(table->x, table->y),
@@ -1805,7 +2720,7 @@ void TemplateDesignerWindow::moveSelectedElementByPixels(QPoint delta)
         return;
     }
 
-    const TemplateDragCoordinateMapper mapper(currentPaperSizeMm(), m_previewLabel->size());
+    const TemplateDragCoordinateMapper mapper(currentPaperSizeMm(), m_previewLabel->printableImageSizePx());
     const auto elementId = element->id;
     const auto moved = mapper.movedTopLeftMm(
         QPointF(element->x, element->y),

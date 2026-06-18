@@ -29,6 +29,9 @@ struct NativeDrawCommand
 
     // 模板元素 key，用于设置页覆盖位置、字号和加粗状态。
     QString elementKey;
+
+    // 模板设计器文本需要按元素宽度自动换行，超过元素高度的内容由绘制后端裁切。
+    bool wrapText = false;
 };
 
-} // 命名空间 sleekpr::core
+} // namespace sleekpr::core

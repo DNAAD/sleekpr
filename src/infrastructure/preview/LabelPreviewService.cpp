@@ -33,13 +33,18 @@ QImage LabelPreviewService::renderPreview(
     const auto templateKey = sleekpr::core::templateOverrideKey(labelPlan.templateKey);
     const auto documentIt = settings.templateDocuments.constFind(templateKey);
     if (documentIt != settings.templateDocuments.cend()) {
+        const auto& document = documentIt.value();
+        sleekpr::core::TemplateRenderContext previewContext;
+        // 设置页预览读取模板内绑定的模拟数据；真实打印仍由接口传入的实际数据覆盖。
+        previewContext.values = document.sampleData;
         // 完整模板文档已经包含图层和元素；这里只叠加设备 profile，确保预览与真实打印使用同一份毫米坐标计划。
         const auto profile = sleekpr::core::DeviceProfileResolver::resolve(documentIt.value().deviceProfiles, printerName);
         const auto drawingPlan = sleekpr::core::TemplateDocumentRenderer().render(
-            documentIt.value(),
+            document,
             labelPlan,
             settings.labelOffset,
-            profile);
+            profile,
+            previewContext);
         return LabelPreviewImageRenderer().renderImage(drawingPlan, drawingPlan.renderDpi);
     }
 

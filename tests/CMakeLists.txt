@@ -27,6 +27,8 @@ configure_qt_test_runtime(sleekpr_core_tests)
 
 add_executable(sleekpr_app_tests
     tst_app.cpp
+    ../src/app/FieldPresetManagerWindow.cpp
+    ../src/app/PaperSpecManagerWindow.cpp
     ../src/app/SettingsWindow.cpp
     ../src/app/TemplateDesignerWindow.cpp
     ../src/app/TemplateDragCoordinateMapper.cpp

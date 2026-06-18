@@ -34,7 +34,15 @@ QImage LabelPreviewImageRenderer::renderImage(const sleekpr::core::NativeLabelDr
     for (const auto& command : plan.commands) {
         const QRectF rect(command.x * scale, command.y * scale, command.width * scale, command.height * scale);
         if (command.type == sleekpr::core::NativeDrawCommandType::Rectangle) {
+            painter.save();
+            if (command.rotationDegrees != 0.0) {
+                // 非文本元素围绕自身中心旋转，避免二维码和矩形在预览/打印时发生拉伸。
+                painter.translate(rect.center());
+                painter.rotate(-command.rotationDegrees);
+                painter.translate(-rect.center());
+            }
             painter.drawRect(rect);
+            painter.restore();
             continue;
         }
         if (command.type == sleekpr::core::NativeDrawCommandType::QrCode) {
@@ -49,15 +57,20 @@ QImage LabelPreviewImageRenderer::renderImage(const sleekpr::core::NativeLabelDr
         painter.setFont(font);
 
         QTextOption option;
-        option.setWrapMode(command.ellipsis ? QTextOption::WrapAtWordBoundaryOrAnywhere : QTextOption::NoWrap);
+        option.setWrapMode(command.wrapText || command.ellipsis ? QTextOption::WrapAtWordBoundaryOrAnywhere : QTextOption::NoWrap);
         option.setAlignment(Qt::AlignLeft | Qt::AlignTop);
 
         painter.save();
         if (command.rotationDegrees != 0.0) {
             painter.translate(rect.left(), rect.bottom());
             painter.rotate(-command.rotationDegrees);
-            painter.drawText(QRectF(0, 0, rect.height(), rect.width()), command.text, option);
+            const QRectF rotatedRect(0, 0, rect.height(), rect.width());
+            // 文本按元素区域裁切：宽度不足时可换行，高度不足时不向外溢出。
+            painter.setClipRect(rotatedRect);
+            painter.drawText(rotatedRect, command.text, option);
         } else {
+            // 文本按元素区域裁切：宽度不足时可换行，高度不足时不向外溢出。
+            painter.setClipRect(rect);
             painter.drawText(rect, command.text, option);
         }
         painter.restore();
@@ -90,6 +103,14 @@ void LabelPreviewImageRenderer::drawQrCode(QPainter& painter, const sleekpr::cor
     }
     const auto moduleSize = rect.width() / matrix.size();
 
+    painter.save();
+    if (command.rotationDegrees != 0.0) {
+        // 二维码模块按原始正方形网格绘制后整体旋转，保持模块比例不变。
+        painter.translate(rect.center());
+        painter.rotate(-command.rotationDegrees);
+        painter.translate(-rect.center());
+    }
+
     // 二维码模块必须逐格填充，禁止缩放位图；这样预览和后续真实打印都能保持清晰边缘。
     for (int row = 0; row < matrix.size(); ++row) {
         for (int column = 0; column < matrix.size(); ++column) {
@@ -100,6 +121,7 @@ void LabelPreviewImageRenderer::drawQrCode(QPainter& painter, const sleekpr::cor
             }
         }
     }
+    painter.restore();
 }
 
 } // 命名空间 sleekpr::infrastructure

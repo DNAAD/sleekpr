@@ -6,6 +6,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QStringList>
 
 #include <algorithm>
 
@@ -220,13 +221,61 @@ QString valueForTemplateField(const LabelRenderPlan& labelPlan, const TemplateRe
     return legacyValueForField(labelPlan, key);
 }
 
+QString interpolateTemplateText(const LabelRenderPlan& labelPlan, const TemplateRenderContext& context, const QString& text)
+{
+    QString result;
+    result.reserve(text.size());
+
+    int cursor = 0;
+    while (cursor < text.size()) {
+        const auto placeholderStart = text.indexOf(QStringLiteral("${"), cursor);
+        if (placeholderStart < 0) {
+            result.append(text.mid(cursor));
+            break;
+        }
+
+        result.append(text.mid(cursor, placeholderStart - cursor));
+        const auto placeholderEnd = text.indexOf(QLatin1Char('}'), placeholderStart + 2);
+        if (placeholderEnd < 0) {
+            result.append(text.mid(placeholderStart));
+            break;
+        }
+
+        const auto fieldKey = text.mid(placeholderStart + 2, placeholderEnd - placeholderStart - 2).trimmed();
+        // 固定文本中的 ${字段名} 在渲染阶段替换；缺失字段按产品约定输出空字符串。
+        result.append(valueForTemplateField(labelPlan, context, fieldKey));
+        cursor = placeholderEnd + 1;
+    }
+
+    return result;
+}
+
+QString verticalTextValue(const QString& text)
+{
+    QStringList lines;
+    lines.reserve(text.size());
+
+    for (const auto& ch : text) {
+        if (ch == QLatin1Char('\r')) {
+            continue;
+        }
+        if (ch == QLatin1Char('\n')) {
+            lines.append(QString());
+            continue;
+        }
+        lines.append(QString(ch));
+    }
+
+    return lines.join(QLatin1Char('\n'));
+}
+
 NativeDrawCommand textCommand(
     const TemplateElement& element,
     const QString& value,
     double offsetX,
     double offsetY)
 {
-    return NativeDrawCommand{
+    NativeDrawCommand command{
         NativeDrawCommandType::Text,
         element.x + offsetX,
         element.y + offsetY,
@@ -240,6 +289,9 @@ NativeDrawCommand textCommand(
         element.ellipsis,
         element.id.trimmed(),
     };
+    // 完整模板的文本元素以设计器矩形为排版边界：宽度内自动换行，高度外交给后端裁切。
+    command.wrapText = true;
+    return command;
 }
 
 NativeDrawCommand qrCommand(
@@ -257,7 +309,7 @@ NativeDrawCommand qrCommand(
         payload,
         0.0,
         false,
-        0.0,
+        element.rotationDegrees,
         0,
         false,
         element.id.trimmed(),
@@ -275,11 +327,162 @@ NativeDrawCommand rectangleCommand(const TemplateElement& element, double offset
         QString(),
         0.0,
         false,
-        0.0,
+        element.rotationDegrees,
         0,
         false,
         element.id.trimmed(),
     };
+}
+
+QJsonValue valueAtPath(const QJsonObject& object, const QString& path)
+{
+    const auto normalizedPath = path.trimmed();
+    if (normalizedPath.isEmpty()) {
+        return QJsonValue();
+    }
+    if (object.contains(normalizedPath)) {
+        return object.value(normalizedPath);
+    }
+
+    // 数组网格允许 dataPath 或单元格模板字段使用 order.items、product.name 这样的嵌套路径。
+    QJsonValue current = object;
+    for (const auto& part : normalizedPath.split(QLatin1Char('.'), Qt::SkipEmptyParts)) {
+        if (!current.isObject()) {
+            return QJsonValue();
+        }
+        const auto currentObject = current.toObject();
+        if (!currentObject.contains(part)) {
+            return QJsonValue();
+        }
+        current = currentObject.value(part);
+    }
+    return current;
+}
+
+QString interpolateArrayGridCellText(const TemplateElement& element, const QJsonValue& rowValue)
+{
+    const auto cellTemplate = element.arrayGridCellTemplate.trimmed().isEmpty()
+        ? QStringLiteral("${value}")
+        : element.arrayGridCellTemplate;
+    const auto rowObject = rowValue.isObject() ? rowValue.toObject() : QJsonObject{{QStringLiteral("value"), rowValue}};
+
+    QString result;
+    result.reserve(cellTemplate.size());
+
+    int cursor = 0;
+    while (cursor < cellTemplate.size()) {
+        const auto placeholderStart = cellTemplate.indexOf(QStringLiteral("${"), cursor);
+        if (placeholderStart < 0) {
+            result.append(cellTemplate.mid(cursor));
+            break;
+        }
+
+        result.append(cellTemplate.mid(cursor, placeholderStart - cursor));
+        const auto placeholderEnd = cellTemplate.indexOf(QLatin1Char('}'), placeholderStart + 2);
+        if (placeholderEnd < 0) {
+            result.append(cellTemplate.mid(placeholderStart));
+            break;
+        }
+
+        const auto fieldKey = cellTemplate.mid(placeholderStart + 2, placeholderEnd - placeholderStart - 2).trimmed();
+        result.append(jsonValueToText(valueAtPath(rowObject, fieldKey)));
+        cursor = placeholderEnd + 1;
+    }
+
+    return result;
+}
+
+NativeDrawCommand arrayGridBorderCommand(
+    const TemplateElement& element,
+    int cellIndex,
+    double x,
+    double y,
+    double width,
+    double height)
+{
+    return NativeDrawCommand{
+        NativeDrawCommandType::Rectangle,
+        x,
+        y,
+        width,
+        height,
+        QString(),
+        0.0,
+        false,
+        element.rotationDegrees,
+        0,
+        false,
+        QStringLiteral("%1.cell%2.border").arg(element.id.trimmed()).arg(cellIndex),
+    };
+}
+
+NativeDrawCommand arrayGridTextCommand(
+    const TemplateElement& element,
+    int cellIndex,
+    double x,
+    double y,
+    double width,
+    double height,
+    const QString& text)
+{
+    constexpr double paddingX = 0.6;
+    constexpr double paddingY = 0.4;
+    NativeDrawCommand command{
+        NativeDrawCommandType::Text,
+        x + paddingX,
+        y + paddingY,
+        std::max(0.1, width - paddingX * 2.0),
+        std::max(0.1, height - paddingY * 2.0),
+        text,
+        element.fontSizePt,
+        element.bold,
+        element.rotationDegrees,
+        element.maxLines,
+        element.ellipsis,
+        QStringLiteral("%1.cell%2").arg(element.id.trimmed()).arg(cellIndex),
+    };
+    // 数组网格单元格同样按单元格宽度换行，避免动态数据被横向截断。
+    command.wrapText = true;
+    return command;
+}
+
+QList<NativeDrawCommand> arrayGridCommands(
+    const TemplateElement& element,
+    const TemplateRenderContext& context,
+    double offsetX,
+    double offsetY)
+{
+    QList<NativeDrawCommand> commands;
+    const auto rows = std::max(1, element.arrayGridRows);
+    const auto columns = std::max(1, element.arrayGridColumns);
+    const auto totalCells = rows * columns;
+    commands.reserve(totalCells * 2);
+
+    const auto arrayValue = valueAtPath(context.values, element.dataPath);
+    const auto items = arrayValue.isArray() ? arrayValue.toArray() : QJsonArray{};
+    const auto cellWidth = element.width / columns;
+    const auto cellHeight = element.height / rows;
+
+    for (int cellIndex = 0; cellIndex < totalCells; ++cellIndex) {
+        const auto rowIndex = cellIndex / columns;
+        const auto columnIndex = cellIndex % columns;
+        const auto cellX = element.x + offsetX + columnIndex * cellWidth;
+        const auto cellY = element.y + offsetY + rowIndex * cellHeight;
+
+        if (element.arrayGridDrawBorders) {
+            commands.append(arrayGridBorderCommand(element, cellIndex, cellX, cellY, cellWidth, cellHeight));
+        }
+        if (cellIndex >= items.size()) {
+            continue;
+        }
+
+        const auto text = interpolateArrayGridCellText(element, items.at(cellIndex));
+        if (!text.trimmed().isEmpty()) {
+            commands.append(arrayGridTextCommand(element, cellIndex, cellX, cellY, cellWidth, cellHeight, text));
+        }
+    }
+
+    return commands;
 }
 
 QList<NativeDrawCommand> renderTemplateElements(
@@ -299,9 +502,12 @@ QList<NativeDrawCommand> renderTemplateElements(
         }
 
         switch (element.type) {
-        case TemplateElementType::FixedText:
-            result.append(textCommand(element, element.text, offsetX, offsetY));
+        case TemplateElementType::FixedText: {
+            const auto text = interpolateTemplateText(labelPlan, context, element.text);
+            // 竖排固定文本只改变绘制命令中的文本换行，不改变元素坐标和旋转语义。
+            result.append(textCommand(element, element.verticalText ? verticalTextValue(text) : text, offsetX, offsetY));
             break;
+        }
         case TemplateElementType::BoundField:
             // 完整模板优先使用本次打印上下文，实现任意自定义字段；没有上下文值时回退旧标签字段。
             result.append(textCommand(element, valueForTemplateField(labelPlan, context, element.fieldKey), offsetX, offsetY));
@@ -309,12 +515,15 @@ QList<NativeDrawCommand> renderTemplateElements(
         case TemplateElementType::QrCode: {
             const auto payload = element.payload.trimmed().isEmpty()
                 ? valueForTemplateField(labelPlan, context, element.fieldKey)
-                : element.payload;
+                : interpolateTemplateText(labelPlan, context, element.payload);
             result.append(qrCommand(element, payload, offsetX, offsetY));
             break;
         }
         case TemplateElementType::Rectangle:
             result.append(rectangleCommand(element, offsetX, offsetY));
+            break;
+        case TemplateElementType::ArrayGrid:
+            result.append(arrayGridCommands(element, context, offsetX, offsetY));
             break;
         }
     }

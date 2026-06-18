@@ -37,18 +37,28 @@ class SettingsWindow final : public QWidget
 public:
     using SettingsAppliedCallback = std::function<void(const sleekpr::core::PrintClientSettings&)>;
     using OpenTemplateDesignerCallback = std::function<void()>;
+    using OpenPaperSpecManagerCallback = std::function<void()>;
+    using OpenFieldPresetManagerCallback = std::function<void()>;
 
     explicit SettingsWindow(QString settingsPath, SettingsAppliedCallback onSettingsApplied, QWidget* parent = nullptr);
+    SettingsWindow(
+        QString settingsPath,
+        SettingsAppliedCallback onSettingsApplied,
+        QString templateLibraryDirectoryPath,
+        QWidget* parent = nullptr);
 
     // 每次从托盘打开设置窗口时重新读取本地文件，确保界面展示最新配置。
     void reloadFromDisk();
     void setOpenTemplateDesignerCallback(OpenTemplateDesignerCallback callback);
+    void setOpenPaperSpecManagerCallback(OpenPaperSpecManagerCallback callback);
+    void setOpenFieldPresetManagerCallback(OpenFieldPresetManagerCallback callback);
 
 private:
     void buildUi();
     QWidget* createPrinterPanel();
     QWidget* createPreviewPanel();
     QWidget* createElementPanel();
+    void populateTemplateCombo(const QString& preferredTemplateKey = QString());
     void populatePrinters();
     void populateElements();
     void selectFirstElement();
@@ -89,10 +99,14 @@ private:
     sleekpr::core::FileSettingsStore m_settingsStore;
     SettingsAppliedCallback m_onSettingsApplied;
     OpenTemplateDesignerCallback m_openTemplateDesigner;
+    OpenPaperSpecManagerCallback m_openPaperSpecManager;
+    OpenFieldPresetManagerCallback m_openFieldPresetManager;
     sleekpr::core::PrintClientSettings m_settings;
     QList<sleekpr::core::TemplateElementDefinition> m_elements;
     QString m_currentElementKey;
     QString m_currentTemplateOverrideKey = QStringLiteral("default");
+    QString m_templateLibraryDirectoryPath;
+    QHash<QString, sleekpr::core::TemplateDocument> m_libraryTemplateDocuments;
     bool m_loadingForm = false;
 
     QComboBox* m_templateCombo = nullptr;

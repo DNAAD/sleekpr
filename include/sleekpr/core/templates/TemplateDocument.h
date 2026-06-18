@@ -5,6 +5,7 @@
 #include "sleekpr/core/templates/TableElement.h"
 
 #include <QList>
+#include <QJsonObject>
 #include <QString>
 
 namespace sleekpr::core {
@@ -64,6 +65,9 @@ struct TemplateDocument
 
     // 模板只保存字段定义，不保存某次业务打印值；字段值由方案和本次请求合并生成。
     QList<FieldDefinition> fieldSchema;
+
+    // 设计器样例数据只用于模板预览和预打印，正式打印必须使用接口本次传入的 values。
+    QJsonObject sampleData;
 
     QList<TemplateVersion> versions;
     QList<DeviceProfile> deviceProfiles;

@@ -1,10 +1,19 @@
 #pragma once
 
+#include "sleekpr/core/native/NativeDrawCommand.h"
+
 #include <QLabel>
+#include <QList>
 #include <QPoint>
+#include <QRectF>
+#include <QSize>
+#include <QSizeF>
+#include <QString>
 #include <Qt>
 
 #include <functional>
+
+class QPainter;
 
 namespace sleekpr::app {
 
@@ -21,16 +30,40 @@ public:
     void setDragStartCallback(DragStartCallback callback);
     void setDragDeltaCallback(DragDeltaCallback callback);
     void setKeyboardNudgeCallback(KeyboardNudgeCallback callback);
+    void setRulerVisible(bool visible);
+    bool isRulerVisible() const;
+    void setRulerPrecisionMm(double precisionMm);
+    double rulerPrecisionMm() const;
+    void setRulerPaperSizeMm(QSizeF paperSizeMm);
+    void setDesignAidVisible(bool visible);
+    bool isDesignAidVisible() const;
+    void setDesignAidCommands(QList<sleekpr::core::NativeDrawCommand> commands);
+    int designAidCommandCount() const;
+    void setDesignAidSelectedElementKey(QString elementKey);
+    QString designAidSelectedElementKey() const;
+    QPoint printableImageOriginPx() const;
+    QSize printableImageSizePx() const;
+    QPoint mapToPrintableImagePx(QPoint widgetPosition) const;
 
 protected:
+    void paintEvent(QPaintEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
 
 private:
+    QRectF commandRectPx(const sleekpr::core::NativeDrawCommand& command, QPoint imageOrigin, QSize imageSize) const;
+    void drawDesignAids(QPainter& painter, QPoint imageOrigin, QSize imageSize) const;
+
     bool m_draggingEnabled = false;
     bool m_dragging = false;
+    bool m_rulerVisible = false;
+    bool m_designAidVisible = false;
+    double m_rulerPrecisionMm = 1.0;
+    QSizeF m_rulerPaperSizeMm;
+    QList<sleekpr::core::NativeDrawCommand> m_designAidCommands;
+    QString m_designAidSelectedElementKey;
     QPoint m_lastMousePosition;
     DragStartCallback m_dragStartCallback;
     DragDeltaCallback m_dragDeltaCallback;

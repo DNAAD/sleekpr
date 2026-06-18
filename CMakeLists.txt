@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+option(SLEEKPR_ENABLE_RELEASE_ORCHESTRATOR "Enable the release packaging orchestrator target" ON)
+
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Network Gui Widgets PrintSupport Test)
 qt_standard_project_setup()
 
@@ -27,6 +29,7 @@ add_library(sleekpr_core
     src/core/settings/TemplateElementCatalog.cpp
     src/core/templates/DeviceProfileResolver.cpp
     src/core/templates/FieldPresetJson.cpp
+    src/core/templates/FieldPresetStore.cpp
     src/core/templates/FieldSchemaJson.cpp
     src/core/templates/PaperSpecJson.cpp
     src/core/templates/PaperSpecStore.cpp
@@ -37,6 +40,7 @@ add_library(sleekpr_core
     src/core/templates/TemplateDocumentJson.cpp
     src/core/templates/TemplateLibraryStore.cpp
     src/core/templates/TemplateDocumentRenderer.cpp
+    src/core/templates/TemplateDocumentValidator.cpp
     src/core/templates/TemplateRenderContextBuilder.cpp
     src/infrastructure/preview/LabelPreviewImageRenderer.cpp
     src/infrastructure/preview/LabelPreviewService.cpp
@@ -72,7 +76,8 @@ target_link_libraries(sleekpr_http
 )
 
 add_executable(sleekpr
-    src/app/PreviewWindow.cpp
+    src/app/FieldPresetManagerWindow.cpp
+    src/app/PaperSpecManagerWindow.cpp
     src/app/SettingsWindow.cpp
     src/app/TemplateDesignerWindow.cpp
     src/app/TemplateDragCoordinateMapper.cpp
@@ -101,14 +106,71 @@ install(TARGETS sleekpr
 if(WIN32)
     get_target_property(QT_CORE_LOCATION Qt6::Core LOCATION)
     get_filename_component(QT_BIN_DIR "${QT_CORE_LOCATION}" DIRECTORY)
+    get_filename_component(SLEEKPR_QT_PREFIX "${QT_BIN_DIR}/.." ABSOLUTE)
     find_program(WINDEPLOYQT_EXECUTABLE windeployqt HINTS "${QT_BIN_DIR}")
     if(WINDEPLOYQT_EXECUTABLE)
-        # 发布前运行该目标会把 Qt 运行时和 platforms/qwindows*.dll 部署到 exe 旁边。
+        # 发布前运行该目标，会把 Qt 运行时和 platforms/qwindows*.dll 部署到当前构建产物旁边。
         add_custom_target(deploy_sleekpr
             COMMAND "${WINDEPLOYQT_EXECUTABLE}" "$<TARGET_FILE:sleekpr>"
             DEPENDS sleekpr
             COMMENT "Deploying Qt runtime beside sleekpr.exe"
             VERBATIM
         )
+
+        set(SLEEKPR_RELEASE_BUILD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build-release")
+        set(SLEEKPR_RELEASE_DIST_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/dist")
+        set(SLEEKPR_RELEASE_STAGE_DIR "${SLEEKPR_RELEASE_DIST_ROOT}/sleekpr-release")
+        set(SLEEKPR_RELEASE_ARCHIVE "${SLEEKPR_RELEASE_DIST_ROOT}/sleekpr-${PROJECT_VERSION}-windows-x64.zip")
+
+        set(SLEEKPR_RELEASE_CONFIGURE_ARGS
+            -S "${CMAKE_CURRENT_SOURCE_DIR}"
+            -B "${SLEEKPR_RELEASE_BUILD_DIR}"
+            -G "${CMAKE_GENERATOR}"
+            "-DCMAKE_BUILD_TYPE=Release"
+            "-DCMAKE_PREFIX_PATH=${SLEEKPR_QT_PREFIX}"
+            "-DSLEEKPR_ENABLE_RELEASE_ORCHESTRATOR=OFF"
+        )
+        if(CMAKE_GENERATOR_PLATFORM)
+            list(APPEND SLEEKPR_RELEASE_CONFIGURE_ARGS -A "${CMAKE_GENERATOR_PLATFORM}")
+        endif()
+        if(CMAKE_GENERATOR_TOOLSET)
+            list(APPEND SLEEKPR_RELEASE_CONFIGURE_ARGS -T "${CMAKE_GENERATOR_TOOLSET}")
+        endif()
+
+        if(SLEEKPR_ENABLE_RELEASE_ORCHESTRATOR)
+            # 外层目标只负责编排独立 Release 构建，真正打包动作由 build-release 中的内部目标完成。
+            add_custom_target(package_sleekpr_release
+                COMMAND "${CMAKE_COMMAND}" -E rm -rf "${SLEEKPR_RELEASE_BUILD_DIR}"
+                COMMAND "${CMAKE_COMMAND}" ${SLEEKPR_RELEASE_CONFIGURE_ARGS}
+                # 先构建默认目标，确保 Release 测试程序也会生成，便于后续 CTest 验证。
+                COMMAND "${CMAKE_COMMAND}" --build "${SLEEKPR_RELEASE_BUILD_DIR}" --config Release
+                COMMAND "${CMAKE_COMMAND}" --build "${SLEEKPR_RELEASE_BUILD_DIR}" --config Release --target package_sleekpr_release_current
+                COMMENT "Building and packaging sleekpr Release archive"
+                VERBATIM
+            )
+        endif()
+
+        if(CMAKE_CONFIGURATION_TYPES OR CMAKE_BUILD_TYPE STREQUAL "Release")
+            # 内部目标仅在 Release 构建目录中打包当前产物，避免把 Debug exe 放进正式包。
+            add_custom_target(deploy_sleekpr_release_current
+                COMMAND "${CMAKE_COMMAND}" -E rm -rf "${SLEEKPR_RELEASE_STAGE_DIR}"
+                COMMAND "${CMAKE_COMMAND}" -E make_directory "${SLEEKPR_RELEASE_STAGE_DIR}"
+                COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:sleekpr>" "${SLEEKPR_RELEASE_STAGE_DIR}/sleekpr.exe"
+                COMMAND "${WINDEPLOYQT_EXECUTABLE}" --release --no-translations --dir "${SLEEKPR_RELEASE_STAGE_DIR}" "${SLEEKPR_RELEASE_STAGE_DIR}/sleekpr.exe"
+                COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE" "${SLEEKPR_RELEASE_STAGE_DIR}/LICENSE"
+                DEPENDS sleekpr
+                COMMENT "Deploying sleekpr Release runtime into dist/sleekpr-release"
+                VERBATIM
+            )
+
+            add_custom_target(package_sleekpr_release_current
+                COMMAND "${CMAKE_COMMAND}" -E rm -f "${SLEEKPR_RELEASE_ARCHIVE}"
+                COMMAND "${CMAKE_COMMAND}" -E tar cf "${SLEEKPR_RELEASE_ARCHIVE}" --format=zip "sleekpr-release"
+                WORKING_DIRECTORY "${SLEEKPR_RELEASE_DIST_ROOT}"
+                DEPENDS deploy_sleekpr_release_current
+                COMMENT "Creating sleekpr Release zip package"
+                VERBATIM
+            )
+        endif()
     endif()
 endif()

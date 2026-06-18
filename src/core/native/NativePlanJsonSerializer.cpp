@@ -22,6 +22,7 @@ QJsonObject NativePlanJsonSerializer::toJson(const NativeLabelDrawingPlan& plan)
             {"maxLines", command.maxLines},
             {"ellipsis", command.ellipsis},
             {"elementKey", command.elementKey},
+            {"wrapText", command.wrapText},
         });
     }
 

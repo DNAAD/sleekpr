@@ -10,6 +10,7 @@ enum class TemplateElementType
     BoundField,
     QrCode,
     Rectangle,
+    ArrayGrid,
 };
 
 struct TemplateElement
@@ -54,6 +55,16 @@ struct TemplateElement
 
     // 文本旋转角度，现有竖排编号依赖该字段保持版式。
     double rotationDegrees = 0.0;
+
+    // 固定文本竖排显示：字符保持正向，只在渲染阶段逐字换行。
+    bool verticalText = false;
+
+    // 数组网格用于把上下文中的数组按固定行列数渲染，例如 header_items 的 2 行 3 列。
+    QString dataPath;
+    int arrayGridRows = 2;
+    int arrayGridColumns = 3;
+    QString arrayGridCellTemplate = QStringLiteral("${text}:${value}");
+    bool arrayGridDrawBorders = true;
 
     // 文本最大行数，0 表示不限制。
     int maxLines = 0;

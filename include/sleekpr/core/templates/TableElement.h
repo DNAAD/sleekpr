@@ -12,6 +12,12 @@ enum class TableCellAlignment
     Right,
 };
 
+enum class TableColumnWidthMode
+{
+    Fixed,
+    Flex,
+};
+
 struct TableColumn
 {
     // 列 id 是表格内部稳定标识，后续列宽调整和单元格命令 key 都依赖它。
@@ -19,6 +25,9 @@ struct TableColumn
     QString title;
     QString fieldKey;
     double widthMm = 20.0;
+    // fixed 使用 widthMm；flex 按 flexWeight 瓜分表格剩余宽度，兼容旧模板默认固定列。
+    TableColumnWidthMode widthMode = TableColumnWidthMode::Fixed;
+    double flexWeight = 1.0;
     TableCellAlignment alignment = TableCellAlignment::Left;
     double fontSizePt = 8.0;
     bool bold = false;

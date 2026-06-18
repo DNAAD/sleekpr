@@ -2,6 +2,8 @@
 
 #include "sleekpr/core/native/SilverNativeLabelDrawingPlanner.h"
 
+#include <QStringList>
+
 #include <algorithm>
 
 namespace sleekpr::core {
@@ -272,6 +274,50 @@ QList<NativeDrawCommand> NativeLabelDrawingPlanner::appendTemplateElements(
     QList<NativeDrawCommand> result = commands;
     result.reserve(commands.size() + sortedElements.size());
 
+    const auto interpolateTemplateText = [&labelPlan](const QString& text) {
+        QString resultText;
+        resultText.reserve(text.size());
+
+        int cursor = 0;
+        while (cursor < text.size()) {
+            const auto placeholderStart = text.indexOf(QStringLiteral("${"), cursor);
+            if (placeholderStart < 0) {
+                resultText.append(text.mid(cursor));
+                break;
+            }
+
+            resultText.append(text.mid(cursor, placeholderStart - cursor));
+            const auto placeholderEnd = text.indexOf(QLatin1Char('}'), placeholderStart + 2);
+            if (placeholderEnd < 0) {
+                resultText.append(text.mid(placeholderStart));
+                break;
+            }
+
+            const auto fieldKey = text.mid(placeholderStart + 2, placeholderEnd - placeholderStart - 2).trimmed();
+            // 旧自定义元素路径没有请求上下文，只能从 LabelRenderPlan 中替换已有字段。
+            resultText.append(NativeLabelDrawingPlanner::valueForField(labelPlan, fieldKey));
+            cursor = placeholderEnd + 1;
+        }
+
+        return resultText;
+    };
+
+    const auto verticalTextValue = [](const QString& text) {
+        QStringList lines;
+        lines.reserve(text.size());
+        for (const auto& ch : text) {
+            if (ch == QLatin1Char('\r')) {
+                continue;
+            }
+            if (ch == QLatin1Char('\n')) {
+                lines.append(QString());
+                continue;
+            }
+            lines.append(QString(ch));
+        }
+        return lines.join(QLatin1Char('\n'));
+    };
+
     for (const auto& element : sortedElements) {
         if (!element.visible) {
             continue;
@@ -285,13 +331,14 @@ QList<NativeDrawCommand> NativeLabelDrawingPlanner::appendTemplateElements(
         const double x = element.x + offsetX;
         const double y = element.y + offsetY;
         switch (element.type) {
-        case TemplateElementType::FixedText:
+        case TemplateElementType::FixedText: {
+            const auto value = interpolateTemplateText(element.text);
             result.append(text(
                 x,
                 y,
                 element.width,
                 element.height,
-                element.text,
+                element.verticalText ? verticalTextValue(value) : value,
                 element.fontSizePt,
                 element.bold,
                 elementKey,
@@ -299,6 +346,7 @@ QList<NativeDrawCommand> NativeLabelDrawingPlanner::appendTemplateElements(
                 element.maxLines,
                 element.ellipsis));
             break;
+        }
         case TemplateElementType::BoundField:
             // 绑定字段只读取渲染计划中的展示文本，避免自定义模板元素反向依赖原始业务对象。
             result.append(text(
@@ -317,7 +365,7 @@ QList<NativeDrawCommand> NativeLabelDrawingPlanner::appendTemplateElements(
         case TemplateElementType::QrCode: {
             const auto payload = element.payload.trimmed().isEmpty()
                 ? valueForField(labelPlan, element.fieldKey)
-                : element.payload;
+                : interpolateTemplateText(element.payload);
             result.append(NativeDrawCommand{
                 NativeDrawCommandType::QrCode,
                 x,
@@ -327,7 +375,7 @@ QList<NativeDrawCommand> NativeLabelDrawingPlanner::appendTemplateElements(
                 payload,
                 0.0,
                 false,
-                0.0,
+                element.rotationDegrees,
                 0,
                 false,
                 elementKey,
@@ -335,7 +383,20 @@ QList<NativeDrawCommand> NativeLabelDrawingPlanner::appendTemplateElements(
             break;
         }
         case TemplateElementType::Rectangle:
-            result.append(rectangle(x, y, element.width, element.height, elementKey));
+            result.append(NativeDrawCommand{
+                NativeDrawCommandType::Rectangle,
+                x,
+                y,
+                element.width,
+                element.height,
+                QString(),
+                0.0,
+                false,
+                element.rotationDegrees,
+                0,
+                false,
+                elementKey,
+            });
             break;
         }
     }

@@ -31,11 +31,35 @@ TableCellAlignment alignmentFromString(const QString& value)
     return TableCellAlignment::Left;
 }
 
+QString widthModeToString(TableColumnWidthMode widthMode)
+{
+    switch (widthMode) {
+    case TableColumnWidthMode::Fixed:
+        return QStringLiteral("fixed");
+    case TableColumnWidthMode::Flex:
+        return QStringLiteral("flex");
+    }
+    return QStringLiteral("fixed");
+}
+
+TableColumnWidthMode widthModeFromString(const QString& value)
+{
+    if (value == QStringLiteral("flex")) {
+        return TableColumnWidthMode::Flex;
+    }
+    return TableColumnWidthMode::Fixed;
+}
+
 bool isKnownAlignment(const QString& value)
 {
     return value == QStringLiteral("left")
         || value == QStringLiteral("center")
         || value == QStringLiteral("right");
+}
+
+bool isKnownWidthMode(const QString& value)
+{
+    return value == QStringLiteral("fixed") || value == QStringLiteral("flex");
 }
 
 void setError(QString* errorMessage, const QString& message)
@@ -57,6 +81,8 @@ QJsonObject columnToJson(const TableColumn& column)
     json["title"] = column.title;
     json["fieldKey"] = column.fieldKey;
     json["widthMm"] = column.widthMm;
+    json["widthMode"] = widthModeToString(column.widthMode);
+    json["flexWeight"] = column.flexWeight;
     json["alignment"] = alignmentToString(column.alignment);
     json["fontSizePt"] = column.fontSizePt;
     json["bold"] = column.bold;
@@ -71,6 +97,8 @@ TableColumn columnFromJson(const QJsonObject& json)
     column.title = json["title"].toString();
     column.fieldKey = json["fieldKey"].toString();
     column.widthMm = json["widthMm"].toDouble(column.widthMm);
+    column.widthMode = widthModeFromString(json["widthMode"].toString(widthModeToString(column.widthMode)));
+    column.flexWeight = json["flexWeight"].toDouble(column.flexWeight);
     column.alignment = alignmentFromString(json["alignment"].toString(alignmentToString(column.alignment)));
     column.fontSizePt = json["fontSizePt"].toDouble(column.fontSizePt);
     column.bold = json["bold"].toBool(column.bold);
@@ -117,6 +145,16 @@ bool validateColumn(const QJsonObject& column, QSet<QString>& columnIds, QString
 
     if (column["widthMm"].toDouble(0.0) <= 0.0) {
         setError(errorMessage, QStringLiteral("表格列宽必须大于 0：%1").arg(columnId));
+        return false;
+    }
+
+    const auto widthMode = column["widthMode"].toString(QStringLiteral("fixed"));
+    if (!isKnownWidthMode(widthMode)) {
+        setError(errorMessage, QString::fromUtf8("表格列宽模式不受支持：%1").arg(widthMode));
+        return false;
+    }
+    if (widthMode == QStringLiteral("flex") && column["flexWeight"].toDouble(1.0) <= 0.0) {
+        setError(errorMessage, QString::fromUtf8("表格弹性列权重必须大于 0：%1").arg(columnId));
         return false;
     }
 

@@ -26,6 +26,8 @@ QString elementTypeToString(TemplateElementType type)
         return QStringLiteral("qrCode");
     case TemplateElementType::Rectangle:
         return QStringLiteral("rectangle");
+    case TemplateElementType::ArrayGrid:
+        return QStringLiteral("arrayGrid");
     }
     return QStringLiteral("fixedText");
 }
@@ -35,7 +37,8 @@ bool isKnownElementType(const QString& value)
     return value == QStringLiteral("fixedText")
         || value == QStringLiteral("boundField")
         || value == QStringLiteral("qrCode")
-        || value == QStringLiteral("rectangle");
+        || value == QStringLiteral("rectangle")
+        || value == QStringLiteral("arrayGrid");
 }
 
 bool isKnownTemplateCategory(const QString& value)
@@ -55,6 +58,9 @@ TemplateElementType elementTypeFromString(const QString& value)
     }
     if (value == QStringLiteral("rectangle")) {
         return TemplateElementType::Rectangle;
+    }
+    if (value == QStringLiteral("arrayGrid")) {
+        return TemplateElementType::ArrayGrid;
     }
     return TemplateElementType::FixedText;
 }
@@ -79,6 +85,12 @@ QJsonObject elementToJson(const TemplateElement& element)
     json["fontSizePt"] = element.fontSizePt;
     json["bold"] = element.bold;
     json["rotationDegrees"] = element.rotationDegrees;
+    json["verticalText"] = element.verticalText;
+    json["dataPath"] = element.dataPath;
+    json["arrayGridRows"] = element.arrayGridRows;
+    json["arrayGridColumns"] = element.arrayGridColumns;
+    json["arrayGridCellTemplate"] = element.arrayGridCellTemplate;
+    json["arrayGridDrawBorders"] = element.arrayGridDrawBorders;
     json["maxLines"] = element.maxLines;
     json["ellipsis"] = element.ellipsis;
     return json;
@@ -107,6 +119,12 @@ TemplateElement elementFromJson(const QJsonObject& json, const QString& parentLa
     element.fontSizePt = json["fontSizePt"].toDouble(element.fontSizePt);
     element.bold = json["bold"].toBool(element.bold);
     element.rotationDegrees = json["rotationDegrees"].toDouble(element.rotationDegrees);
+    element.verticalText = json["verticalText"].toBool(element.verticalText);
+    element.dataPath = json["dataPath"].toString(element.dataPath);
+    element.arrayGridRows = json["arrayGridRows"].toInt(element.arrayGridRows);
+    element.arrayGridColumns = json["arrayGridColumns"].toInt(element.arrayGridColumns);
+    element.arrayGridCellTemplate = json["arrayGridCellTemplate"].toString(element.arrayGridCellTemplate);
+    element.arrayGridDrawBorders = json["arrayGridDrawBorders"].toBool(element.arrayGridDrawBorders);
     element.maxLines = json["maxLines"].toInt(element.maxLines);
     element.ellipsis = json["ellipsis"].toBool(element.ellipsis);
     return element;
@@ -415,6 +433,7 @@ QJsonObject TemplateDocumentJson::toJson(const TemplateDocument& document)
     json["activeVersionId"] = document.activeVersionId;
     json["layers"] = layersToJson(document.layers);
     json["fieldSchema"] = FieldSchemaJson::toJson(document.fieldSchema);
+    json["sampleData"] = document.sampleData;
     json["versions"] = versionsToJson(document.versions);
     json["deviceProfiles"] = profilesToJson(document.deviceProfiles);
     return json;
@@ -436,6 +455,7 @@ TemplateDocument TemplateDocumentJson::fromJson(const QJsonObject& json)
     document.activeVersionId = json["activeVersionId"].toString();
     document.layers = layersFromJson(json["layers"].toArray());
     document.fieldSchema = FieldSchemaJson::fromJson(json["fieldSchema"].toObject());
+    document.sampleData = json["sampleData"].toObject();
     document.versions = versionsFromJson(json["versions"].toArray());
     document.deviceProfiles = profilesFromJson(json["deviceProfiles"].toArray());
     return document;
@@ -478,8 +498,8 @@ bool TemplateDocumentJson::validateForImport(const QJsonObject& json, QString* e
         return false;
     }
 
-    // 导入入口严格检查结构，避免未知元素类型或重复 id 写入 settings.json。
-    if (!validateLayerCollection(json["layers"].toArray(), QStringLiteral("模板"), errorMessage, true)) {
+    // 导入入口严格检查结构，允许新建模板先保存空白图层，但仍拒绝未知元素类型或重复 id。
+    if (!validateLayerCollection(json["layers"].toArray(), QStringLiteral("模板"), errorMessage)) {
         return false;
     }
 
@@ -492,6 +512,11 @@ bool TemplateDocumentJson::validateForImport(const QJsonObject& json, QString* e
         if (!FieldSchemaJson::validate(json["fieldSchema"].toObject(), errorMessage)) {
             return false;
         }
+    }
+
+    if (json.contains("sampleData") && !json["sampleData"].isObject()) {
+        setError(errorMessage, QStringLiteral("模板 sampleData 必须是对象"));
+        return false;
     }
 
     if (json.contains("versions") && !json["versions"].isArray()) {

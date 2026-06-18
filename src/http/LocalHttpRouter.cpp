@@ -9,10 +9,13 @@
 #include "sleekpr/core/settings/PrintClientSettingsJson.h"
 #include "sleekpr/core/settings/PrinterSelectionResolver.h"
 #include "sleekpr/core/templates/DeviceProfileResolver.h"
+#include "sleekpr/core/templates/FieldPresetJson.h"
+#include "sleekpr/core/templates/FieldPresetStore.h"
 #include "sleekpr/core/templates/PaperSpecJson.h"
 #include "sleekpr/core/templates/PaperSpecStore.h"
 #include "sleekpr/core/templates/TemplateDocumentJson.h"
 #include "sleekpr/core/templates/TemplateDocumentRenderer.h"
+#include "sleekpr/core/templates/TemplateDocumentValidator.h"
 #include "sleekpr/core/templates/TemplateLibraryStore.h"
 #include "sleekpr/core/templates/TemplateRenderContextBuilder.h"
 
@@ -23,6 +26,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPrinterInfo>
+#include <QSizeF>
 #include <QUuid>
 
 #include <optional>
@@ -32,21 +36,29 @@ namespace sleekpr::http {
 
 using sleekpr::core::FileSettingsStore;
 using sleekpr::core::LabelItem;
+using sleekpr::core::LabelOffset;
 using sleekpr::core::LabelPartItem;
 using sleekpr::core::LabelRenderPlanner;
+using sleekpr::core::LabelRenderPlan;
+using sleekpr::core::LabelPaperSize;
 using sleekpr::core::NativeLabelDrawingPlanner;
 using sleekpr::core::NativePrintDrawingPlan;
 using sleekpr::core::PrintClientSettings;
 using sleekpr::core::PrintClientSettingsJson;
 using sleekpr::core::PrinterSelectionResolver;
 using sleekpr::core::PrivateNetworkAccessPolicy;
+using sleekpr::core::DeviceProfile;
 using sleekpr::core::DeviceProfileResolver;
+using sleekpr::core::FieldPreset;
+using sleekpr::core::FieldPresetJson;
+using sleekpr::core::FieldPresetStore;
 using sleekpr::core::PaperSpec;
 using sleekpr::core::PaperSpecJson;
 using sleekpr::core::PaperSpecStore;
 using sleekpr::core::TemplateDocument;
 using sleekpr::core::TemplateDocumentJson;
 using sleekpr::core::TemplateDocumentRenderer;
+using sleekpr::core::TemplateDocumentValidator;
 using sleekpr::core::TemplateLibraryStore;
 using sleekpr::core::TemplateRenderContext;
 using sleekpr::core::TemplateRenderContextBuilder;
@@ -282,6 +294,18 @@ PaperSpecStore paperSpecStoreForSettings(const QString& settingsPath)
     return PaperSpecStore(paperSpecFilePathForSettings(settingsPath));
 }
 
+QString fieldPresetFilePathForSettings(const QString& settingsPath)
+{
+    // 字段预设和 settings.json 同级，便于整套客户端配置一起备份或迁移。
+    const QFileInfo settingsFile(settingsPath);
+    return settingsFile.absoluteDir().filePath(QStringLiteral("field-presets.json"));
+}
+
+FieldPresetStore fieldPresetStoreForSettings(const QString& settingsPath)
+{
+    return FieldPresetStore(fieldPresetFilePathForSettings(settingsPath));
+}
+
 QString templateIdFromPath(const QString& path)
 {
     // 模板 id 直接映射到文件名，路由层先挡掉路径分隔符，避免把路径语义泄漏给存储层。
@@ -310,6 +334,21 @@ QString paperSpecIdFromPath(const QString& path)
         return {};
     }
     return paperSpecId;
+}
+
+QString fieldPresetIdFromPath(const QString& path)
+{
+    // 路由层只处理 URL 形状，完整安全校验由 FieldPresetStore 统一负责。
+    const auto prefix = QStringLiteral("/field-presets/");
+    if (!path.startsWith(prefix)) {
+        return {};
+    }
+
+    const auto presetId = path.mid(prefix.size()).trimmed();
+    if (presetId.isEmpty() || presetId.contains(QLatin1Char('/')) || presetId.contains(QLatin1Char('\\'))) {
+        return {};
+    }
+    return presetId;
 }
 
 QJsonObject templateSummaryJson(const TemplateDocument& document)
@@ -357,11 +396,38 @@ std::optional<QJsonArray> paperSpecListJson(const PaperSpecStore& store, QString
     return paperSpecs;
 }
 
+std::optional<QJsonArray> fieldPresetListJson(const FieldPresetStore& store, QString* errorMessage)
+{
+    QJsonArray presets;
+    QString storeError;
+    const auto loadedPresets = store.presets(&storeError);
+    if (!storeError.isEmpty()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = storeError;
+        }
+        return std::nullopt;
+    }
+
+    for (const auto& preset : loadedPresets) {
+        presets.append(FieldPresetJson::toJson(preset));
+    }
+    return presets;
+}
+
 QJsonObject paperSpecObjectFromRequest(const QJsonObject& root)
 {
     // 管理界面可提交裸纸张规格对象，也可提交 { paperSpec: ... } 包装对象。
     if (root.contains("paperSpec") && root["paperSpec"].isObject()) {
         return root["paperSpec"].toObject();
+    }
+    return root;
+}
+
+QJsonObject fieldPresetObjectFromRequest(const QJsonObject& root)
+{
+    // 管理界面可提交裸字段预设对象，也可提交 { fieldPreset: ... } 包装对象。
+    if (root.contains("fieldPreset") && root["fieldPreset"].isObject()) {
+        return root["fieldPreset"].toObject();
     }
     return root;
 }
@@ -379,6 +445,21 @@ std::optional<PaperSpec> validatedPaperSpecFromRequest(
         return std::nullopt;
     }
     return PaperSpecJson::fromJson(paperSpecObject);
+}
+
+std::optional<FieldPreset> validatedFieldPresetFromRequest(
+    const QJsonObject& root,
+    QString* errorMessage)
+{
+    const auto presetObject = fieldPresetObjectFromRequest(root);
+    QString validationError;
+    if (!FieldPresetJson::validate(presetObject, &validationError)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = validationError;
+        }
+        return std::nullopt;
+    }
+    return FieldPresetJson::fromJson(presetObject);
 }
 
 QJsonObject templateObjectFromRequest(const QJsonObject& root)
@@ -449,6 +530,20 @@ std::optional<TemplateDocument> findTemplateDocument(
     return std::nullopt;
 }
 
+std::optional<FieldPreset> findFieldPresetForRequest(
+    const QString& settingsPath,
+    const QJsonObject& requestRoot,
+    QString* errorMessage)
+{
+    const auto presetId = stringFor(requestRoot, {"fieldPresetId", "FieldPresetId", "presetId", "PresetId"}).trimmed();
+    if (presetId.isEmpty()) {
+        return std::nullopt;
+    }
+
+    auto preset = fieldPresetStoreForSettings(settingsPath).loadPreset(presetId, errorMessage);
+    return preset;
+}
+
 sleekpr::core::LabelRenderPlan templateLabelPlan(const sleekpr::core::TemplateDocument& document)
 {
     sleekpr::core::LabelRenderPlan plan;
@@ -458,22 +553,102 @@ sleekpr::core::LabelRenderPlan templateLabelPlan(const sleekpr::core::TemplateDo
     return plan;
 }
 
+std::optional<PaperSpec> paperSpecForTemplate(const QString& settingsPath, const TemplateDocument& document)
+{
+    const auto paperSpecId = document.paperSpecId.trimmed();
+    if (paperSpecId.isEmpty()) {
+        return std::nullopt;
+    }
+
+    return paperSpecStoreForSettings(settingsPath).loadPaperSpec(paperSpecId);
+}
+
+LabelRenderPlan labelPlanWithPaperSpec(LabelRenderPlan labelPlan, const std::optional<PaperSpec>& paperSpec)
+{
+    if (!paperSpec.has_value()) {
+        return labelPlan;
+    }
+
+    // 纸张尺寸是打印兼容契约的一部分：HTTP 打印端必须按模板引用的 paperSpecId 输出真实页面尺寸。
+    labelPlan.paperSize = LabelPaperSize(paperSpec->widthMm, paperSpec->heightMm);
+    return labelPlan;
+}
+
+LabelOffset labelOffsetWithPaperMargins(LabelOffset labelOffset, const std::optional<PaperSpec>& paperSpec)
+{
+    if (!paperSpec.has_value()) {
+        return labelOffset;
+    }
+
+    // 领域坐标仍以毫米表示；纸张左/上边距在打印边界合入整体偏移，避免改写模板内每个元素坐标。
+    labelOffset.x += paperSpec->marginLeftMm;
+    labelOffset.y += paperSpec->marginTopMm;
+    return labelOffset;
+}
+
+DeviceProfile deviceProfileWithPaperDpi(
+    DeviceProfile profile,
+    const TemplateDocument& document,
+    const std::optional<PaperSpec>& paperSpec)
+{
+    if (paperSpec.has_value() && document.deviceProfiles.isEmpty()) {
+        // 没有打印机 profile 时使用纸张规格的默认 DPI；一旦存在设备 profile，则以设备校准优先。
+        profile.dpi = paperSpec->defaultDpi;
+    }
+    return profile;
+}
+
+NativePrintDrawingPlan renderTemplatePrintPlan(
+    const TemplateDocument& document,
+    const LabelRenderPlan& labelPlan,
+    const PrintClientSettings& settings,
+    const QString& settingsPath,
+    const QString& printerName,
+    const TemplateRenderContext& context)
+{
+    const auto paperSpec = paperSpecForTemplate(settingsPath, document);
+    return TemplateDocumentRenderer().renderPrint(
+        document,
+        labelPlanWithPaperSpec(labelPlan, paperSpec),
+        labelOffsetWithPaperMargins(settings.labelOffset, paperSpec),
+        deviceProfileWithPaperDpi(DeviceProfileResolver::resolve(document.deviceProfiles, printerName), document, paperSpec),
+        context);
+}
+
 QString missingRequiredFieldsMessage(const TemplateRenderContext& context)
 {
     return QString::fromUtf8("缺少必填字段：%1").arg(context.missingRequiredFieldNames.join(QString::fromUtf8("、")));
 }
 
+QString templateValidationMessage(const sleekpr::core::TemplateValidationResult& validation)
+{
+    const auto messages = validation.errorMessages();
+    return messages.isEmpty()
+        ? QString::fromUtf8("模板校验失败")
+        : messages.join(QString::fromUtf8("；"));
+}
+
+QSizeF paperSizeForTemplateValidation(const QString& settingsPath, const TemplateDocument& document)
+{
+    const auto paperSpec = paperSpecForTemplate(settingsPath, document);
+    if (paperSpec.has_value() && paperSpec->widthMm > 0.0 && paperSpec->heightMm > 0.0) {
+        return QSizeF(paperSpec->widthMm, paperSpec->heightMm);
+    }
+
+    const auto fallbackPlan = templateLabelPlan(document);
+    return QSizeF(fallbackPlan.paperSize.widthMm(), fallbackPlan.paperSize.heightMm());
+}
+
 NativePrintDrawingPlan createPrintPlan(
     const sleekpr::core::LabelRenderPlan& labelPlan,
     const PrintClientSettings& settings,
+    const QString& settingsPath,
     const QString& printerName)
 {
     const auto templateKey = templateOverrideKey(labelPlan.templateKey);
     const auto documentIt = settings.templateDocuments.constFind(templateKey);
     if (documentIt != settings.templateDocuments.cend()) {
-        // HTTP 打印只接收已解析出的本机打印机名；设备 profile 按该名称选择，避免请求参数绕过本机配置。
-        const auto profile = DeviceProfileResolver::resolve(documentIt.value().deviceProfiles, printerName);
-        return TemplateDocumentRenderer().renderPrint(documentIt.value(), labelPlan, settings.labelOffset, profile, TemplateRenderContext{});
+        return renderTemplatePrintPlan(documentIt.value(), labelPlan, settings, settingsPath, printerName, TemplateRenderContext{});
     }
 
     return NativePrintDrawingPlan::fromSinglePage(NativeLabelDrawingPlanner().createPlan(
@@ -591,6 +766,70 @@ LocalHttpResponse LocalHttpRouter::route(const LocalHttpRequest& request) const
         }), 200, extraHeaders);
     }
 
+    const auto routeFieldPresetId = fieldPresetIdFromPath(path);
+    if (path == "/field-presets" && method == "GET") {
+        QString errorMessage;
+        const auto presets = fieldPresetListJson(fieldPresetStoreForSettings(m_settingsPath), &errorMessage);
+        if (!presets.has_value()) {
+            return jsonResponse(failEnvelope("FIELD_PRESET_STORE_ERROR", errorMessage), 500, extraHeaders);
+        }
+
+        return jsonResponse(okEnvelope(QJsonObject{
+            {"fieldPresets", presets.value()},
+        }), 200, extraHeaders);
+    }
+
+    if (!routeFieldPresetId.isEmpty() && method == "GET") {
+        QString errorMessage;
+        const auto preset = fieldPresetStoreForSettings(m_settingsPath).loadPreset(routeFieldPresetId, &errorMessage);
+        if (!preset.has_value()) {
+            return jsonResponse(failEnvelope("FIELD_PRESET_NOT_FOUND", errorMessage), 404, extraHeaders);
+        }
+
+        return jsonResponse(okEnvelope(QJsonObject{
+            {"fieldPreset", FieldPresetJson::toJson(preset.value())},
+        }), 200, extraHeaders);
+    }
+
+    if (!routeFieldPresetId.isEmpty() && method == "PUT") {
+        QJsonParseError parseError;
+        const auto parsedDocument = QJsonDocument::fromJson(request.body, &parseError);
+        if (parseError.error != QJsonParseError::NoError || !parsedDocument.isObject()) {
+            return jsonResponse(failEnvelope("BAD_REQUEST", "Invalid field preset JSON"), 400, extraHeaders);
+        }
+
+        QString errorMessage;
+        const auto preset = validatedFieldPresetFromRequest(parsedDocument.object(), &errorMessage);
+        if (!preset.has_value()) {
+            return jsonResponse(failEnvelope("BAD_REQUEST", errorMessage), 400, extraHeaders);
+        }
+        if (preset->id != routeFieldPresetId) {
+            return jsonResponse(failEnvelope("BAD_REQUEST", QString::fromUtf8("字段预设 id 与路径不一致。")), 400, extraHeaders);
+        }
+
+        const auto store = fieldPresetStoreForSettings(m_settingsPath);
+        if (!store.savePreset(preset.value(), &errorMessage)) {
+            return jsonResponse(failEnvelope("SAVE_FAILED", errorMessage), 400, extraHeaders);
+        }
+
+        return jsonResponse(okEnvelope(QJsonObject{
+            {"fieldPreset", FieldPresetJson::toJson(preset.value())},
+        }), 200, extraHeaders);
+    }
+
+    if (!routeFieldPresetId.isEmpty() && method == "DELETE") {
+        QString errorMessage;
+        const auto store = fieldPresetStoreForSettings(m_settingsPath);
+        if (!store.removePreset(routeFieldPresetId, &errorMessage)) {
+            return jsonResponse(failEnvelope("DELETE_FAILED", errorMessage), 400, extraHeaders);
+        }
+
+        return jsonResponse(okEnvelope(QJsonObject{
+            {"id", routeFieldPresetId},
+            {"removed", true},
+        }), 200, extraHeaders);
+    }
+
     const auto routeTemplateId = templateIdFromPath(path);
     if (path == "/templates" && method == "GET") {
         const auto store = templateLibraryStoreForSettings(m_settingsPath);
@@ -694,7 +933,7 @@ LocalHttpResponse LocalHttpRouter::route(const LocalHttpRequest& request) const
 
         for (const auto& item : items) {
             const auto labelPlan = LabelRenderPlanner().createPlan(item);
-            const auto printPlan = createPrintPlan(labelPlan, settings, selectedPrinter);
+            const auto printPlan = createPrintPlan(labelPlan, settings, m_settingsPath, selectedPrinter);
             if (!executePrint) {
                 continue;
             }
@@ -730,22 +969,39 @@ LocalHttpResponse LocalHttpRouter::route(const LocalHttpRequest& request) const
             return jsonResponse(failEnvelope("BAD_REQUEST", QString::fromUtf8("字段值 values 必须是对象。")), 400, extraHeaders);
         }
 
+        QString presetErrorMessage;
+        const auto fieldPreset = findFieldPresetForRequest(m_settingsPath, root, &presetErrorMessage);
+        if (!presetErrorMessage.isEmpty() && !fieldPreset.has_value()) {
+            return jsonResponse(failEnvelope("FIELD_PRESET_NOT_FOUND", presetErrorMessage), 404, extraHeaders);
+        }
+
         const auto context = TemplateRenderContextBuilder::build(
             templateDocument->fieldSchema,
-            QJsonObject{},
+            fieldPreset.has_value() ? fieldPreset->values : QJsonObject{},
             valuesValue.toObject());
         if (context.hasMissingRequiredFields()) {
             return jsonResponse(failEnvelope("BAD_REQUEST", missingRequiredFieldsMessage(context)), 400, extraHeaders);
         }
 
+        const auto templateValidation = TemplateDocumentValidator().validate(
+            templateDocument.value(),
+            paperSizeForTemplateValidation(m_settingsPath, templateDocument.value()),
+            context.values);
+        if (templateValidation.hasErrors()) {
+            return jsonResponse(
+                failEnvelope("TEMPLATE_VALIDATION_FAILED", templateValidationMessage(templateValidation)),
+                400,
+                extraHeaders);
+        }
+
         const auto executePrint = valueFor(root, {"executePrint", "ExecutePrint"}).toBool();
         const auto selectedPrinter = PrinterSelectionResolver().resolve(settings, stringFor(root, {"printerName", "PrinterName"}));
-        const auto profile = DeviceProfileResolver::resolve(templateDocument->deviceProfiles, selectedPrinter);
-        const auto printPlan = TemplateDocumentRenderer().renderPrint(
+        const auto printPlan = renderTemplatePrintPlan(
             templateDocument.value(),
             templateLabelPlan(templateDocument.value()),
-            settings.labelOffset,
-            profile,
+            settings,
+            m_settingsPath,
+            selectedPrinter,
             context);
 
         int printed = 0;

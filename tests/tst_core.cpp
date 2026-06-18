@@ -27,6 +27,7 @@
 #include "sleekpr/core/settings/TemplateElementCatalog.h"
 #include "sleekpr/core/templates/DeviceProfileResolver.h"
 #include "sleekpr/core/templates/FieldPresetJson.h"
+#include "sleekpr/core/templates/FieldPresetStore.h"
 #include "sleekpr/core/templates/FieldSchemaJson.h"
 #include "sleekpr/core/templates/PaperSpecJson.h"
 #include "sleekpr/core/templates/PaperSpecStore.h"
@@ -36,6 +37,7 @@
 #include "sleekpr/core/templates/TemplateDocumentJson.h"
 #include "sleekpr/core/templates/TemplateLibraryStore.h"
 #include "sleekpr/core/templates/TemplateDocumentRenderer.h"
+#include "sleekpr/core/templates/TemplateDocumentValidator.h"
 #include "sleekpr/core/templates/TemplateRenderContextBuilder.h"
 #include "sleekpr/core/templates/TableElementJson.h"
 #include "sleekpr/core/templates/TableElementRenderer.h"
@@ -57,6 +59,7 @@ private slots:
     void settingsStoreReturnsDefaultsAndPersistsValues();
     void settingsStorePersistsTemplateElements();
     void templateDocumentJsonPersistsLayersVersionsAndProfiles();
+    void templateDocumentJsonPersistsSampleData();
     void templateDocumentJsonRejectsInvalidImportDocument();
     void templateDocumentEditModelManagesLayers();
     void templateDocumentEditModelReordersElements();
@@ -78,22 +81,32 @@ private slots:
     void fieldSchemaJsonRejectsInvalidFieldDefinitions();
     void fieldPresetJsonPersistsReusableValues();
     void fieldPresetJsonRejectsInvalidPreset();
+    void fieldPresetStoreSavesListsLoadsAndRemovesPresets();
+    void fieldPresetStoreReportsInvalidDocument();
     void templateRenderContextBuilderMergesValuesByPriority();
     void templateRenderContextBuilderReportsMissingRequiredFields();
     void tableElementJsonPersistsColumnsAndLayout();
     void tableElementJsonRejectsInvalidTable();
     void tableElementRendererBuildsSinglePageCommands();
+    void tableElementRendererDistributesFlexibleColumnWidths();
     void tableElementRendererRejectsNonArrayData();
+    void tableElementRendererResolvesNestedDataPathsAndFields();
     void tableElementRendererSplitsRowsAcrossPagesAndRepeatsHeader();
     void tableElementRendererRejectsPageTooShortForOneRow();
     void templateDocumentJsonPersistsLayerTables();
     void templateDocumentImportRejectsInvalidLayerTable();
     void templateDocumentRendererAppendsTableCommands();
+    void templateDocumentRendererInterpolatesFixedTextPlaceholders();
+    void templateDocumentRendererWrapsFixedTextWithinElementWidth();
+    void templateDocumentRendererRendersArrayGridElements();
     void templateDocumentRendererBuildsMultiPagePrintPlan();
     void templateDocumentJsonPersistsPaperMetadata();
     void templateDocumentImportRequiresPaperSpecIdForGenericTemplates();
     void templateDocumentJsonPersistsFieldSchema();
     void templateDocumentImportRejectsInvalidFieldSchema();
+    void templateDocumentValidatorReportsDesignErrors();
+    void templateDocumentValidatorAllowsFlexibleColumnsWithinTableWidth();
+    void templateDocumentValidatorAllowsLegacyFieldsAndReportsQrCapacity();
     void templateLibraryStoreSavesListsAndLoadsTemplates();
     void templateLibraryStoreRemovesSavedTemplates();
     void templateLibraryStoreRejectsInvalidTemplateImport();
@@ -107,13 +120,18 @@ private slots:
     void labelPlannerMapsFieldsToRenderPlan();
     void nativeDrawingPlannerEmitsMillimeterCommandsAndOffsets();
     void nativeDrawingPlannerAppendsTemplateElements();
+    void templateDocumentRendererRendersFixedTextVertically();
+    void templateDocumentRendererInterpolatesQrCodePayloadTemplate();
     void nativeDrawingPlannerUsesSilverTemplateForFactory25003();
     void nativeDrawingPlannerUsesStableDefaultRenderDpi();
     void qrCodeMatrixRendererEncodesPayloadAsRealQrCode();
     void qrCodeMatrixRendererSupportsVersion2Payloads();
+    void qrCodeMatrixRendererSupportsVersion3And4Payloads();
     void labelPreviewImageRendererRendersPngCanvas();
     void labelPreviewImageRendererRendersQtImage();
+    void labelPreviewImageRendererWrapsTextAndClipsToCommandHeight();
     void labelPreviewServiceUsesTemplateDocumentDeviceProfile();
+    void labelPreviewServiceUsesTemplateDocumentSampleData();
     void labelPreviewServiceRenderPreviewUsesDefaultPrinterDeviceProfile();
     void nativePlanJsonSerializerExportsPaperAndCommands();
 };
@@ -244,15 +262,29 @@ void CoreTests::settingsStorePersistsTemplateElements()
     rectangle.width = 10.0;
     rectangle.height = 4.0;
 
+    TemplateElement arrayGrid;
+    arrayGrid.id = "legacy_array_grid";
+    arrayGrid.type = TemplateElementType::ArrayGrid;
+    arrayGrid.displayName = "Header Items";
+    arrayGrid.x = 24.0;
+    arrayGrid.y = 25.0;
+    arrayGrid.width = 30.0;
+    arrayGrid.height = 12.0;
+    arrayGrid.dataPath = QStringLiteral("header_items");
+    arrayGrid.arrayGridRows = 2;
+    arrayGrid.arrayGridColumns = 3;
+    arrayGrid.arrayGridCellTemplate = QStringLiteral("${text}:${value}");
+    arrayGrid.arrayGridDrawBorders = false;
+
     PrintClientSettings expected;
-    expected.templateElements["default"] = {fixedText, boundField, qrCode, rectangle};
+    expected.templateElements["default"] = {fixedText, boundField, qrCode, rectangle, arrayGrid};
 
     FileSettingsStore store(dir.filePath("settings.json"));
     QVERIFY(store.save(expected));
 
     const auto actual = store.load();
     const auto elements = actual.templateElements.value("default");
-    QCOMPARE(elements.size(), 4);
+    QCOMPARE(elements.size(), 5);
     QCOMPARE(elements[0].id, QString("custom_fixed"));
     QCOMPARE(elements[0].type, TemplateElementType::FixedText);
     QCOMPARE(elements[0].text, QString("STATIC"));
@@ -263,6 +295,12 @@ void CoreTests::settingsStorePersistsTemplateElements()
     QCOMPARE(elements[2].payload, QString("STATIC-QR"));
     QCOMPARE(elements[3].type, TemplateElementType::Rectangle);
     QCOMPARE(elements[3].width, 10.0);
+    QCOMPARE(elements[4].type, TemplateElementType::ArrayGrid);
+    QCOMPARE(elements[4].dataPath, QString("header_items"));
+    QCOMPARE(elements[4].arrayGridRows, 2);
+    QCOMPARE(elements[4].arrayGridColumns, 3);
+    QCOMPARE(elements[4].arrayGridCellTemplate, QString("${text}:${value}"));
+    QCOMPARE(elements[4].arrayGridDrawBorders, false);
 }
 
 void CoreTests::templateDocumentJsonPersistsLayersVersionsAndProfiles()
@@ -276,6 +314,7 @@ void CoreTests::templateDocumentJsonPersistsLayersVersionsAndProfiles()
     fixedText.width = 20.0;
     fixedText.height = 3.0;
     fixedText.rotationDegrees = 90.0;
+    fixedText.verticalText = true;
     fixedText.maxLines = 2;
     fixedText.ellipsis = true;
 
@@ -319,6 +358,7 @@ void CoreTests::templateDocumentJsonPersistsLayersVersionsAndProfiles()
     QCOMPARE(actual.layers.size(), 1);
     QCOMPARE(actual.layers.first().elements.first().id, QString("element-title"));
     QCOMPARE(actual.layers.first().elements.first().rotationDegrees, 90.0);
+    QCOMPARE(actual.layers.first().elements.first().verticalText, true);
     QCOMPARE(actual.layers.first().elements.first().maxLines, 2);
     QCOMPARE(actual.layers.first().elements.first().ellipsis, true);
     QCOMPARE(actual.layers.first().elements.first().layerId, QString("layer-main"));
@@ -326,6 +366,28 @@ void CoreTests::templateDocumentJsonPersistsLayersVersionsAndProfiles()
     QCOMPARE(actual.versions.first().layersSnapshot.first().id, QString("layer-main"));
     QCOMPARE(actual.deviceProfiles.size(), 1);
     QCOMPARE(actual.deviceProfiles.first().scaleX, 1.01);
+}
+
+void CoreTests::templateDocumentJsonPersistsSampleData()
+{
+    TemplateDocument expected;
+    expected.id = "template-sample-data";
+    expected.name = QString::fromUtf8("样例数据模板");
+    expected.templateKey = "default";
+    expected.sampleData.insert(QStringLiteral("product_name"), QString::fromUtf8("足金串搭项链"));
+    expected.sampleData.insert(QStringLiteral("sales_code"), QStringLiteral("606178PD35"));
+    expected.sampleData.insert(QStringLiteral("header_items"), QJsonArray{
+        QJsonObject{{QStringLiteral("text"), QString::fromUtf8("素金KA")}, {QStringLiteral("value"), QStringLiteral("2.99")}},
+        QJsonObject{{QStringLiteral("text"), QString::fromUtf8("素金PC")}, {QStringLiteral("value"), QStringLiteral("4.13")}},
+    });
+
+    const auto json = TemplateDocumentJson::toJson(expected);
+    const auto actual = TemplateDocumentJson::fromJson(json);
+
+    QVERIFY(json["sampleData"].isObject());
+    QCOMPARE(actual.sampleData["product_name"].toString(), QString::fromUtf8("足金串搭项链"));
+    QCOMPARE(actual.sampleData["sales_code"].toString(), QStringLiteral("606178PD35"));
+    QCOMPARE(actual.sampleData["header_items"].toArray().size(), 2);
 }
 
 void CoreTests::templateDocumentJsonRejectsInvalidImportDocument()
@@ -399,9 +461,10 @@ void CoreTests::templateDocumentJsonRejectsInvalidImportDocument()
         },
     };
 
+    // 新建模板会先保存空白基础图层，后续再由用户逐步添加元素。
     QString emptyTemplateError;
-    QVERIFY(!TemplateDocumentJson::validateForImport(emptyTemplate, &emptyTemplateError));
-    QVERIFY(emptyTemplateError.contains(QString::fromUtf8("元素")));
+    QVERIFY(TemplateDocumentJson::validateForImport(emptyTemplate, &emptyTemplateError));
+    QVERIFY(emptyTemplateError.isEmpty());
 
     QJsonObject invalidElement;
     invalidElement["schemaVersion"] = 1;
@@ -1117,6 +1180,63 @@ void CoreTests::fieldPresetJsonRejectsInvalidPreset()
     QVERIFY(errorMessage.contains(QString::fromUtf8("字段值")));
 }
 
+void CoreTests::fieldPresetStoreSavesListsLoadsAndRemovesPresets()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    FieldPreset defaultPreset;
+    defaultPreset.id = QStringLiteral("default-sale-order");
+    defaultPreset.name = QString::fromUtf8("默认销售单字段");
+    defaultPreset.templateId = QStringLiteral("sale-order");
+    defaultPreset.values["customerName"] = QString::fromUtf8("散客");
+    defaultPreset.values["footerText"] = QString::fromUtf8("感谢惠顾");
+
+    FieldPreset vipPreset;
+    vipPreset.id = QStringLiteral("vip-sale-order");
+    vipPreset.name = QString::fromUtf8("会员销售单字段");
+    vipPreset.templateId = QStringLiteral("sale-order");
+    vipPreset.values["customerName"] = QString::fromUtf8("会员客户");
+
+    FieldPresetStore store(dir.filePath(QStringLiteral("field-presets.json")));
+    QString errorMessage;
+    QVERIFY2(store.savePreset(defaultPreset, &errorMessage), qPrintable(errorMessage));
+    QVERIFY2(store.savePreset(vipPreset, &errorMessage), qPrintable(errorMessage));
+
+    QCOMPARE(store.presetIds(), QStringList({"default-sale-order", "vip-sale-order"}));
+    const auto loadedVip = store.loadPreset(QStringLiteral("vip-sale-order"), &errorMessage);
+    QVERIFY2(loadedVip.has_value(), qPrintable(errorMessage));
+    QCOMPARE(loadedVip->values["customerName"].toString(), QString::fromUtf8("会员客户"));
+
+    defaultPreset.values["footerText"] = QString::fromUtf8("以实物为准");
+    QVERIFY2(store.savePreset(defaultPreset, &errorMessage), qPrintable(errorMessage));
+    const auto loadedDefault = FieldPresetStore(dir.filePath(QStringLiteral("field-presets.json")))
+                                   .loadPreset(QStringLiteral("default-sale-order"), &errorMessage);
+    QVERIFY2(loadedDefault.has_value(), qPrintable(errorMessage));
+    QCOMPARE(loadedDefault->values["footerText"].toString(), QString::fromUtf8("以实物为准"));
+
+    QVERIFY2(store.removePreset(QStringLiteral("vip-sale-order"), &errorMessage), qPrintable(errorMessage));
+    QVERIFY(!store.loadPreset(QStringLiteral("vip-sale-order"), &errorMessage).has_value());
+    QCOMPARE(store.presetIds(), QStringList({"default-sale-order"}));
+}
+
+void CoreTests::fieldPresetStoreReportsInvalidDocument()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    QFile file(dir.filePath(QStringLiteral("field-presets.json")));
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    file.write(R"json({"schemaVersion":99,"fieldPresets":[]})json");
+    file.close();
+
+    QString errorMessage;
+    const auto presets = FieldPresetStore(dir.filePath(QStringLiteral("field-presets.json"))).presets(&errorMessage);
+
+    QVERIFY(presets.isEmpty());
+    QVERIFY(errorMessage.contains(QStringLiteral("schemaVersion")));
+}
+
 void CoreTests::templateRenderContextBuilderMergesValuesByPriority()
 {
     QList<FieldDefinition> fields;
@@ -1194,6 +1314,8 @@ void CoreTests::tableElementJsonPersistsColumnsAndLayout()
     weightColumn.fieldKey = QStringLiteral("weight");
     weightColumn.widthMm = 20.0;
     weightColumn.alignment = TableCellAlignment::Right;
+    weightColumn.widthMode = TableColumnWidthMode::Flex;
+    weightColumn.flexWeight = 2.0;
     table.columns.append(weightColumn);
 
     const auto json = TableElementJson::toJson(table);
@@ -1205,6 +1327,8 @@ void CoreTests::tableElementJsonPersistsColumnsAndLayout()
     QCOMPARE(actual.dataPath, QString("items"));
     QCOMPARE(actual.columns.size(), 2);
     QCOMPARE(actual.columns[1].alignment, TableCellAlignment::Right);
+    QCOMPARE(actual.columns[1].widthMode, TableColumnWidthMode::Flex);
+    QCOMPARE(actual.columns[1].flexWeight, 2.0);
 }
 
 void CoreTests::tableElementJsonRejectsInvalidTable()
@@ -1276,6 +1400,59 @@ void CoreTests::tableElementRendererBuildsSinglePageCommands()
     QCOMPARE(result.commands[0].y, 12.0);
 }
 
+void CoreTests::tableElementRendererDistributesFlexibleColumnWidths()
+{
+    TableElement table;
+    table.id = QStringLiteral("itemsTable");
+    table.width = 80.0;
+    table.height = 20.0;
+    table.dataPath = QStringLiteral("items");
+
+    TableColumn fixedLeft;
+    fixedLeft.id = QStringLiteral("fixedLeft");
+    fixedLeft.title = QStringLiteral("Fixed");
+    fixedLeft.fieldKey = QStringLiteral("fixedLeft");
+    fixedLeft.widthMm = 20.0;
+    table.columns.append(fixedLeft);
+
+    TableColumn flexOne;
+    flexOne.id = QStringLiteral("flexOne");
+    flexOne.title = QStringLiteral("Flex 1");
+    flexOne.fieldKey = QStringLiteral("flexOne");
+    flexOne.widthMode = TableColumnWidthMode::Flex;
+    flexOne.flexWeight = 1.0;
+    table.columns.append(flexOne);
+
+    TableColumn flexTwo;
+    flexTwo.id = QStringLiteral("flexTwo");
+    flexTwo.title = QStringLiteral("Flex 2");
+    flexTwo.fieldKey = QStringLiteral("flexTwo");
+    flexTwo.widthMode = TableColumnWidthMode::Flex;
+    flexTwo.flexWeight = 2.0;
+    table.columns.append(flexTwo);
+
+    TemplateRenderContext context;
+    context.values["items"] = QJsonArray{
+        QJsonObject{
+            {QStringLiteral("fixedLeft"), QStringLiteral("A")},
+            {QStringLiteral("flexOne"), QStringLiteral("B")},
+            {QStringLiteral("flexTwo"), QStringLiteral("C")},
+        },
+    };
+
+    const auto result = TableElementRenderer::renderSinglePage(table, context);
+
+    QVERIFY(result.success());
+    QCOMPARE(result.commands[0].width, 20.0);
+    QCOMPARE(result.commands[2].x, 20.0);
+    QCOMPARE(result.commands[2].width, 20.0);
+    QCOMPARE(result.commands[4].x, 40.0);
+    QCOMPARE(result.commands[4].width, 40.0);
+    QCOMPARE(result.commands[6].width, 20.0);
+    QCOMPARE(result.commands[8].width, 20.0);
+    QCOMPARE(result.commands[10].width, 40.0);
+}
+
 void CoreTests::tableElementRendererRejectsNonArrayData()
 {
     TableElement table;
@@ -1295,6 +1472,47 @@ void CoreTests::tableElementRendererRejectsNonArrayData()
     QVERIFY(!result.success());
     QVERIFY(result.errorMessage.contains(QStringLiteral("items")));
     QVERIFY(result.errorMessage.contains(QString::fromUtf8("数组")));
+}
+
+void CoreTests::tableElementRendererResolvesNestedDataPathsAndFields()
+{
+    TableElement table;
+    table.id = QStringLiteral("itemsTable");
+    table.dataPath = QStringLiteral("order.items");
+    table.headerRowHeightMm = 5.0;
+    table.detailRowHeightMm = 5.0;
+
+    TableColumn nameColumn;
+    nameColumn.id = QStringLiteral("name");
+    nameColumn.title = QStringLiteral("Name");
+    nameColumn.fieldKey = QStringLiteral("product.name");
+    nameColumn.widthMm = 25.0;
+    table.columns.append(nameColumn);
+
+    TableColumn quantityColumn;
+    quantityColumn.id = QStringLiteral("quantity");
+    quantityColumn.title = QStringLiteral("Qty");
+    quantityColumn.fieldKey = QStringLiteral("quantity");
+    quantityColumn.widthMm = 15.0;
+    table.columns.append(quantityColumn);
+
+    TemplateRenderContext context;
+    context.values["order"] = QJsonObject{
+        {QStringLiteral("items"),
+         QJsonArray{
+             QJsonObject{
+                 {QStringLiteral("product"), QJsonObject{{QStringLiteral("name"), QStringLiteral("Ring")}}},
+                 {QStringLiteral("quantity"), 2},
+             },
+         }},
+    };
+
+    const auto result = TableElementRenderer::renderSinglePage(table, context);
+    QVERIFY(result.success());
+    QCOMPARE(result.pages.size(), 1);
+    QCOMPARE(result.pages.first().rowCount, 1);
+    QCOMPARE(result.commands[5].text, QStringLiteral("Ring"));
+    QCOMPARE(result.commands[7].text, QStringLiteral("2"));
 }
 
 void CoreTests::tableElementRendererSplitsRowsAcrossPagesAndRepeatsHeader()
@@ -1511,6 +1729,115 @@ void CoreTests::templateDocumentRendererAppendsTableCommands()
     QCOMPARE(drawingPlan.commands[4].text, QString::fromUtf8("足金戒指"));
 }
 
+void CoreTests::templateDocumentRendererInterpolatesFixedTextPlaceholders()
+{
+    TemplateElement summaryText;
+    summaryText.id = QStringLiteral("summaryText");
+    summaryText.type = TemplateElementType::FixedText;
+    summaryText.width = 60.0;
+    summaryText.height = 5.0;
+    summaryText.text = QString::fromUtf8("商品：${productName}  重量：${weight}  缺失：${missingValue}");
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("base");
+    layer.elements = {summaryText};
+
+    TemplateDocument document;
+    document.id = QStringLiteral("placeholder-template");
+    document.layers = {layer};
+
+    TemplateRenderContext context;
+    context.values["productName"] = QString::fromUtf8("足金戒指");
+    context.values["weight"] = 12.5;
+
+    const auto labelPlan = LabelRenderPlanner().createPlan(LabelItem{});
+    const auto drawingPlan = TemplateDocumentRenderer().render(document, labelPlan, LabelOffset{}, DeviceProfile{}, context);
+
+    QCOMPARE(drawingPlan.commands.size(), 1);
+    QCOMPARE(drawingPlan.commands.first().text, QString::fromUtf8("商品：足金戒指  重量：12.5  缺失："));
+}
+
+void CoreTests::templateDocumentRendererWrapsFixedTextWithinElementWidth()
+{
+    TemplateElement fixedText;
+    fixedText.id = QStringLiteral("longAddress");
+    fixedText.type = TemplateElementType::FixedText;
+    fixedText.x = 2.0;
+    fixedText.y = 3.0;
+    fixedText.width = 12.0;
+    fixedText.height = 6.0;
+    fixedText.text = QString::fromUtf8("地址:${address}");
+    fixedText.fontSizePt = 8.0;
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("base");
+    layer.elements = {fixedText};
+
+    TemplateDocument document;
+    document.layers = {layer};
+
+    TemplateRenderContext context;
+    context.values.insert(QStringLiteral("address"), QString::fromUtf8("民族工匠一层111号"));
+
+    const auto drawingPlan = TemplateDocumentRenderer().render(document, LabelRenderPlan{}, LabelOffset{}, DeviceProfile{}, context);
+
+    QCOMPARE(drawingPlan.commands.size(), 1);
+    QCOMPARE(drawingPlan.commands.first().type, NativeDrawCommandType::Text);
+    QCOMPARE(drawingPlan.commands.first().width, 12.0);
+    QCOMPARE(drawingPlan.commands.first().height, 6.0);
+    QVERIFY(drawingPlan.commands.first().wrapText);
+}
+
+void CoreTests::templateDocumentRendererRendersArrayGridElements()
+{
+    TemplateElement grid;
+    grid.id = QStringLiteral("headerGrid");
+    grid.type = TemplateElementType::ArrayGrid;
+    grid.x = 2.0;
+    grid.y = 3.0;
+    grid.width = 60.0;
+    grid.height = 20.0;
+    grid.fontSizePt = 6.0;
+    grid.dataPath = QStringLiteral("header_items");
+    grid.arrayGridRows = 2;
+    grid.arrayGridColumns = 3;
+    grid.arrayGridCellTemplate = QStringLiteral("${text}:${value}");
+    grid.arrayGridDrawBorders = true;
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("base");
+    layer.elements = {grid};
+
+    TemplateDocument document;
+    document.layers = {layer};
+
+    TemplateRenderContext context;
+    context.values["header_items"] = QJsonArray{
+        QJsonObject{{QStringLiteral("text"), QString::fromUtf8("素金KA")}, {QStringLiteral("value"), QStringLiteral("2.99")}},
+        QJsonObject{{QStringLiteral("text"), QString::fromUtf8("素金PC")}, {QStringLiteral("value"), QStringLiteral("4.13")}},
+        QJsonObject{{QStringLiteral("text"), QString::fromUtf8("素金PA")}, {QStringLiteral("value"), QStringLiteral("3.91")}},
+        QJsonObject{{QStringLiteral("text"), QString::fromUtf8("素金PD")}, {QStringLiteral("value"), QStringLiteral("11.49")}},
+    };
+
+    const auto labelPlan = LabelRenderPlanner().createPlan(LabelItem{});
+    const auto drawingPlan = TemplateDocumentRenderer().render(document, labelPlan, LabelOffset{}, DeviceProfile{}, context);
+
+    QCOMPARE(drawingPlan.commands.size(), 10);
+    QCOMPARE(drawingPlan.commands[0].type, NativeDrawCommandType::Rectangle);
+    QCOMPARE(drawingPlan.commands[0].elementKey, QString("headerGrid.cell0.border"));
+    QCOMPARE(drawingPlan.commands[1].type, NativeDrawCommandType::Text);
+    QCOMPARE(drawingPlan.commands[1].text, QString::fromUtf8("素金KA:2.99"));
+    QCOMPARE(drawingPlan.commands[1].x, 2.6);
+    QCOMPARE(drawingPlan.commands[1].y, 3.4);
+    QCOMPARE(drawingPlan.commands[1].width, 18.8);
+    QCOMPARE(drawingPlan.commands[1].height, 9.2);
+    QCOMPARE(drawingPlan.commands[2].elementKey, QString("headerGrid.cell1.border"));
+    QCOMPARE(drawingPlan.commands[3].text, QString::fromUtf8("素金PC:4.13"));
+    QCOMPARE(drawingPlan.commands[7].text, QString::fromUtf8("素金PD:11.49"));
+    QCOMPARE(drawingPlan.commands[8].elementKey, QString("headerGrid.cell4.border"));
+    QCOMPARE(drawingPlan.commands[9].elementKey, QString("headerGrid.cell5.border"));
+}
+
 void CoreTests::templateDocumentRendererBuildsMultiPagePrintPlan()
 {
     TemplateElement title;
@@ -1687,6 +2014,131 @@ void CoreTests::templateDocumentImportRejectsInvalidFieldSchema()
     QString errorMessage;
     QVERIFY(!TemplateDocumentJson::validateForImport(json, &errorMessage));
     QVERIFY(errorMessage.contains(QString::fromUtf8("字段")));
+}
+
+void CoreTests::templateDocumentValidatorReportsDesignErrors()
+{
+    FieldDefinition knownField;
+    knownField.key = QStringLiteral("knownField");
+    knownField.displayName = QString::fromUtf8("已知字段");
+
+    TemplateElement missingFieldText;
+    missingFieldText.id = QStringLiteral("missingFieldText");
+    missingFieldText.type = TemplateElementType::BoundField;
+    missingFieldText.fieldKey = QStringLiteral("unknownField");
+    missingFieldText.x = 75.0;
+    missingFieldText.y = 2.0;
+    missingFieldText.width = 10.0;
+    missingFieldText.height = 5.0;
+
+    TableColumn oversizedColumn;
+    oversizedColumn.id = QStringLiteral("name");
+    oversizedColumn.title = QString::fromUtf8("名称");
+    oversizedColumn.fieldKey = QStringLiteral("name");
+    oversizedColumn.widthMm = 60.0;
+
+    TableElement table;
+    table.id = QStringLiteral("saleItems");
+    table.layerId = QStringLiteral("base");
+    table.x = 1.0;
+    table.y = 10.0;
+    table.width = 50.0;
+    table.height = 12.0;
+    table.dataPath = QStringLiteral("items");
+    table.columns = {oversizedColumn};
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("base");
+    layer.elements = {missingFieldText};
+    layer.tables = {table};
+
+    TemplateDocument document;
+    document.id = QStringLiteral("template-validation");
+    document.fieldSchema = {knownField};
+    document.layers = {layer};
+
+    const auto result = TemplateDocumentValidator().validate(document, QSizeF(80.0, 30.0));
+
+    QVERIFY(result.hasErrors());
+    QVERIFY(result.containsCode(QStringLiteral("UNKNOWN_FIELD")));
+    QVERIFY(result.containsCode(QStringLiteral("ELEMENT_OUT_OF_PAPER")));
+    QVERIFY(result.containsCode(QStringLiteral("TABLE_COLUMNS_TOO_WIDE")));
+}
+
+void CoreTests::templateDocumentValidatorAllowsFlexibleColumnsWithinTableWidth()
+{
+    TableColumn fixedColumn;
+    fixedColumn.id = QStringLiteral("fixed");
+    fixedColumn.title = QStringLiteral("Fixed");
+    fixedColumn.fieldKey = QStringLiteral("fixed");
+    fixedColumn.widthMm = 40.0;
+
+    TableColumn flexColumn;
+    flexColumn.id = QStringLiteral("flex");
+    flexColumn.title = QStringLiteral("Flex");
+    flexColumn.fieldKey = QStringLiteral("flex");
+    flexColumn.widthMm = 20.0;
+    flexColumn.widthMode = TableColumnWidthMode::Flex;
+    flexColumn.flexWeight = 1.0;
+
+    TableElement table;
+    table.id = QStringLiteral("saleItems");
+    table.layerId = QStringLiteral("base");
+    table.width = 50.0;
+    table.height = 12.0;
+    table.dataPath = QStringLiteral("items");
+    table.columns = {fixedColumn, flexColumn};
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("base");
+    layer.tables = {table};
+
+    TemplateDocument document;
+    document.id = QStringLiteral("template-flex-table");
+    document.layers = {layer};
+
+    const auto result = TemplateDocumentValidator().validate(document, QSizeF(80.0, 30.0));
+
+    QVERIFY(!result.containsCode(QStringLiteral("TABLE_COLUMNS_TOO_WIDE")));
+}
+
+void CoreTests::templateDocumentValidatorAllowsLegacyFieldsAndReportsQrCapacity()
+{
+    TemplateElement legacyText;
+    legacyText.id = QStringLiteral("productNameText");
+    legacyText.type = TemplateElementType::BoundField;
+    legacyText.fieldKey = QStringLiteral("productName");
+    legacyText.width = 20.0;
+    legacyText.height = 5.0;
+
+    TemplateElement qrCode;
+    qrCode.id = QStringLiteral("validLongQr");
+    qrCode.type = TemplateElementType::QrCode;
+    qrCode.width = 8.0;
+    qrCode.height = 8.0;
+    qrCode.payload = QStringLiteral("1234567890123456789012345678901234567890123456");
+
+    TemplateElement tooLongQrCode;
+    tooLongQrCode.id = QStringLiteral("tooLongQr");
+    tooLongQrCode.type = TemplateElementType::QrCode;
+    tooLongQrCode.y = 10.0;
+    tooLongQrCode.width = 8.0;
+    tooLongQrCode.height = 8.0;
+    tooLongQrCode.payload = QStringLiteral("12345678901234567890123456789012345678901234567");
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("base");
+    layer.elements = {legacyText, qrCode, tooLongQrCode};
+
+    TemplateDocument document;
+    document.id = QStringLiteral("template-qr");
+    document.layers = {layer};
+
+    const auto result = TemplateDocumentValidator().validate(document, QSizeF(80.0, 30.0));
+
+    QVERIFY(result.hasErrors());
+    QVERIFY(result.containsCode(QStringLiteral("QR_PAYLOAD_TOO_LONG")));
+    QVERIFY(!result.containsCode(QStringLiteral("UNKNOWN_FIELD")));
 }
 
 void CoreTests::templateLibraryStoreSavesListsAndLoadsTemplates()
@@ -2055,6 +2507,73 @@ void CoreTests::nativeDrawingPlannerAppendsTemplateElements()
     QCOMPARE(drawingPlan.commands[drawingPlan.commands.size() - 1].elementKey, QString("custom_fixed"));
 }
 
+void CoreTests::templateDocumentRendererRendersFixedTextVertically()
+{
+    LabelItem item;
+    item.identifierCode = "10000000789";
+    item.productName = "Gold Ring";
+
+    TemplateElement fixedText;
+    fixedText.id = "quality";
+    fixedText.type = TemplateElementType::FixedText;
+    fixedText.width = 4.0;
+    fixedText.height = 12.0;
+    fixedText.text = QString::fromUtf8("合格${suffix}");
+    fixedText.verticalText = true;
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("base");
+    layer.elements = {fixedText};
+
+    TemplateDocument document;
+    document.layers = {layer};
+
+    TemplateRenderContext context;
+    context.values.insert(QStringLiteral("suffix"), QString::fromUtf8("证"));
+
+    const auto labelPlan = LabelRenderPlanner().createPlan(item);
+    const auto drawingPlan = TemplateDocumentRenderer().render(document, labelPlan, LabelOffset{}, DeviceProfile{}, context);
+
+    QCOMPARE(drawingPlan.commands.size(), 1);
+    QCOMPARE(drawingPlan.commands.first().type, NativeDrawCommandType::Text);
+    QCOMPARE(drawingPlan.commands.first().text, QString::fromUtf8("合\n格\n证"));
+}
+
+void CoreTests::templateDocumentRendererInterpolatesQrCodePayloadTemplate()
+{
+    LabelItem item;
+    item.identifierCode = "10000000789";
+    item.productName = "Gold Ring";
+    item.address = "Store 1";
+
+    TemplateElement qrCode;
+    qrCode.id = "custom_qr_payload";
+    qrCode.type = TemplateElementType::QrCode;
+    qrCode.x = 35.0;
+    qrCode.y = 2.0;
+    qrCode.width = 6.0;
+    qrCode.height = 6.0;
+    qrCode.payload = QString::fromUtf8("地址:${address}");
+    qrCode.rotationDegrees = 90.0;
+
+    const auto labelPlan = LabelRenderPlanner().createPlan(item);
+    TemplateRenderContext context;
+    context.values.insert(QStringLiteral("address"), QString::fromUtf8("民族工匠"));
+
+    TemplateDocument document;
+    TemplateLayer layer;
+    layer.id = QStringLiteral("base");
+    layer.elements = {qrCode};
+    document.layers = {layer};
+
+    const auto drawingPlan = TemplateDocumentRenderer().render(document, labelPlan, LabelOffset{}, DeviceProfile{}, context);
+
+    QCOMPARE(drawingPlan.commands.size(), 1);
+    QCOMPARE(drawingPlan.commands.first().type, NativeDrawCommandType::QrCode);
+    QCOMPARE(drawingPlan.commands.first().text, QString::fromUtf8("地址:民族工匠"));
+    QCOMPARE(drawingPlan.commands.first().rotationDegrees, 90.0);
+}
+
 void CoreTests::nativeDrawingPlannerUsesSilverTemplateForFactory25003()
 {
     LabelItem item;
@@ -2142,6 +2661,24 @@ void CoreTests::qrCodeMatrixRendererSupportsVersion2Payloads()
     QVERIFY(matrix.hasDarkModule(18, 18));
 }
 
+void CoreTests::qrCodeMatrixRendererSupportsVersion3And4Payloads()
+{
+    const sleekpr::infrastructure::QrCodeMatrixRenderer renderer;
+    const auto version3Matrix = renderer.render(QStringLiteral("ABCDEFGHIJKLMNOPQRSTU"));
+    const auto version4Matrix = renderer.render(QStringLiteral("1234567890123456789012345678901234567890123456"));
+
+    QCOMPARE(version3Matrix.size(), 29);
+    QVERIFY(version3Matrix.darkModuleCount() > 0);
+    QVERIFY(version3Matrix.hasDarkModule(28, 6));
+    QVERIFY(version3Matrix.hasDarkModule(22, 22));
+
+    QCOMPARE(version4Matrix.size(), 33);
+    QVERIFY(version4Matrix.darkModuleCount() > 0);
+    QVERIFY(version4Matrix.hasDarkModule(32, 6));
+    QVERIFY(version4Matrix.hasDarkModule(26, 26));
+    QVERIFY_THROWS_EXCEPTION(std::length_error, renderer.render(QStringLiteral("12345678901234567890123456789012345678901234567")));
+}
+
 void CoreTests::labelPreviewImageRendererRendersPngCanvas()
 {
     LabelItem item;
@@ -2175,6 +2712,45 @@ void CoreTests::labelPreviewImageRendererRendersQtImage()
     QCOMPARE(image.height(), 354);
 }
 
+void CoreTests::labelPreviewImageRendererWrapsTextAndClipsToCommandHeight()
+{
+    NativeDrawCommand command;
+    command.type = NativeDrawCommandType::Text;
+    command.x = 2.0;
+    command.y = 2.0;
+    command.width = 8.0;
+    command.height = 8.0;
+    command.text = QStringLiteral("AAAA AAAA AAAA AAAA");
+    command.fontSizePt = 9.0;
+    command.wrapText = true;
+    command.elementKey = QStringLiteral("longText");
+
+    NativeLabelDrawingPlan drawingPlan;
+    drawingPlan.paperSize = LabelPaperSize(30.0, 18.0);
+    drawingPlan.renderDpi = 300.0;
+    drawingPlan.commands = {command};
+
+    const auto image = sleekpr::infrastructure::LabelPreviewImageRenderer().renderImage(drawingPlan);
+    QVERIFY(!image.isNull());
+
+    const auto mmToPx = [](double mm) {
+        return static_cast<int>((mm * 300.0 / 25.4) + 0.5);
+    };
+    const auto hasInk = [&image](int left, int top, int right, int bottom) {
+        for (int y = std::max(0, top); y < std::min(image.height(), bottom); ++y) {
+            for (int x = std::max(0, left); x < std::min(image.width(), right); ++x) {
+                if (image.pixelColor(x, y).value() < 220) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+
+    QVERIFY(hasInk(mmToPx(2.0), mmToPx(5.5), mmToPx(10.0), mmToPx(9.8)));
+    QVERIFY(!hasInk(mmToPx(2.0), mmToPx(10.6), mmToPx(10.0), mmToPx(13.0)));
+}
+
 void CoreTests::labelPreviewServiceUsesTemplateDocumentDeviceProfile()
 {
     const auto demoLabelPlan = LabelRenderPlanner().createPlan(sleekpr::infrastructure::PreviewLabelFactory::createDemoLabel());
@@ -2195,6 +2771,56 @@ void CoreTests::labelPreviewServiceUsesTemplateDocumentDeviceProfile()
 
     QVERIFY(!image.isNull());
     QVERIFY(image.width() < 945);
+}
+
+void CoreTests::labelPreviewServiceUsesTemplateDocumentSampleData()
+{
+    TemplateElement productElement;
+    productElement.id = QStringLiteral("product-name");
+    productElement.layerId = QStringLiteral("base");
+    productElement.type = TemplateElementType::FixedText;
+    productElement.text = QStringLiteral("${product_name}");
+    productElement.x = 5.0;
+    productElement.y = 5.0;
+    productElement.width = 45.0;
+    productElement.height = 8.0;
+    productElement.fontSizePt = 11.0;
+
+    TemplateLayer baseLayer;
+    baseLayer.id = QStringLiteral("base");
+    baseLayer.name = QString::fromUtf8("基础图层");
+    baseLayer.elements = {productElement};
+
+    TemplateDocument document;
+    document.id = QStringLiteral("preview-sample-template");
+    document.name = QString::fromUtf8("预览样例模板");
+    document.templateKey = QStringLiteral("default");
+    document.layers = {baseLayer};
+    document.sampleData.insert(QStringLiteral("product_name"), QStringLiteral("SAMPLE-PRODUCT"));
+
+    PrintClientSettings settings;
+    settings.templateDocuments["default"] = document;
+
+    const auto image = sleekpr::infrastructure::LabelPreviewService().renderDemoPreview(settings);
+    QVERIFY(!image.isNull());
+
+    const auto mmToPx = [](double value) {
+        return static_cast<int>(std::round(value * 300.0 / 25.4));
+    };
+    bool hasInk = false;
+    for (int y = mmToPx(5.0); y < mmToPx(12.0) && y < image.height(); ++y) {
+        for (int x = mmToPx(5.0); x < mmToPx(50.0) && x < image.width(); ++x) {
+            if (image.pixelColor(x, y).value() < 220) {
+                hasInk = true;
+                break;
+            }
+        }
+        if (hasInk) {
+            break;
+        }
+    }
+
+    QVERIFY(hasInk);
 }
 
 void CoreTests::labelPreviewServiceRenderPreviewUsesDefaultPrinterDeviceProfile()

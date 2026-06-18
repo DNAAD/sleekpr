@@ -5,6 +5,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QStringList>
 
 #include <algorithm>
 #include <cmath>
@@ -66,10 +67,68 @@ QString valueToText(const QJsonValue& value)
     return QString();
 }
 
+QJsonValue valueAtPath(const QJsonObject& object, const QString& path)
+{
+    const auto normalizedPath = path.trimmed();
+    if (normalizedPath.isEmpty()) {
+        return QJsonValue();
+    }
+    if (object.contains(normalizedPath)) {
+        return object.value(normalizedPath);
+    }
+
+    // 字段路径支持 order.items、product.name 这类嵌套 JSON；完整 key 优先，避免破坏旧模板。
+    QJsonValue current = object;
+    for (const auto& part : normalizedPath.split(QLatin1Char('.'), Qt::SkipEmptyParts)) {
+        if (!current.isObject()) {
+            return QJsonValue();
+        }
+        const auto currentObject = current.toObject();
+        if (!currentObject.contains(part)) {
+            return QJsonValue();
+        }
+        current = currentObject.value(part);
+    }
+    return current;
+}
+
+double columnFlexWeight(const TableColumn& column)
+{
+    return column.flexWeight > 0.0 ? column.flexWeight : 1.0;
+}
+
+QList<double> resolvedColumnWidths(const TableElement& table)
+{
+    QList<double> widths;
+    widths.reserve(table.columns.size());
+
+    double fixedTotal = 0.0;
+    double flexWeightTotal = 0.0;
+    for (const auto& column : table.columns) {
+        if (column.widthMode == TableColumnWidthMode::Flex) {
+            flexWeightTotal += columnFlexWeight(column);
+        } else {
+            fixedTotal += std::max(0.0, column.widthMm);
+        }
+    }
+
+    const auto remainingWidth = std::max(0.0, table.width - fixedTotal);
+    for (const auto& column : table.columns) {
+        if (column.widthMode == TableColumnWidthMode::Flex && flexWeightTotal > 0.0) {
+            // 弹性列只瓜分固定列之外的剩余宽度，避免旧模板固定列被重新缩放。
+            widths.append(remainingWidth * columnFlexWeight(column) / flexWeightTotal);
+        } else {
+            widths.append(std::max(0.0, column.widthMm));
+        }
+    }
+    return widths;
+}
+
 void appendCellCommands(QList<NativeDrawCommand>& commands,
                         const QString& tableId,
                         const QString& rowKey,
                         const TableColumn& column,
+                        double width,
                         double x,
                         double y,
                         double height,
@@ -78,9 +137,9 @@ void appendCellCommands(QList<NativeDrawCommand>& commands,
 {
     const auto cellKey = QStringLiteral("%1.%2.%3").arg(tableId, rowKey, column.id);
     if (drawBorders) {
-        commands.append(rectangleCommand(x, y, column.widthMm, height, cellKey + QStringLiteral(".border")));
+        commands.append(rectangleCommand(x, y, width, height, cellKey + QStringLiteral(".border")));
     }
-    commands.append(textCommand(x, y, column.widthMm, height, text, column, cellKey));
+    commands.append(textCommand(x, y, width, height, text, column, cellKey));
 }
 
 int detailCapacity(const TableElement& table, bool drawHeader)
@@ -100,18 +159,22 @@ void appendHeaderCommands(QList<NativeDrawCommand>& commands,
                           double originY)
 {
     double currentX = originX;
-    for (const auto& column : table.columns) {
+    const auto columnWidths = resolvedColumnWidths(table);
+    for (qsizetype columnIndex = 0; columnIndex < table.columns.size(); ++columnIndex) {
+        const auto& column = table.columns[columnIndex];
+        const auto columnWidth = columnWidths[columnIndex];
         appendCellCommands(
             commands,
             tableId,
             rowKey,
             column,
+            columnWidth,
             currentX,
             originY,
             table.headerRowHeightMm,
             column.title,
             table.drawBorders);
-        currentX += column.widthMm;
+        currentX += columnWidth;
     }
 }
 
@@ -128,18 +191,22 @@ void appendDetailRowCommands(QList<NativeDrawCommand>& commands,
     const auto rowY =
         originY + (drawHeader ? table.headerRowHeightMm : 0.0) + pageRowIndex * table.detailRowHeightMm;
     double currentX = originX;
-    for (const auto& column : table.columns) {
+    const auto columnWidths = resolvedColumnWidths(table);
+    for (qsizetype columnIndex = 0; columnIndex < table.columns.size(); ++columnIndex) {
+        const auto& column = table.columns[columnIndex];
+        const auto columnWidth = columnWidths[columnIndex];
         appendCellCommands(
             commands,
             tableId,
             QStringLiteral("row%1").arg(originalRowIndex),
             column,
+            columnWidth,
             currentX,
             rowY,
             table.detailRowHeightMm,
-            valueToText(row.value(column.fieldKey)),
+            valueToText(valueAtPath(row, column.fieldKey)),
             table.drawBorders);
-        currentX += column.widthMm;
+        currentX += columnWidth;
     }
 }
 
@@ -163,7 +230,7 @@ TableRenderResult TableElementRenderer::renderSinglePage(const TableElement& tab
     }
 
     const auto dataPath = table.dataPath.trimmed();
-    const auto rowsValue = context.values.value(dataPath);
+    const auto rowsValue = valueAtPath(context.values, dataPath);
     if (!rowsValue.isArray()) {
         result.errorMessage = QStringLiteral("表格数据 %1 必须是数组").arg(dataPath);
         return result;
@@ -215,7 +282,7 @@ TableRenderResult TableElementRenderer::renderPages(const TableElement& table,
     }
 
     const auto dataPath = table.dataPath.trimmed();
-    const auto rowsValue = context.values.value(dataPath);
+    const auto rowsValue = valueAtPath(context.values, dataPath);
     if (!rowsValue.isArray()) {
         result.errorMessage = QStringLiteral("表格数据 %1 必须是数组").arg(dataPath);
         return result;
