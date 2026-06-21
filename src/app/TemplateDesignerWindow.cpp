@@ -7,6 +7,7 @@
 #include "sleekpr/core/native/NativeLabelDrawingPlanner.h"
 #include "sleekpr/core/settings/PrinterSelectionResolver.h"
 #include "sleekpr/core/settings/TemplateElement.h"
+#include "sleekpr/core/templates/DefaultPaperSpecs.h"
 #include "sleekpr/core/templates/DeviceProfileResolver.h"
 #include "sleekpr/core/templates/PaperSpecStore.h"
 #include "sleekpr/core/templates/TemplateDocumentFactory.h"
@@ -50,6 +51,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <optional>
 #include <utility>
 
 namespace sleekpr::app {
@@ -772,6 +774,7 @@ void TemplateDesignerWindow::buildUi()
     m_arrayGridDataPathEdit->setPlaceholderText(QStringLiteral("header_items"));
     m_arrayGridRowsSpin = createGridSpinBox(QStringLiteral("arrayGridRowsSpin"), 1, 20, 2, elementPanel);
     m_arrayGridColumnsSpin = createGridSpinBox(QStringLiteral("arrayGridColumnsSpin"), 1, 20, 3, elementPanel);
+    m_arrayGridRowHeightSpin = createTableSpinBox(QStringLiteral("arrayGridRowHeightSpin"), 0.0, 100.0, 0.0, elementPanel);
     m_arrayGridCellTemplateEdit = new QPlainTextEdit(elementPanel);
     m_arrayGridCellTemplateEdit->setObjectName(QStringLiteral("arrayGridCellTemplateEdit"));
     m_arrayGridCellTemplateEdit->setFixedHeight(56);
@@ -831,9 +834,11 @@ void TemplateDesignerWindow::buildUi()
     arrayGridPropertyGrid->addWidget(m_arrayGridRowsSpin, 1, 1);
     arrayGridPropertyGrid->addWidget(new QLabel(QString::fromUtf8("列数"), elementPanel), 2, 0);
     arrayGridPropertyGrid->addWidget(m_arrayGridColumnsSpin, 2, 1);
-    arrayGridPropertyGrid->addWidget(new QLabel(QString::fromUtf8("单元格模板"), elementPanel), 3, 0, 1, 2);
-    arrayGridPropertyGrid->addWidget(m_arrayGridCellTemplateEdit, 4, 0, 1, 2);
-    arrayGridPropertyGrid->addWidget(m_arrayGridDrawBordersCheck, 5, 0, 1, 2);
+    arrayGridPropertyGrid->addWidget(new QLabel(QString::fromUtf8("行高(mm)"), elementPanel), 3, 0);
+    arrayGridPropertyGrid->addWidget(m_arrayGridRowHeightSpin, 3, 1);
+    arrayGridPropertyGrid->addWidget(new QLabel(QString::fromUtf8("单元格模板"), elementPanel), 4, 0, 1, 2);
+    arrayGridPropertyGrid->addWidget(m_arrayGridCellTemplateEdit, 5, 0, 1, 2);
+    arrayGridPropertyGrid->addWidget(m_arrayGridDrawBordersCheck, 6, 0, 1, 2);
 
     auto* deviceProfileGrid = new QGridLayout();
     deviceProfileGrid->setContentsMargins(0, 0, 0, 0);
@@ -1859,6 +1864,7 @@ void TemplateDesignerWindow::refreshElementPropertyEditor()
         m_arrayGridDataPathEdit,
         m_arrayGridRowsSpin,
         m_arrayGridColumnsSpin,
+        m_arrayGridRowHeightSpin,
         m_arrayGridCellTemplateEdit,
         m_arrayGridDrawBordersCheck,
     };
@@ -1934,6 +1940,9 @@ void TemplateDesignerWindow::refreshElementPropertyEditor()
     }
     if (m_arrayGridColumnsSpin != nullptr) {
         m_arrayGridColumnsSpin->setValue(element->arrayGridColumns);
+    }
+    if (m_arrayGridRowHeightSpin != nullptr) {
+        m_arrayGridRowHeightSpin->setValue(element->arrayGridRowHeightMm);
     }
     if (m_arrayGridCellTemplateEdit != nullptr) {
         const QSignalBlocker cellTemplateBlocker(m_arrayGridCellTemplateEdit);
@@ -2046,6 +2055,7 @@ void TemplateDesignerWindow::refreshPaperSpecSelector()
         defaultSpec.name = QString::fromUtf8("80x30 标签");
         defaultSpec.widthMm = defaultPaperSizeMm().width();
         defaultSpec.heightMm = defaultPaperSizeMm().height();
+        defaultSpec.defaultDpi = 203.0;
         specs.prepend(defaultSpec);
     }
 
@@ -2232,6 +2242,16 @@ QString TemplateDesignerWindow::paperSpecFilePath() const
 
 QSizeF TemplateDesignerWindow::currentPaperSizeMm() const
 {
+    const auto spec = currentPaperSpec();
+    if (spec.has_value()) {
+        return QSizeF(spec->widthMm, spec->heightMm);
+    }
+
+    return defaultPaperSizeMm();
+}
+
+std::optional<sleekpr::core::PaperSpec> TemplateDesignerWindow::currentPaperSpec() const
+{
     const_cast<TemplateDesignerWindow*>(this)->ensureCurrentTemplateDocument();
     const auto documentIt = m_settings.templateDocuments.constFind(m_templateKey);
     auto paperSpecId = documentIt == m_settings.templateDocuments.constEnd()
@@ -2245,11 +2265,11 @@ QSizeF TemplateDesignerWindow::currentPaperSizeMm() const
     if (!path.trimmed().isEmpty()) {
         const auto spec = sleekpr::core::PaperSpecStore(path).loadPaperSpec(paperSpecId);
         if (spec.has_value() && spec->widthMm > 0.0 && spec->heightMm > 0.0) {
-            return QSizeF(spec->widthMm, spec->heightMm);
+            return spec;
         }
     }
 
-    return defaultPaperSizeMm();
+    return sleekpr::core::builtInPaperSpec(paperSpecId);
 }
 
 sleekpr::core::NativePrintDrawingPlan TemplateDesignerWindow::createCurrentPrintPlan(
@@ -2261,7 +2281,10 @@ sleekpr::core::NativePrintDrawingPlan TemplateDesignerWindow::createCurrentPrint
     const auto labelItem = sleekpr::infrastructure::PreviewLabelFactory::createDemoLabel(
         sleekpr::core::LabelTemplateKey::Default80x30);
     auto labelPlan = sleekpr::core::LabelRenderPlanner().createPlan(labelItem);
-    const auto paperSize = currentPaperSizeMm();
+    const auto paperSpec = currentPaperSpec();
+    const auto paperSize = paperSpec.has_value()
+        ? QSizeF(paperSpec->widthMm, paperSpec->heightMm)
+        : currentPaperSizeMm();
     labelPlan.paperSize = sleekpr::core::LabelPaperSize(paperSize.width(), paperSize.height());
 
     const auto documentIt = m_settings.templateDocuments.constFind(m_templateKey);
@@ -2269,11 +2292,23 @@ sleekpr::core::NativePrintDrawingPlan TemplateDesignerWindow::createCurrentPrint
         return {};
     }
 
-    const auto profile = sleekpr::core::DeviceProfileResolver::resolve(documentIt.value().deviceProfiles, printerName);
+    auto labelOffset = m_settings.labelOffset;
+    if (paperSpec.has_value()) {
+        // 预打印与 HTTP 模板打印保持一致：纸张左/上边距合入整体偏移，不改写模板内元素坐标。
+        labelOffset.x += paperSpec->marginLeftMm;
+        labelOffset.y += paperSpec->marginTopMm;
+    }
+
+    auto profile = sleekpr::core::DeviceProfileResolver::resolve(documentIt.value().deviceProfiles, printerName);
+    if (paperSpec.has_value() && (documentIt.value().deviceProfiles.isEmpty() || profile.printerName.trimmed().isEmpty())) {
+        // 没有专用打印机 profile 时使用纸张规格默认 DPI，避免小标签按错误 DPI 渲染后被打印驱动缩放发糊。
+        profile.dpi = paperSpec->defaultDpi;
+    }
+
     return sleekpr::core::TemplateDocumentRenderer().renderPrint(
         documentIt.value(),
         labelPlan,
-        m_settings.labelOffset,
+        labelOffset,
         profile,
         renderContext);
 }
@@ -2621,6 +2656,9 @@ void TemplateDesignerWindow::applyCurrentElementProperties()
         element->dataPath = m_arrayGridDataPathEdit == nullptr ? element->dataPath : m_arrayGridDataPathEdit->text().trimmed();
         element->arrayGridRows = m_arrayGridRowsSpin == nullptr ? element->arrayGridRows : m_arrayGridRowsSpin->value();
         element->arrayGridColumns = m_arrayGridColumnsSpin == nullptr ? element->arrayGridColumns : m_arrayGridColumnsSpin->value();
+        element->arrayGridRowHeightMm = m_arrayGridRowHeightSpin == nullptr
+            ? element->arrayGridRowHeightMm
+            : m_arrayGridRowHeightSpin->value();
         element->arrayGridCellTemplate = m_arrayGridCellTemplateEdit == nullptr
             ? element->arrayGridCellTemplate
             : m_arrayGridCellTemplateEdit->toPlainText();

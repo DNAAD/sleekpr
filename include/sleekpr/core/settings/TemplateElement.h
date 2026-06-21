@@ -63,6 +63,8 @@ struct TemplateElement
     QString dataPath;
     int arrayGridRows = 2;
     int arrayGridColumns = 3;
+    // 数组网格行高表示相邻两行起点的垂直距离，0 表示沿用元素高度按行数平均分配。
+    double arrayGridRowHeightMm = 0.0;
     QString arrayGridCellTemplate = QStringLiteral("${text}:${value}");
     bool arrayGridDrawBorders = true;
 

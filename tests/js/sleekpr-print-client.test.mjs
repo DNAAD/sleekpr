@@ -72,6 +72,56 @@ test("printTemplate 使用本地模板打印接口和服务端字段名", async 
   });
 });
 
+test("previewTemplate 使用本地模板预览接口并返回图片页", async () => {
+  const { SleekprPrintClient, previewPageDataUrl } = await loadPrintClientModule();
+  const requests = [];
+  const client = new SleekprPrintClient({
+    baseUrl: "http://127.0.0.1:37122",
+    fetcher: async (url, options) => {
+      requests.push({ url, options });
+      return jsonResponse(200, {
+        success: true,
+        data: {
+          requestId: "preview-1",
+          totalItems: 1,
+          totalPages: 1,
+          pages: [
+            {
+              pageNumber: 1,
+              contentType: "image/png",
+              imageBase64: "cG5n",
+            },
+          ],
+        },
+      });
+    },
+  });
+
+  const result = await client.previewTemplate({
+    requestId: "preview-1",
+    templateKey: "default",
+    fieldPresetId: "preset-1",
+    printerName: "标签打印机",
+    values: {
+      productName: "足金串搭项链",
+    },
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "http://127.0.0.1:37122/preview/template");
+  assert.deepEqual(JSON.parse(requests[0].options.body), {
+    requestId: "preview-1",
+    templateKey: "default",
+    fieldPresetId: "preset-1",
+    printerName: "标签打印机",
+    values: {
+      productName: "足金串搭项链",
+    },
+  });
+  assert.equal(previewPageDataUrl(result.data.pages[0]), "data:image/png;base64,cG5n");
+});
+
 test("HTTP 或业务失败时抛出带状态码和错误码的异常", async () => {
   const { SleekprPrintClient, SleekprPrintError } = await loadPrintClientModule();
   const client = new SleekprPrintClient({
@@ -151,4 +201,49 @@ test("printTemplatesBatch 按队列批量调用模板打印并汇总失败项", 
   assert.equal(result.success, false);
   assert.equal(result.results[1].success, false);
   assert.equal(result.results[1].error.code, "BAD_REQUEST");
+});
+
+test("previewTemplatesBatch 一次提交批量预览任务", async () => {
+  const { SleekprPrintClient } = await loadPrintClientModule();
+  const requests = [];
+  const client = new SleekprPrintClient({
+    fetcher: async (url, options) => {
+      requests.push({ url, options });
+      return jsonResponse(200, {
+        success: true,
+        data: {
+          requestId: "batch-preview-1",
+          totalItems: 2,
+          totalPages: 2,
+          pages: [
+            { pageNumber: 1, itemIndex: 0, imageBase64: "cG5nMQ==" },
+            { pageNumber: 2, itemIndex: 1, imageBase64: "cG5nMg==" },
+          ],
+        },
+      });
+    },
+  });
+
+  const result = await client.previewTemplatesBatch({
+    requestId: "batch-preview-1",
+    templateKey: "default",
+    printerName: "标签打印机",
+    jobs: [
+      { requestId: "preview-item-1", values: { productName: "足金项链" } },
+      { requestId: "preview-item-2", values: { productName: "足金戒指" } },
+    ],
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "http://127.0.0.1:37122/preview/template");
+  assert.deepEqual(JSON.parse(requests[0].options.body), {
+    requestId: "batch-preview-1",
+    templateKey: "default",
+    printerName: "标签打印机",
+    items: [
+      { requestId: "preview-item-1", values: { productName: "足金项链" } },
+      { requestId: "preview-item-2", values: { productName: "足金戒指" } },
+    ],
+  });
 });

@@ -104,6 +104,7 @@ QJsonObject templateElementToJson(const TemplateElement& element)
     json["dataPath"] = element.dataPath;
     json["arrayGridRows"] = element.arrayGridRows;
     json["arrayGridColumns"] = element.arrayGridColumns;
+    json["arrayGridRowHeightMm"] = element.arrayGridRowHeightMm;
     json["arrayGridCellTemplate"] = element.arrayGridCellTemplate;
     json["arrayGridDrawBorders"] = element.arrayGridDrawBorders;
     json["maxLines"] = element.maxLines;
@@ -160,6 +161,9 @@ TemplateElement templateElementFromJson(const QJsonObject& json)
     }
     if (json.contains("arrayGridColumns")) {
         element.arrayGridColumns = json["arrayGridColumns"].toInt(element.arrayGridColumns);
+    }
+    if (json.contains("arrayGridRowHeightMm")) {
+        element.arrayGridRowHeightMm = json["arrayGridRowHeightMm"].toDouble(element.arrayGridRowHeightMm);
     }
     element.arrayGridCellTemplate = json["arrayGridCellTemplate"].toString(element.arrayGridCellTemplate);
     if (json.contains("arrayGridDrawBorders")) {

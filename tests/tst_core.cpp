@@ -1,6 +1,7 @@
 #include <QtTest/QtTest>
 
 #include <QDir>
+#include <QColor>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -45,6 +46,7 @@
 #include "sleekpr/infrastructure/preview/LabelPreviewService.h"
 #include "sleekpr/infrastructure/preview/PreviewLabelFactory.h"
 #include "sleekpr/infrastructure/preview/QrCodeMatrixRenderer.h"
+#include "sleekpr/infrastructure/printing/QrModulePixelLayout.h"
 
 using namespace sleekpr::core;
 
@@ -84,6 +86,7 @@ private slots:
     void fieldPresetStoreSavesListsLoadsAndRemovesPresets();
     void fieldPresetStoreReportsInvalidDocument();
     void templateRenderContextBuilderMergesValuesByPriority();
+    void templateRenderContextBuilderKeepsSchemaFreeRequestValues();
     void templateRenderContextBuilderReportsMissingRequiredFields();
     void tableElementJsonPersistsColumnsAndLayout();
     void tableElementJsonRejectsInvalidTable();
@@ -99,6 +102,7 @@ private slots:
     void templateDocumentRendererInterpolatesFixedTextPlaceholders();
     void templateDocumentRendererWrapsFixedTextWithinElementWidth();
     void templateDocumentRendererRendersArrayGridElements();
+    void templateDocumentRendererUsesArrayGridRowHeight();
     void templateDocumentRendererBuildsMultiPagePrintPlan();
     void templateDocumentJsonPersistsPaperMetadata();
     void templateDocumentImportRequiresPaperSpecIdForGenericTemplates();
@@ -129,7 +133,9 @@ private slots:
     void qrCodeMatrixRendererSupportsVersion3And4Payloads();
     void labelPreviewImageRendererRendersPngCanvas();
     void labelPreviewImageRendererRendersQtImage();
+    void labelPreviewImageRendererRotatesNinetyDegreesFromTopToBottom();
     void labelPreviewImageRendererWrapsTextAndClipsToCommandHeight();
+    void qrModulePixelLayoutKeepsDesignedQrPixelSize();
     void labelPreviewServiceUsesTemplateDocumentDeviceProfile();
     void labelPreviewServiceUsesTemplateDocumentSampleData();
     void labelPreviewServiceRenderPreviewUsesDefaultPrinterDeviceProfile();
@@ -1273,6 +1279,24 @@ void CoreTests::templateRenderContextBuilderMergesValuesByPriority()
     QVERIFY(!context.hasMissingRequiredFields());
 }
 
+void CoreTests::templateRenderContextBuilderKeepsSchemaFreeRequestValues()
+{
+    QJsonObject requestValues;
+    requestValues["productName"] = QString::fromUtf8("足金串搭项链");
+    requestValues["finishedProductPartVO"] = QJsonArray{
+        QJsonObject{
+            {QStringLiteral("categoryName"), QString::fromUtf8("素金KA")},
+            {QStringLiteral("partWeight"), QStringLiteral("2.99")}
+        }
+    };
+
+    const auto context = TemplateRenderContextBuilder::build(QList<FieldDefinition>{}, QJsonObject{}, requestValues);
+
+    QCOMPARE(context.values["productName"].toString(), QString::fromUtf8("足金串搭项链"));
+    QCOMPARE(context.values["finishedProductPartVO"].toArray().size(), 1);
+    QVERIFY(!context.hasMissingRequiredFields());
+}
+
 void CoreTests::templateRenderContextBuilderReportsMissingRequiredFields()
 {
     QList<FieldDefinition> fields;
@@ -1836,6 +1860,50 @@ void CoreTests::templateDocumentRendererRendersArrayGridElements()
     QCOMPARE(drawingPlan.commands[7].text, QString::fromUtf8("素金PD:11.49"));
     QCOMPARE(drawingPlan.commands[8].elementKey, QString("headerGrid.cell4.border"));
     QCOMPARE(drawingPlan.commands[9].elementKey, QString("headerGrid.cell5.border"));
+}
+
+void CoreTests::templateDocumentRendererUsesArrayGridRowHeight()
+{
+    TemplateElement grid;
+    grid.id = QStringLiteral("headerGrid");
+    grid.type = TemplateElementType::ArrayGrid;
+    grid.x = 2.0;
+    grid.y = 3.0;
+    grid.width = 30.0;
+    grid.height = 6.0;
+    grid.fontSizePt = 6.0;
+    grid.dataPath = QStringLiteral("header_items");
+    grid.arrayGridRows = 3;
+    grid.arrayGridColumns = 1;
+    grid.arrayGridRowHeightMm = 1.6;
+    grid.arrayGridCellTemplate = QStringLiteral("${text}:${value}");
+    grid.arrayGridDrawBorders = true;
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("base");
+    layer.elements = {grid};
+
+    TemplateDocument document;
+    document.layers = {layer};
+
+    TemplateRenderContext context;
+    context.values["header_items"] = QJsonArray{
+        QJsonObject{{QStringLiteral("text"), QString::fromUtf8("素金KA")}, {QStringLiteral("value"), QStringLiteral("2.99")}},
+        QJsonObject{{QStringLiteral("text"), QString::fromUtf8("素金PC")}, {QStringLiteral("value"), QStringLiteral("4.13")}},
+        QJsonObject{{QStringLiteral("text"), QString::fromUtf8("素金PA")}, {QStringLiteral("value"), QStringLiteral("3.91")}},
+    };
+
+    const auto drawingPlan = TemplateDocumentRenderer().render(document, LabelRenderPlan{}, LabelOffset{}, DeviceProfile{}, context);
+
+    QCOMPARE(drawingPlan.commands.size(), 6);
+    QCOMPARE(drawingPlan.commands[0].height, 2.0);
+    QCOMPARE(drawingPlan.commands[1].height, 1.2);
+    QCOMPARE(drawingPlan.commands[2].y, 4.6);
+    QCOMPARE(drawingPlan.commands[3].y, 5.0);
+    QCOMPARE(drawingPlan.commands[4].y, 6.2);
+    QCOMPARE(drawingPlan.commands[5].y, 6.6);
+    QCOMPARE(drawingPlan.commands[2].y - drawingPlan.commands[0].y, 1.6);
+    QCOMPARE(drawingPlan.commands[4].y - drawingPlan.commands[2].y, 1.6);
 }
 
 void CoreTests::templateDocumentRendererBuildsMultiPagePrintPlan()
@@ -2712,6 +2780,55 @@ void CoreTests::labelPreviewImageRendererRendersQtImage()
     QCOMPARE(image.height(), 354);
 }
 
+void CoreTests::labelPreviewImageRendererRotatesNinetyDegreesFromTopToBottom()
+{
+    NativeDrawCommand command;
+    command.type = NativeDrawCommandType::Text;
+    command.x = 3.0;
+    command.y = 3.0;
+    command.width = 8.0;
+    command.height = 22.0;
+    command.text = QStringLiteral("1111WWWW");
+    command.fontSizePt = 10.0;
+    command.rotationDegrees = 90.0;
+    command.elementKey = QStringLiteral("verticalCode");
+
+    NativeLabelDrawingPlan drawingPlan;
+    drawingPlan.paperSize = LabelPaperSize(24.0, 30.0);
+    drawingPlan.renderDpi = 300.0;
+    drawingPlan.commands = {command};
+
+    const auto image = sleekpr::infrastructure::LabelPreviewImageRenderer().renderImage(drawingPlan);
+    QVERIFY(!image.isNull());
+
+    const auto mmToPx = [](double mm) {
+        return static_cast<int>((mm * 300.0 / 25.4) + 0.5);
+    };
+    const auto inkCount = [&image](int left, int top, int right, int bottom) {
+        int count = 0;
+        for (int y = std::max(0, top); y < std::min(image.height(), bottom); ++y) {
+            for (int x = std::max(0, left); x < std::min(image.width(), right); ++x) {
+                if (image.pixelColor(x, y).value() < 220) {
+                    ++count;
+                }
+            }
+        }
+        return count;
+    };
+
+    const auto left = mmToPx(command.x);
+    const auto right = mmToPx(command.x + command.width);
+    const auto top = mmToPx(command.y);
+    const auto middle = mmToPx(command.y + command.height / 2.0);
+    const auto bottom = mmToPx(command.y + command.height);
+    const auto topInk = inkCount(left, top, right, middle);
+    const auto bottomInk = inkCount(left, middle, right, bottom);
+
+    QVERIFY(topInk > 0);
+    QVERIFY(bottomInk > 0);
+    QVERIFY(bottomInk > topInk);
+}
+
 void CoreTests::labelPreviewImageRendererWrapsTextAndClipsToCommandHeight()
 {
     NativeDrawCommand command;
@@ -2749,6 +2866,19 @@ void CoreTests::labelPreviewImageRendererWrapsTextAndClipsToCommandHeight()
 
     QVERIFY(hasInk(mmToPx(2.0), mmToPx(5.5), mmToPx(10.0), mmToPx(9.8)));
     QVERIFY(!hasInk(mmToPx(2.0), mmToPx(10.6), mmToPx(10.0), mmToPx(13.0)));
+}
+
+void CoreTests::qrModulePixelLayoutKeepsDesignedQrPixelSize()
+{
+    const auto bounds = sleekpr::infrastructure::QrModulePixelLayout::moduleBounds(21, 70);
+
+    QCOMPARE(bounds.size(), 22);
+    QCOMPARE(bounds.first(), 0);
+    QCOMPARE(bounds.last(), 70);
+
+    for (qsizetype index = 1; index < bounds.size(); ++index) {
+        QVERIFY(bounds.at(index) > bounds.at(index - 1));
+    }
 }
 
 void CoreTests::labelPreviewServiceUsesTemplateDocumentDeviceProfile()

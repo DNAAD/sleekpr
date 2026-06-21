@@ -28,6 +28,7 @@ add_library(sleekpr_core
     src/core/settings/SettingsEditModel.cpp
     src/core/settings/TemplateElementCatalog.cpp
     src/core/templates/DeviceProfileResolver.cpp
+    src/core/templates/DefaultPaperSpecs.cpp
     src/core/templates/FieldPresetJson.cpp
     src/core/templates/FieldPresetStore.cpp
     src/core/templates/FieldSchemaJson.cpp
@@ -47,6 +48,7 @@ add_library(sleekpr_core
     src/infrastructure/preview/PreviewLabelFactory.cpp
     src/infrastructure/preview/QrCodeMatrix.cpp
     src/infrastructure/preview/QrCodeMatrixRenderer.cpp
+    src/infrastructure/printing/QrModulePixelLayout.cpp
     src/infrastructure/printing/QtLabelPrintEngine.cpp
 )
 

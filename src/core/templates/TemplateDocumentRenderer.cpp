@@ -461,16 +461,20 @@ QList<NativeDrawCommand> arrayGridCommands(
     const auto arrayValue = valueAtPath(context.values, element.dataPath);
     const auto items = arrayValue.isArray() ? arrayValue.toArray() : QJsonArray{};
     const auto cellWidth = element.width / columns;
-    const auto cellHeight = element.height / rows;
+    const auto defaultCellHeight = element.height / rows;
+    const auto rowStep = element.arrayGridRowHeightMm > 0.0
+        ? element.arrayGridRowHeightMm
+        : defaultCellHeight;
 
     for (int cellIndex = 0; cellIndex < totalCells; ++cellIndex) {
         const auto rowIndex = cellIndex / columns;
         const auto columnIndex = cellIndex % columns;
         const auto cellX = element.x + offsetX + columnIndex * cellWidth;
-        const auto cellY = element.y + offsetY + rowIndex * cellHeight;
+        // 行高控制相邻两行起点之间的距离，便于压缩或拉开数组明细行。
+        const auto cellY = element.y + offsetY + rowIndex * rowStep;
 
         if (element.arrayGridDrawBorders) {
-            commands.append(arrayGridBorderCommand(element, cellIndex, cellX, cellY, cellWidth, cellHeight));
+            commands.append(arrayGridBorderCommand(element, cellIndex, cellX, cellY, cellWidth, defaultCellHeight));
         }
         if (cellIndex >= items.size()) {
             continue;
@@ -478,7 +482,7 @@ QList<NativeDrawCommand> arrayGridCommands(
 
         const auto text = interpolateArrayGridCellText(element, items.at(cellIndex));
         if (!text.trimmed().isEmpty()) {
-            commands.append(arrayGridTextCommand(element, cellIndex, cellX, cellY, cellWidth, cellHeight, text));
+            commands.append(arrayGridTextCommand(element, cellIndex, cellX, cellY, cellWidth, defaultCellHeight, text));
         }
     }
 

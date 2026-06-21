@@ -40,7 +40,7 @@ QString fieldDisplayName(const FieldDefinition& field, const QString& normalized
     return displayName.isEmpty() ? normalizedKey : displayName;
 }
 
-} // 命名空间
+} // namespace
 
 bool TemplateRenderContext::hasMissingRequiredFields() const
 {
@@ -53,13 +53,18 @@ TemplateRenderContext TemplateRenderContextBuilder::build(const QList<FieldDefin
 {
     TemplateRenderContext context;
 
+    context.values = presetValues;
+    for (auto it = requestValues.constBegin(); it != requestValues.constEnd(); ++it) {
+        context.values.insert(it.key(), it.value());
+    }
+
     for (const auto& field : fieldSchema) {
         const auto key = field.key.trimmed();
         if (key.isEmpty()) {
             continue;
         }
 
-        // 合并优先级：本次请求值 > 字段值方案 > 字段默认值 > 空值。
+        // 合并优先级：本次请求值 > 字段值方案 > 字段默认值；schema 外字段也要保留给 ${} 和数组网格使用。
         QJsonValue value = field.defaultValue;
         if (hasUsableValue(presetValues, key)) {
             value = presetValues.value(key);
@@ -77,4 +82,4 @@ TemplateRenderContext TemplateRenderContextBuilder::build(const QList<FieldDefin
     return context;
 }
 
-} // 命名空间 sleekpr::core
+} // namespace sleekpr::core

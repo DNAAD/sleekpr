@@ -1,6 +1,8 @@
 #include <QtTest/QtTest>
 
 #include <QFile>
+#include <QImage>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTcpSocket>
@@ -103,6 +105,32 @@ TemplateDocument createHttpInvoiceTemplateDocument()
     return document;
 }
 
+TemplateDocument createSchemaFreeHttpTemplateDocument()
+{
+    TemplateElement productText;
+    productText.id = QStringLiteral("productNameText");
+    productText.type = TemplateElementType::FixedText;
+    productText.text = QStringLiteral("${productName}");
+    productText.x = 1.0;
+    productText.y = 2.0;
+    productText.width = 30.0;
+    productText.height = 5.0;
+    productText.fontSizePt = 9.0;
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("base");
+    layer.name = QString::fromUtf8("基础图层");
+    layer.elements = {productText};
+
+    TemplateDocument document;
+    document.id = QStringLiteral("template-schema-free");
+    document.name = QString::fromUtf8("无字段预设标签");
+    document.templateKey = QStringLiteral("schema-free");
+    document.category = QStringLiteral("label");
+    document.layers = {layer};
+    return document;
+}
+
 class HttpTests final : public QObject
 {
     Q_OBJECT
@@ -118,9 +146,13 @@ private slots:
     void paperSpecRoutesReportStoreReadErrors();
     void fieldPresetRoutesPersistReadAndRemovePresets();
     void postPrintTemplateUsesRequestValuesAndConfiguredPrinter();
+    void postPrintTemplateKeepsValuesWhenSchemaEmpty();
     void postPrintTemplateUsesFieldPresetValues();
     void postPrintTemplateUsesPaperSpecForPrintPlan();
+    void postPrintTemplateUsesBuiltInLabelPaperSpecForGenericProfile();
     void postPrintTemplateCanUseTemplateLibraryDocument();
+    void postPreviewTemplateReturnsNativePngWithoutPrinting();
+    void postPreviewTemplateReturnsBatchPreviewPages();
     void postPrintTemplateRejectsMissingRequiredFields();
     void postPrintTemplateRejectsInvalidTemplateStructure();
     void localServerWaitsForFullPostBody();
@@ -622,6 +654,44 @@ void HttpTests::postPrintTemplateUsesRequestValuesAndConfiguredPrinter()
     QCOMPARE(data["failed"].toInt(), 0);
 }
 
+void HttpTests::postPrintTemplateKeepsValuesWhenSchemaEmpty()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    PrintClientSettings settings;
+    settings.templateDocuments["schema-free"] = createSchemaFreeHttpTemplateDocument();
+    QVERIFY(FileSettingsStore(dir.filePath("settings.json")).save(settings));
+
+    RecordingLabelPrintEngine printEngine;
+    LocalHttpRouter router(dir.filePath("settings.json"), &printEngine);
+
+    LocalHttpRequest request;
+    request.method = "POST";
+    request.path = "/print/template";
+    request.body = R"json({
+        "requestId": "schema-free-request-1",
+        "templateKey": "schema-free",
+        "executePrint": true,
+        "values": {
+            "productName": "足金串搭项链"
+        }
+    })json";
+
+    const auto response = router.route(request);
+    QCOMPARE(response.statusCode, 200);
+    QCOMPARE(printEngine.printCount, 1);
+
+    const auto command = std::find_if(
+        printEngine.lastPlan.commands.cbegin(),
+        printEngine.lastPlan.commands.cend(),
+        [](const NativeDrawCommand& item) {
+            return item.elementKey == QStringLiteral("productNameText");
+        });
+    QVERIFY(command != printEngine.lastPlan.commands.cend());
+    QCOMPARE(command->text, QString::fromUtf8("足金串搭项链"));
+}
+
 void HttpTests::postPrintTemplateUsesFieldPresetValues()
 {
     QTemporaryDir dir;
@@ -712,6 +782,46 @@ void HttpTests::postPrintTemplateUsesPaperSpecForPrintPlan()
     QCOMPARE(printEngine.lastPlan.renderDpi, 203.0);
 }
 
+void HttpTests::postPrintTemplateUsesBuiltInLabelPaperSpecForGenericProfile()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    PrintClientSettings settings;
+    settings.defaultPrinter = "Configured Printer";
+    auto document = createHttpInvoiceTemplateDocument();
+    document.paperSpecId = QStringLiteral("label-80x30");
+    DeviceProfile genericProfile;
+    genericProfile.id = QStringLiteral("profile-default");
+    genericProfile.dpi = 300.0;
+    document.deviceProfiles = {genericProfile};
+    settings.templateDocuments["invoice"] = document;
+    QVERIFY(FileSettingsStore(dir.filePath("settings.json")).save(settings));
+
+    RecordingLabelPrintEngine printEngine;
+    LocalHttpRouter router(dir.filePath("settings.json"), &printEngine);
+
+    LocalHttpRequest request;
+    request.method = "POST";
+    request.path = "/print/template";
+    request.body = R"json({
+        "requestId": "template-built-in-paper-request-1",
+        "templateKey": "invoice",
+        "executePrint": true,
+        "values": {
+            "customerName": "王五"
+        }
+    })json";
+
+    const auto response = router.route(request);
+    QCOMPARE(response.statusCode, 200);
+    QCOMPARE(printEngine.printCount, 1);
+    QVERIFY(printEngine.usedPrintPlanEntry);
+    QCOMPARE(printEngine.lastPlan.paperSize.widthMm(), 80.0);
+    QCOMPARE(printEngine.lastPlan.paperSize.heightMm(), 30.0);
+    QCOMPARE(printEngine.lastPlan.renderDpi, 203.0);
+}
+
 void HttpTests::postPrintTemplateCanUseTemplateLibraryDocument()
 {
     QTemporaryDir dir;
@@ -758,6 +868,120 @@ void HttpTests::postPrintTemplateCanUseTemplateLibraryDocument()
         });
     QVERIFY(command != printEngine.lastPlan.commands.cend());
     QCOMPARE(command->text, QString::fromUtf8("李四"));
+}
+
+void HttpTests::postPreviewTemplateReturnsNativePngWithoutPrinting()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    PrintClientSettings settings;
+    settings.templateDocuments["schema-free"] = createSchemaFreeHttpTemplateDocument();
+    QVERIFY(FileSettingsStore(dir.filePath("settings.json")).save(settings));
+
+    RecordingLabelPrintEngine printEngine;
+    LocalHttpRouter router(dir.filePath("settings.json"), &printEngine);
+
+    LocalHttpRequest request;
+    request.method = "POST";
+    request.path = "/preview/template";
+    request.body = R"json({
+        "requestId": "preview-request-1",
+        "templateKey": "schema-free",
+        "values": {
+            "productName": "足金串搭项链"
+        }
+    })json";
+
+    const auto response = router.route(request);
+
+    QVERIFY2(response.statusCode == 200, response.body.constData());
+    QCOMPARE(printEngine.printCount, 0);
+
+    const auto payload = QJsonDocument::fromJson(response.body).object();
+    QVERIFY(payload["success"].toBool());
+    const auto data = payload["data"].toObject();
+    QCOMPARE(data["requestId"].toString(), QString("preview-request-1"));
+    QCOMPARE(data["totalItems"].toInt(), 1);
+    QCOMPARE(data["totalPages"].toInt(), 1);
+
+    const auto paper = data["paper"].toObject();
+    QCOMPARE(paper["widthMm"].toDouble(), 80.0);
+    QCOMPARE(paper["heightMm"].toDouble(), 30.0);
+    QCOMPARE(paper["dpi"].toDouble(), 203.0);
+
+    const auto pages = data["pages"].toArray();
+    QCOMPARE(pages.size(), 1);
+    const auto page = pages.first().toObject();
+    QCOMPARE(page["pageNumber"].toInt(), 1);
+    QCOMPARE(page["itemIndex"].toInt(), 0);
+    QCOMPARE(page["requestId"].toString(), QString("preview-request-1"));
+    QCOMPARE(page["contentType"].toString(), QString("image/png"));
+
+    const auto png = QByteArray::fromBase64(page["imageBase64"].toString().toLatin1());
+    QVERIFY(png.startsWith("\x89PNG"));
+    const auto image = QImage::fromData(png, "PNG");
+    QVERIFY(!image.isNull());
+    QVERIFY(image.width() > 0);
+    QVERIFY(image.height() > 0);
+}
+
+void HttpTests::postPreviewTemplateReturnsBatchPreviewPages()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    PrintClientSettings settings;
+    settings.templateDocuments["invoice"] = createHttpInvoiceTemplateDocument();
+    QVERIFY(FileSettingsStore(dir.filePath("settings.json")).save(settings));
+
+    RecordingLabelPrintEngine printEngine;
+    LocalHttpRouter router(dir.filePath("settings.json"), &printEngine);
+
+    LocalHttpRequest request;
+    request.method = "POST";
+    request.path = "/preview/template";
+    request.body = R"json({
+        "requestId": "batch-preview-request-1",
+        "templateKey": "invoice",
+        "items": [
+            {
+                "requestId": "batch-preview-item-1",
+                "values": {
+                    "customerName": "张三"
+                }
+            },
+            {
+                "requestId": "batch-preview-item-2",
+                "values": {
+                    "customerName": "李四"
+                }
+            }
+        ]
+    })json";
+
+    const auto response = router.route(request);
+
+    QVERIFY2(response.statusCode == 200, response.body.constData());
+    QCOMPARE(printEngine.printCount, 0);
+
+    const auto payload = QJsonDocument::fromJson(response.body).object();
+    QVERIFY(payload["success"].toBool());
+    const auto data = payload["data"].toObject();
+    QCOMPARE(data["requestId"].toString(), QString("batch-preview-request-1"));
+    QCOMPARE(data["totalItems"].toInt(), 2);
+    QCOMPARE(data["totalPages"].toInt(), 2);
+
+    const auto pages = data["pages"].toArray();
+    QCOMPARE(pages.size(), 2);
+    QCOMPARE(pages.at(0).toObject()["pageNumber"].toInt(), 1);
+    QCOMPARE(pages.at(0).toObject()["itemIndex"].toInt(), 0);
+    QCOMPARE(pages.at(0).toObject()["requestId"].toString(), QString("batch-preview-item-1"));
+    QCOMPARE(pages.at(1).toObject()["pageNumber"].toInt(), 2);
+    QCOMPARE(pages.at(1).toObject()["itemIndex"].toInt(), 1);
+    QCOMPARE(pages.at(1).toObject()["requestId"].toString(), QString("batch-preview-item-2"));
+    QVERIFY(!pages.at(0).toObject()["imageBase64"].toString().isEmpty());
+    QVERIFY(!pages.at(1).toObject()["imageBase64"].toString().isEmpty());
 }
 
 void HttpTests::postPrintTemplateRejectsMissingRequiredFields()

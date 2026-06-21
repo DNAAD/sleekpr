@@ -10,9 +10,42 @@
 #include <QPen>
 #include <QTextOption>
 
+#include <cmath>
 #include <exception>
 
 namespace sleekpr::infrastructure {
+
+namespace {
+
+bool isTopToBottomTextRotation(double rotationDegrees)
+{
+    auto normalized = std::fmod(rotationDegrees, 360.0);
+    if (normalized < 0.0) {
+        normalized += 360.0;
+    }
+    return std::abs(normalized - 90.0) < 0.001;
+}
+
+void drawRotatedText(QPainter& painter, const QRectF& rect, const sleekpr::core::NativeDrawCommand& command, const QTextOption& option)
+{
+    if (isTopToBottomTextRotation(command.rotationDegrees)) {
+        painter.translate(rect.right(), rect.top());
+        painter.rotate(90.0);
+        const QRectF rotatedRect(0, 0, rect.height(), rect.width());
+        // 90 度旋转后的文本从元素顶部向下排列，符合竖向编号的阅读方向。
+        painter.setClipRect(rotatedRect);
+        painter.drawText(rotatedRect, command.text, option);
+        return;
+    }
+
+    painter.translate(rect.left(), rect.bottom());
+    painter.rotate(-command.rotationDegrees);
+    const QRectF rotatedRect(0, 0, rect.height(), rect.width());
+    painter.setClipRect(rotatedRect);
+    painter.drawText(rotatedRect, command.text, option);
+}
+
+} // namespace
 
 QImage LabelPreviewImageRenderer::renderImage(const sleekpr::core::NativeLabelDrawingPlan& plan, double dpi) const
 {
@@ -62,12 +95,7 @@ QImage LabelPreviewImageRenderer::renderImage(const sleekpr::core::NativeLabelDr
 
         painter.save();
         if (command.rotationDegrees != 0.0) {
-            painter.translate(rect.left(), rect.bottom());
-            painter.rotate(-command.rotationDegrees);
-            const QRectF rotatedRect(0, 0, rect.height(), rect.width());
-            // 文本按元素区域裁切：宽度不足时可换行，高度不足时不向外溢出。
-            painter.setClipRect(rotatedRect);
-            painter.drawText(rotatedRect, command.text, option);
+            drawRotatedText(painter, rect, command, option);
         } else {
             // 文本按元素区域裁切：宽度不足时可换行，高度不足时不向外溢出。
             painter.setClipRect(rect);

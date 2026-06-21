@@ -8,6 +8,7 @@
 #include "sleekpr/core/settings/FileSettingsStore.h"
 #include "sleekpr/core/settings/PrintClientSettingsJson.h"
 #include "sleekpr/core/settings/PrinterSelectionResolver.h"
+#include "sleekpr/core/templates/DefaultPaperSpecs.h"
 #include "sleekpr/core/templates/DeviceProfileResolver.h"
 #include "sleekpr/core/templates/FieldPresetJson.h"
 #include "sleekpr/core/templates/FieldPresetStore.h"
@@ -18,6 +19,7 @@
 #include "sleekpr/core/templates/TemplateDocumentValidator.h"
 #include "sleekpr/core/templates/TemplateLibraryStore.h"
 #include "sleekpr/core/templates/TemplateRenderContextBuilder.h"
+#include "sleekpr/infrastructure/preview/LabelPreviewImageRenderer.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -42,6 +44,7 @@ using sleekpr::core::LabelRenderPlanner;
 using sleekpr::core::LabelRenderPlan;
 using sleekpr::core::LabelPaperSize;
 using sleekpr::core::NativeLabelDrawingPlanner;
+using sleekpr::core::NativeLabelDrawingPlan;
 using sleekpr::core::NativePrintDrawingPlan;
 using sleekpr::core::PrintClientSettings;
 using sleekpr::core::PrintClientSettingsJson;
@@ -63,6 +66,7 @@ using sleekpr::core::TemplateLibraryStore;
 using sleekpr::core::TemplateRenderContext;
 using sleekpr::core::TemplateRenderContextBuilder;
 using sleekpr::core::templateOverrideKey;
+using sleekpr::infrastructure::LabelPreviewImageRenderer;
 
 namespace {
 
@@ -169,7 +173,8 @@ QJsonValue valueFor(const QJsonObject& object, std::initializer_list<const char*
             return object.value(name);
         }
     }
-    return QJsonValue{};
+    // 路由层需要区分“字段不存在”和“字段存在但值为 null”，否则可选字段会被误判为非法输入。
+    return QJsonValue(QJsonValue::Undefined);
 }
 
 QString stringFor(const QJsonObject& object, std::initializer_list<const char*> names)
@@ -555,12 +560,17 @@ sleekpr::core::LabelRenderPlan templateLabelPlan(const sleekpr::core::TemplateDo
 
 std::optional<PaperSpec> paperSpecForTemplate(const QString& settingsPath, const TemplateDocument& document)
 {
-    const auto paperSpecId = document.paperSpecId.trimmed();
+    auto paperSpecId = document.paperSpecId.trimmed();
     if (paperSpecId.isEmpty()) {
-        return std::nullopt;
+        paperSpecId = QStringLiteral("label-80x30");
     }
 
-    return paperSpecStoreForSettings(settingsPath).loadPaperSpec(paperSpecId);
+    const auto storedSpec = paperSpecStoreForSettings(settingsPath).loadPaperSpec(paperSpecId);
+    if (storedSpec.has_value()) {
+        return storedSpec;
+    }
+
+    return sleekpr::core::builtInPaperSpec(paperSpecId);
 }
 
 LabelRenderPlan labelPlanWithPaperSpec(LabelRenderPlan labelPlan, const std::optional<PaperSpec>& paperSpec)
@@ -591,8 +601,8 @@ DeviceProfile deviceProfileWithPaperDpi(
     const TemplateDocument& document,
     const std::optional<PaperSpec>& paperSpec)
 {
-    if (paperSpec.has_value() && document.deviceProfiles.isEmpty()) {
-        // 没有打印机 profile 时使用纸张规格的默认 DPI；一旦存在设备 profile，则以设备校准优先。
+    if (paperSpec.has_value() && (document.deviceProfiles.isEmpty() || profile.printerName.trimmed().isEmpty())) {
+        // 没有专用打印机 profile 时使用纸张规格默认 DPI；空打印机名的通用 profile 不应把 203DPI 标签机改回 300DPI。
         profile.dpi = paperSpec->defaultDpi;
     }
     return profile;
@@ -637,6 +647,144 @@ QSizeF paperSizeForTemplateValidation(const QString& settingsPath, const Templat
 
     const auto fallbackPlan = templateLabelPlan(document);
     return QSizeF(fallbackPlan.paperSize.widthMm(), fallbackPlan.paperSize.heightMm());
+}
+
+struct TemplateRequestPlan
+{
+    QString requestId;
+    QString templateKey;
+    NativePrintDrawingPlan printPlan;
+};
+
+QString responseTemplateKey(const TemplateDocument& document, const QJsonObject& requestRoot)
+{
+    auto key = document.templateKey.trimmed();
+    if (!key.isEmpty()) {
+        return key;
+    }
+
+    key = stringFor(requestRoot, {"templateKey", "TemplateKey", "templateId", "TemplateId"}).trimmed();
+    return key.isEmpty() ? QStringLiteral("default") : key;
+}
+
+std::optional<TemplateRequestPlan> buildTemplateRequestPlan(
+    const PrintClientSettings& settings,
+    const QString& settingsPath,
+    const QJsonObject& root,
+    const QString& selectedPrinter,
+    QString* errorCode,
+    QString* errorMessage)
+{
+    const auto fail = [errorCode, errorMessage](const QString& code, const QString& message) {
+        if (errorCode != nullptr) {
+            *errorCode = code;
+        }
+        if (errorMessage != nullptr) {
+            *errorMessage = message;
+        }
+        return std::optional<TemplateRequestPlan>{};
+    };
+
+    const auto templateDocument = findTemplateDocument(
+        settings,
+        settingsPath,
+        stringFor(root, {"templateKey", "TemplateKey", "templateId", "TemplateId"}));
+    if (!templateDocument.has_value()) {
+        return fail("TEMPLATE_NOT_FOUND", QString::fromUtf8("未找到指定模板。"));
+    }
+
+    const auto valuesValue = valueFor(root, {"values", "Values", "fieldValues", "FieldValues"});
+    if (!valuesValue.isUndefined() && !valuesValue.isObject()) {
+        return fail("BAD_REQUEST", QString::fromUtf8("字段值 values 必须是对象。"));
+    }
+
+    QString presetErrorMessage;
+    const auto fieldPreset = findFieldPresetForRequest(settingsPath, root, &presetErrorMessage);
+    if (!presetErrorMessage.isEmpty() && !fieldPreset.has_value()) {
+        return fail("FIELD_PRESET_NOT_FOUND", presetErrorMessage);
+    }
+
+    const auto context = TemplateRenderContextBuilder::build(
+        templateDocument->fieldSchema,
+        fieldPreset.has_value() ? fieldPreset->values : QJsonObject{},
+        valuesValue.toObject());
+    if (context.hasMissingRequiredFields()) {
+        return fail("BAD_REQUEST", missingRequiredFieldsMessage(context));
+    }
+
+    const auto templateValidation = TemplateDocumentValidator().validate(
+        templateDocument.value(),
+        paperSizeForTemplateValidation(settingsPath, templateDocument.value()),
+        context.values);
+    if (templateValidation.hasErrors()) {
+        return fail("TEMPLATE_VALIDATION_FAILED", templateValidationMessage(templateValidation));
+    }
+
+    TemplateRequestPlan result;
+    result.requestId = requestIdOrFallback(stringFor(root, {"requestId", "RequestId"}));
+    result.templateKey = responseTemplateKey(templateDocument.value(), root);
+    result.printPlan = renderTemplatePrintPlan(
+        templateDocument.value(),
+        templateLabelPlan(templateDocument.value()),
+        settings,
+        settingsPath,
+        selectedPrinter,
+        context);
+    return result;
+}
+
+QJsonObject printPlanPaperJson(const NativePrintDrawingPlan& plan)
+{
+    return QJsonObject{
+        {"widthMm", plan.paperSize.widthMm()},
+        {"heightMm", plan.paperSize.heightMm()},
+        {"dpi", plan.renderDpi},
+    };
+}
+
+NativeLabelDrawingPlan labelPlanForPreviewPage(const NativePrintDrawingPlan& printPlan, const sleekpr::core::NativePrintPage& page)
+{
+    NativeLabelDrawingPlan labelPlan;
+    labelPlan.paperSize = printPlan.paperSize;
+    labelPlan.renderDpi = printPlan.renderDpi;
+    labelPlan.commands = page.commands;
+    return labelPlan;
+}
+
+QJsonObject previewPageJson(
+    const NativePrintDrawingPlan& printPlan,
+    const sleekpr::core::NativePrintPage& page,
+    int globalPageNumber,
+    int itemIndex,
+    const QString& itemRequestId,
+    const QString& templateKey,
+    const LabelPreviewImageRenderer& renderer)
+{
+    const auto png = renderer.renderPng(labelPlanForPreviewPage(printPlan, page), printPlan.renderDpi);
+    return QJsonObject{
+        {"pageNumber", globalPageNumber},
+        {"jobPageNumber", page.pageNumber},
+        {"itemIndex", itemIndex},
+        {"requestId", itemRequestId},
+        {"templateKey", templateKey},
+        {"contentType", "image/png"},
+        {"imageBase64", QString::fromLatin1(png.toBase64())},
+        {"paper", printPlanPaperJson(printPlan)},
+    };
+}
+
+QJsonObject mergedPreviewItemRequest(const QJsonObject& root, const QJsonObject& item, const QString& fallbackRequestId)
+{
+    QJsonObject merged = root;
+    for (auto it = item.constBegin(); it != item.constEnd(); ++it) {
+        merged.insert(it.key(), it.value());
+    }
+
+    // 批量预览中每条数据都需要稳定 requestId，便于 Web 端把缩略图和原始业务数据对应起来。
+    if (stringFor(merged, {"requestId", "RequestId"}).trimmed().isEmpty()) {
+        merged.insert(QStringLiteral("requestId"), fallbackRequestId);
+    }
+    return merged;
 }
 
 NativePrintDrawingPlan createPrintPlan(
@@ -948,6 +1096,93 @@ LocalHttpResponse LocalHttpRouter::route(const LocalHttpRequest& request) const
         return jsonResponse(okEnvelope(printResultJson(requestId, items.size(), printed, failed, executePrint)), 200, extraHeaders);
     }
 
+    if (path == "/preview/template" && method == "POST") {
+        QJsonParseError parseError;
+        const auto parsedDocument = QJsonDocument::fromJson(request.body, &parseError);
+        if (parseError.error != QJsonParseError::NoError || !parsedDocument.isObject()) {
+            return jsonResponse(failEnvelope("BAD_REQUEST", "Invalid template preview request JSON"), 400, extraHeaders);
+        }
+
+        const auto root = parsedDocument.object();
+        const auto itemsValue = valueFor(root, {"items", "Items", "jobs", "Jobs"});
+        const auto hasBatchItems = !itemsValue.isUndefined();
+        if (hasBatchItems && !itemsValue.isArray()) {
+            return jsonResponse(failEnvelope("BAD_REQUEST", QString::fromUtf8("批量预览 items 必须是数组。")), 400, extraHeaders);
+        }
+
+        const auto batchRequestId = requestIdOrFallback(stringFor(root, {"requestId", "RequestId"}));
+        QJsonArray requestItems;
+        if (hasBatchItems) {
+            requestItems = itemsValue.toArray();
+            if (requestItems.isEmpty()) {
+                return jsonResponse(failEnvelope("BAD_REQUEST", QString::fromUtf8("批量预览至少需要一条模板数据。")), 400, extraHeaders);
+            }
+        } else {
+            requestItems.append(root);
+        }
+
+        LabelPreviewImageRenderer renderer;
+        QJsonArray pages;
+        QJsonObject firstPaper;
+        int globalPageNumber = 1;
+
+        for (int itemIndex = 0; itemIndex < requestItems.size(); ++itemIndex) {
+            if (!requestItems.at(itemIndex).isObject()) {
+                return jsonResponse(failEnvelope("BAD_REQUEST", QString::fromUtf8("批量预览 items 每一项必须是对象。")), 400, extraHeaders);
+            }
+
+            const auto itemRoot = hasBatchItems
+                ? mergedPreviewItemRequest(
+                      root,
+                      requestItems.at(itemIndex).toObject(),
+                      QStringLiteral("%1-%2").arg(batchRequestId).arg(itemIndex + 1))
+                : root;
+            const auto selectedPrinter = PrinterSelectionResolver().resolve(
+                settings,
+                stringFor(itemRoot, {"printerName", "PrinterName"}));
+
+            QString errorCode;
+            QString errorMessage;
+            const auto itemPlan = buildTemplateRequestPlan(
+                settings,
+                m_settingsPath,
+                itemRoot,
+                selectedPrinter,
+                &errorCode,
+                &errorMessage);
+            if (!itemPlan.has_value()) {
+                const auto message = hasBatchItems
+                    ? QString::fromUtf8("第 %1 条预览数据失败：%2").arg(itemIndex + 1).arg(errorMessage)
+                    : errorMessage;
+                return jsonResponse(failEnvelope(errorCode, message), 400, extraHeaders);
+            }
+
+            if (firstPaper.isEmpty()) {
+                firstPaper = printPlanPaperJson(itemPlan->printPlan);
+            }
+
+            for (const auto& page : itemPlan->printPlan.pages) {
+                pages.append(previewPageJson(
+                    itemPlan->printPlan,
+                    page,
+                    globalPageNumber,
+                    itemIndex,
+                    itemPlan->requestId,
+                    itemPlan->templateKey,
+                    renderer));
+                ++globalPageNumber;
+            }
+        }
+
+        return jsonResponse(okEnvelope(QJsonObject{
+            {"requestId", batchRequestId},
+            {"totalItems", requestItems.size()},
+            {"totalPages", pages.size()},
+            {"paper", firstPaper},
+            {"pages", pages},
+        }), 200, extraHeaders);
+    }
+
     if (path == "/print/template" && method == "POST") {
         QJsonParseError parseError;
         const auto parsedDocument = QJsonDocument::fromJson(request.body, &parseError);
@@ -956,66 +1191,37 @@ LocalHttpResponse LocalHttpRouter::route(const LocalHttpRequest& request) const
         }
 
         const auto root = parsedDocument.object();
-        const auto templateDocument = findTemplateDocument(
-            settings,
-            m_settingsPath,
-            stringFor(root, {"templateKey", "TemplateKey", "templateId", "TemplateId"}));
-        if (!templateDocument.has_value()) {
-            return jsonResponse(failEnvelope("TEMPLATE_NOT_FOUND", QString::fromUtf8("未找到指定模板。")), 404, extraHeaders);
-        }
-
-        const auto valuesValue = valueFor(root, {"values", "Values", "fieldValues", "FieldValues"});
-        if (!valuesValue.isUndefined() && !valuesValue.isObject()) {
-            return jsonResponse(failEnvelope("BAD_REQUEST", QString::fromUtf8("字段值 values 必须是对象。")), 400, extraHeaders);
-        }
-
-        QString presetErrorMessage;
-        const auto fieldPreset = findFieldPresetForRequest(m_settingsPath, root, &presetErrorMessage);
-        if (!presetErrorMessage.isEmpty() && !fieldPreset.has_value()) {
-            return jsonResponse(failEnvelope("FIELD_PRESET_NOT_FOUND", presetErrorMessage), 404, extraHeaders);
-        }
-
-        const auto context = TemplateRenderContextBuilder::build(
-            templateDocument->fieldSchema,
-            fieldPreset.has_value() ? fieldPreset->values : QJsonObject{},
-            valuesValue.toObject());
-        if (context.hasMissingRequiredFields()) {
-            return jsonResponse(failEnvelope("BAD_REQUEST", missingRequiredFieldsMessage(context)), 400, extraHeaders);
-        }
-
-        const auto templateValidation = TemplateDocumentValidator().validate(
-            templateDocument.value(),
-            paperSizeForTemplateValidation(m_settingsPath, templateDocument.value()),
-            context.values);
-        if (templateValidation.hasErrors()) {
-            return jsonResponse(
-                failEnvelope("TEMPLATE_VALIDATION_FAILED", templateValidationMessage(templateValidation)),
-                400,
-                extraHeaders);
-        }
-
         const auto executePrint = valueFor(root, {"executePrint", "ExecutePrint"}).toBool();
         const auto selectedPrinter = PrinterSelectionResolver().resolve(settings, stringFor(root, {"printerName", "PrinterName"}));
-        const auto printPlan = renderTemplatePrintPlan(
-            templateDocument.value(),
-            templateLabelPlan(templateDocument.value()),
+
+        QString errorCode;
+        QString errorMessage;
+        const auto requestPlan = buildTemplateRequestPlan(
             settings,
             m_settingsPath,
+            root,
             selectedPrinter,
-            context);
+            &errorCode,
+            &errorMessage);
+        if (!requestPlan.has_value()) {
+            const auto statusCode = errorCode == QStringLiteral("TEMPLATE_NOT_FOUND")
+                || errorCode == QStringLiteral("FIELD_PRESET_NOT_FOUND")
+                ? 404
+                : 400;
+            return jsonResponse(failEnvelope(errorCode, errorMessage), statusCode, extraHeaders);
+        }
 
         int printed = 0;
         int failed = 0;
         if (executePrint) {
-            if (m_printEngine != nullptr && m_printEngine->print(printPlan, selectedPrinter)) {
+            if (m_printEngine != nullptr && m_printEngine->print(requestPlan->printPlan, selectedPrinter)) {
                 printed = 1;
             } else {
                 failed = 1;
             }
         }
 
-        const auto requestId = requestIdOrFallback(stringFor(root, {"requestId", "RequestId"}));
-        return jsonResponse(okEnvelope(printResultJson(requestId, 1, printed, failed, executePrint)), 200, extraHeaders);
+        return jsonResponse(okEnvelope(printResultJson(requestPlan->requestId, 1, printed, failed, executePrint)), 200, extraHeaders);
     }
 
     return jsonResponse(failEnvelope("NOT_FOUND", "Route not implemented in native migration yet"), 404, extraHeaders);

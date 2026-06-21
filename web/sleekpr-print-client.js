@@ -115,6 +115,27 @@ export class SleekprPrintClient {
     });
   }
 
+  previewTemplate(options = {}) {
+    const body = compactObject({
+      requestId: options.requestId,
+      templateKey: options.templateKey,
+      templateId: options.templateId,
+      fieldPresetId: options.fieldPresetId,
+      printerName: options.printerName,
+    });
+
+    if (Array.isArray(options.items)) {
+      body.items = options.items;
+    } else {
+      body.values = options.values ?? {};
+    }
+
+    return this.request("/preview/template", {
+      method: "POST",
+      body,
+    });
+  }
+
   async printTemplatesBatch(options = {}) {
     const jobs = options.jobs ?? [];
     if (!Array.isArray(jobs) || jobs.length === 0) {
@@ -178,6 +199,30 @@ export class SleekprPrintClient {
     };
   }
 
+  previewTemplatesBatch(options = {}) {
+    const jobs = options.jobs ?? options.items ?? [];
+    if (!Array.isArray(jobs) || jobs.length === 0) {
+      throw new TypeError("previewTemplatesBatch 需要传入至少一条 jobs 模板预览任务。");
+    }
+
+    return this.request("/preview/template", {
+      method: "POST",
+      body: compactObject({
+        requestId: options.requestId,
+        templateKey: options.templateKey,
+        templateId: options.templateId,
+        fieldPresetId: options.fieldPresetId,
+        printerName: options.printerName,
+        items: jobs.map((job) =>
+          compactObject({
+            ...(job ?? {}),
+            values: job?.values ?? {},
+          }),
+        ),
+      }),
+    });
+  }
+
   async request(path, options = {}) {
     const method = (options.method ?? "GET").toUpperCase();
     const headers = {
@@ -232,6 +277,11 @@ export class SleekprPrintClient {
 
 export function createSleekprPrintClient(options = {}) {
   return new SleekprPrintClient(options);
+}
+
+export function previewPageDataUrl(page) {
+  const contentType = page?.contentType || "image/png";
+  return `data:${contentType};base64,${page?.imageBase64 ?? ""}`;
 }
 
 function normalizeBaseUrl(baseUrl) {
@@ -290,4 +340,5 @@ if (typeof window !== "undefined") {
   window.SleekprPrintClient = SleekprPrintClient;
   window.SleekprPrintError = SleekprPrintError;
   window.createSleekprPrintClient = createSleekprPrintClient;
+  window.previewPageDataUrl = previewPageDataUrl;
 }

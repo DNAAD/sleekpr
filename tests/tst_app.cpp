@@ -622,6 +622,7 @@ void AppTests::templateDesignerWindowAddsAndEditsArrayGridElement()
     auto* dataPathEdit = window.findChild<QLineEdit*>(QStringLiteral("arrayGridDataPathEdit"));
     auto* rowsSpin = window.findChild<QSpinBox*>(QStringLiteral("arrayGridRowsSpin"));
     auto* columnsSpin = window.findChild<QSpinBox*>(QStringLiteral("arrayGridColumnsSpin"));
+    auto* rowHeightSpin = window.findChild<QDoubleSpinBox*>(QStringLiteral("arrayGridRowHeightSpin"));
     auto* cellTemplateEdit = window.findChild<QPlainTextEdit*>(QStringLiteral("arrayGridCellTemplateEdit"));
     auto* drawBordersCheck = window.findChild<QCheckBox*>(QStringLiteral("arrayGridDrawBordersCheck"));
     auto* applyButton = window.findChild<QPushButton*>(QStringLiteral("applyElementPropertiesButton"));
@@ -631,6 +632,7 @@ void AppTests::templateDesignerWindowAddsAndEditsArrayGridElement()
     QVERIFY(dataPathEdit != nullptr);
     QVERIFY(rowsSpin != nullptr);
     QVERIFY(columnsSpin != nullptr);
+    QVERIFY(rowHeightSpin != nullptr);
     QVERIFY(cellTemplateEdit != nullptr);
     QVERIFY(drawBordersCheck != nullptr);
     QVERIFY(applyButton != nullptr);
@@ -643,6 +645,7 @@ void AppTests::templateDesignerWindowAddsAndEditsArrayGridElement()
     dataPathEdit->setText(QStringLiteral("header_items"));
     rowsSpin->setValue(2);
     columnsSpin->setValue(3);
+    rowHeightSpin->setValue(3.2);
     cellTemplateEdit->setPlainText(QStringLiteral("${text}:${value}"));
     drawBordersCheck->setChecked(false);
     applyButton->click();
@@ -654,6 +657,7 @@ void AppTests::templateDesignerWindowAddsAndEditsArrayGridElement()
     QCOMPARE(element.dataPath, QString("header_items"));
     QCOMPARE(element.arrayGridRows, 2);
     QCOMPARE(element.arrayGridColumns, 3);
+    QCOMPARE(element.arrayGridRowHeightMm, 3.2);
     QCOMPARE(element.arrayGridCellTemplate, QString("${text}:${value}"));
     QCOMPARE(element.arrayGridDrawBorders, false);
 }
@@ -850,6 +854,19 @@ void AppTests::templateDesignerWindowConfiguresDesignAids()
 
 void AppTests::templateDesignerWindowPrePrintsCurrentTemplate()
 {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    PaperSpec labelSpec;
+    labelSpec.id = QStringLiteral("label-80x30");
+    labelSpec.name = QString::fromUtf8("80x30 标签");
+    labelSpec.widthMm = 80.0;
+    labelSpec.heightMm = 30.0;
+    labelSpec.marginLeftMm = 2.0;
+    labelSpec.marginTopMm = 1.0;
+    labelSpec.defaultDpi = 203.0;
+    QVERIFY(PaperSpecStore(dir.filePath(QStringLiteral("paper-specs.json"))).savePaperSpec(labelSpec));
+
     TemplateElement productNameText;
     productNameText.id = QStringLiteral("sample-product-name");
     productNameText.layerId = QStringLiteral("base");
@@ -872,6 +889,10 @@ void AppTests::templateDesignerWindowPrePrintsCurrentTemplate()
     document.templateKey = QStringLiteral("default");
     document.paperSpecId = QStringLiteral("label-80x30");
     document.layers = {baseLayer};
+    DeviceProfile genericProfile;
+    genericProfile.id = QStringLiteral("profile-default");
+    genericProfile.dpi = 300.0;
+    document.deviceProfiles = {genericProfile};
 
     PrintClientSettings settings;
     settings.defaultPrinter = QStringLiteral("Test Printer");
@@ -883,7 +904,7 @@ void AppTests::templateDesignerWindowPrePrintsCurrentTemplate()
     TemplateDesignerWindow window(
         settings,
         nullptr,
-        QString(),
+        dir.filePath(QStringLiteral("templates")),
         [&printCount, &capturedPlan, &capturedPrinterName](
             const NativePrintDrawingPlan& plan,
             const QString& printerName) {
@@ -908,12 +929,16 @@ void AppTests::templateDesignerWindowPrePrintsCurrentTemplate()
     QCOMPARE(capturedPlan.pages.size(), 1);
     QCOMPARE(capturedPlan.paperSize.widthMm(), 80.0);
     QCOMPARE(capturedPlan.paperSize.heightMm(), 30.0);
-    QVERIFY(std::any_of(
+    QCOMPARE(capturedPlan.renderDpi, 203.0);
+    const auto command = std::find_if(
         capturedPlan.pages.first().commands.cbegin(),
         capturedPlan.pages.first().commands.cend(),
         [](const NativeDrawCommand& command) {
             return command.text == QString::fromUtf8("足金串搭项链");
-        }));
+        });
+    QVERIFY(command != capturedPlan.pages.first().commands.cend());
+    QCOMPARE(command->x, 7.0);
+    QCOMPARE(command->y, 6.0);
     QVERIFY(statusLabel->text().contains(QString::fromUtf8("预打印")));
 }
 

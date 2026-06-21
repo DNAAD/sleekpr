@@ -3,6 +3,7 @@
 #include "sleekpr/core/settings/PrintClientSettings.h"
 #include "sleekpr/core/native/NativeDrawCommand.h"
 #include "sleekpr/core/native/NativePrintDrawingPlan.h"
+#include "sleekpr/core/templates/PaperSpec.h"
 #include "sleekpr/core/templates/TemplateRenderContext.h"
 
 #include <QComboBox>
@@ -15,6 +16,7 @@
 #include <QWidget>
 
 #include <functional>
+#include <optional>
 
 class QLabel;
 class QCheckBox;
@@ -121,6 +123,7 @@ private:
     bool loadTemplateDocumentFromFile(const QString& path, sleekpr::core::TemplateDocument* document, QString* errorMessage) const;
     void applyImportedTemplateDocument(const sleekpr::core::TemplateDocument& document);
     QString paperSpecFilePath() const;
+    std::optional<sleekpr::core::PaperSpec> currentPaperSpec() const;
     QSizeF currentPaperSizeMm() const;
     sleekpr::core::NativePrintDrawingPlan createCurrentPrintPlan(
         const sleekpr::core::TemplateRenderContext& renderContext,
@@ -168,6 +171,7 @@ private:
     QLineEdit* m_arrayGridDataPathEdit = nullptr;
     QSpinBox* m_arrayGridRowsSpin = nullptr;
     QSpinBox* m_arrayGridColumnsSpin = nullptr;
+    QDoubleSpinBox* m_arrayGridRowHeightSpin = nullptr;
     QPlainTextEdit* m_arrayGridCellTemplateEdit = nullptr;
     QCheckBox* m_arrayGridDrawBordersCheck = nullptr;
     QLineEdit* m_deviceProfilePrinterEdit = nullptr;
