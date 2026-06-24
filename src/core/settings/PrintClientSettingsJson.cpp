@@ -3,6 +3,7 @@
 #include "sleekpr/core/templates/TemplateDocumentJson.h"
 
 #include <QJsonArray>
+#include <cmath>
 
 namespace sleekpr::core {
 
@@ -78,6 +79,64 @@ TemplateElementOverride overrideFromJson(const QJsonObject& json)
         value.bold = json["bold"].toBool();
     }
     return value;
+}
+
+template <typename T>
+void writeOptionalNumber(QJsonObject& json, const QString& key, const std::optional<T>& value)
+{
+    if (value.has_value()) {
+        json[key] = static_cast<double>(value.value());
+    }
+}
+
+std::optional<qsizetype> optionalSizeFromJson(const QJsonObject& json, const QString& key)
+{
+    if (!json.contains(key) || !json.value(key).isDouble()) {
+        return std::nullopt;
+    }
+
+    const auto value = json.value(key).toDouble();
+    if (!std::isfinite(value)) {
+        return std::nullopt;
+    }
+    return static_cast<qsizetype>(std::llround(value));
+}
+
+std::optional<int> optionalIntFromJson(const QJsonObject& json, const QString& key)
+{
+    if (!json.contains(key) || !json.value(key).isDouble()) {
+        return std::nullopt;
+    }
+
+    const auto value = json.value(key).toDouble();
+    if (!std::isfinite(value)) {
+        return std::nullopt;
+    }
+    return static_cast<int>(std::llround(value));
+}
+
+QJsonObject localHttpLimitsToJson(const LocalHttpLimitSettings& limits)
+{
+    QJsonObject json;
+    // 只保存显式覆盖值；运行时默认值继续由 LocalHttpLimits 统一维护。
+    writeOptionalNumber(json, QStringLiteral("maxHeaderBytes"), limits.maxHeaderBytes);
+    writeOptionalNumber(json, QStringLiteral("maxContentLengthBytes"), limits.maxContentLengthBytes);
+    writeOptionalNumber(json, QStringLiteral("maxPreviewBatchItems"), limits.maxPreviewBatchItems);
+    writeOptionalNumber(json, QStringLiteral("maxPreviewPages"), limits.maxPreviewPages);
+    writeOptionalNumber(json, QStringLiteral("maxPreviewResponseBytes"), limits.maxPreviewResponseBytes);
+    return json;
+}
+
+LocalHttpLimitSettings localHttpLimitsFromJson(const QJsonObject& json)
+{
+    LocalHttpLimitSettings limits;
+    // 兼容旧 settings.json：没有 localHttpLimits 时保持空覆盖，交给运行时默认值兜底。
+    limits.maxHeaderBytes = optionalSizeFromJson(json, QStringLiteral("maxHeaderBytes"));
+    limits.maxContentLengthBytes = optionalSizeFromJson(json, QStringLiteral("maxContentLengthBytes"));
+    limits.maxPreviewBatchItems = optionalIntFromJson(json, QStringLiteral("maxPreviewBatchItems"));
+    limits.maxPreviewPages = optionalIntFromJson(json, QStringLiteral("maxPreviewPages"));
+    limits.maxPreviewResponseBytes = optionalSizeFromJson(json, QStringLiteral("maxPreviewResponseBytes"));
+    return limits;
 }
 
 QJsonObject templateElementToJson(const TemplateElement& element)
@@ -208,6 +267,11 @@ QJsonObject PrintClientSettingsJson::toJson(const PrintClientSettings& settings)
     }
     root["allowedOrigins"] = origins;
 
+    const auto localHttpLimits = localHttpLimitsToJson(settings.localHttpLimits);
+    if (!localHttpLimits.isEmpty()) {
+        root["localHttpLimits"] = localHttpLimits;
+    }
+
     QJsonObject templateOverrides;
     for (auto templateIt = settings.templateOverrides.begin(); templateIt != settings.templateOverrides.end(); ++templateIt) {
         QJsonObject elementOverrides;
@@ -251,6 +315,8 @@ PrintClientSettings PrintClientSettingsJson::fromJson(const QJsonObject& json)
     for (const auto origin : json["allowedOrigins"].toArray()) {
         settings.allowedOrigins.append(origin.toString());
     }
+
+    settings.localHttpLimits = localHttpLimitsFromJson(json["localHttpLimits"].toObject());
 
     const auto templates = json["templateOverrides"].toObject();
     for (auto templateIt = templates.begin(); templateIt != templates.end(); ++templateIt) {

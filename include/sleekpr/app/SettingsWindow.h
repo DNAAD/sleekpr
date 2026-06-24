@@ -26,6 +26,7 @@ class QLineEdit;
 class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
+class QSpinBox;
 
 namespace sleekpr::app {
 class TemplatePreviewLabel;
@@ -116,6 +117,11 @@ private:
     QComboBox* m_templateCombo = nullptr;
     QComboBox* m_printerCombo = nullptr;
     QPlainTextEdit* m_allowedOriginsEdit = nullptr;
+    QSpinBox* m_httpMaxHeaderKbSpin = nullptr;
+    QSpinBox* m_httpMaxBodyMbSpin = nullptr;
+    QSpinBox* m_httpMaxPreviewBatchItemsSpin = nullptr;
+    QSpinBox* m_httpMaxPreviewPagesSpin = nullptr;
+    QSpinBox* m_httpMaxPreviewResponseMbSpin = nullptr;
     QDoubleSpinBox* m_offsetXSpin = nullptr;
     QDoubleSpinBox* m_offsetYSpin = nullptr;
     TemplatePreviewLabel* m_previewLabel = nullptr;

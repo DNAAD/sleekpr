@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sleekpr/core/settings/LabelOffset.h"
+#include "sleekpr/core/settings/LocalHttpLimitSettings.h"
 #include "sleekpr/core/settings/TemplateElement.h"
 #include "sleekpr/core/settings/TemplateElementOverride.h"
 #include "sleekpr/core/templates/TemplateDocument.h"
@@ -22,6 +23,9 @@ struct PrintClientSettings
 
     // 允许访问本地打印服务的网页 Origin。
     QStringList allowedOrigins;
+
+    // 本地 HTTP 服务安全上限覆盖值，缺省时使用 HTTP 层集中默认值。
+    LocalHttpLimitSettings localHttpLimits;
 
     // 模板默认元素覆盖：第一层是模板名，第二层是默认元素 key。
     QHash<QString, QHash<QString, TemplateElementOverride>> templateOverrides;

@@ -1,4 +1,6 @@
 #include "sleekpr/http/LocalHttpServer.h"
+#include "sleekpr/http/LocalHttpRouteSupport.h"
+
 #include <QJsonDocument>
 #include <QTcpSocket>
 
@@ -38,6 +40,8 @@ QByteArray statusReason(int statusCode)
         return "Forbidden";
     case 404:
         return "Not Found";
+    case 413:
+        return "Payload Too Large";
     case 500:
         return "Internal Server Error";
     default:
@@ -55,7 +59,7 @@ int headerEndIndex(const QByteArray& requestBytes)
     return lfIndex >= 0 ? lfIndex + 2 : -1;
 }
 
-int contentLengthFromHeaders(const QByteArray& headerBytes)
+qint64 contentLengthFromHeaders(const QByteArray& headerBytes)
 {
     const auto lines = headerBytes.split('\n');
     for (int index = 1; index < lines.size(); ++index) {
@@ -70,7 +74,7 @@ int contentLengthFromHeaders(const QByteArray& headerBytes)
         }
 
         bool ok = false;
-        const auto length = QString::fromLatin1(lines[index].mid(separator + 1)).trimmed().toInt(&ok);
+        const auto length = QString::fromLatin1(lines[index].mid(separator + 1)).trimmed().toLongLong(&ok);
         return ok && length > 0 ? length : 0;
     }
     return 0;
@@ -85,13 +89,49 @@ bool hasCompleteRequestBody(const QByteArray& requestBytes)
 
     // QTcpSocket 的 readyRead 可能只拿到部分 POST body，必须按 Content-Length 等完整再交给路由。
     const auto expectedBodyLength = contentLengthFromHeaders(requestBytes.left(bodyStart));
-    return requestBytes.size() >= bodyStart + expectedBodyLength;
+    return static_cast<qint64>(requestBytes.size()) >= static_cast<qint64>(bodyStart) + expectedBodyLength;
+}
+
+QString requestLimitErrorMessage(const QByteArray& requestBytes, const LocalHttpLimits& limits)
+{
+    const auto bodyStart = headerEndIndex(requestBytes);
+    if (bodyStart < 0) {
+        if (limits.maxHeaderBytes >= 0 && requestBytes.size() > limits.maxHeaderBytes) {
+            return QString::fromUtf8("请求头超过本地接口限制。");
+        }
+        return {};
+    }
+
+    if (limits.maxHeaderBytes >= 0 && bodyStart > limits.maxHeaderBytes) {
+        return QString::fromUtf8("请求头超过本地接口限制。");
+    }
+
+    const auto expectedBodyLength = contentLengthFromHeaders(requestBytes.left(bodyStart));
+    if (limits.maxContentLengthBytes >= 0 && expectedBodyLength > limits.maxContentLengthBytes) {
+        return QString::fromUtf8("请求体超过本地接口限制。");
+    }
+
+    const auto receivedBodyLength = static_cast<qint64>(requestBytes.size() - bodyStart);
+    if (limits.maxContentLengthBytes >= 0 && receivedBodyLength > limits.maxContentLengthBytes) {
+        return QString::fromUtf8("请求体超过本地接口限制。");
+    }
+
+    return {};
 }
 
 } // 匿名命名空间
 
 LocalHttpServer::LocalHttpServer(QString settingsPath, sleekpr::infrastructure::LabelPrintEngine* printEngine)
-    : m_router(std::move(settingsPath), printEngine)
+    : LocalHttpServer(std::move(settingsPath), printEngine, LocalHttpLimits{})
+{
+}
+
+LocalHttpServer::LocalHttpServer(
+    QString settingsPath,
+    sleekpr::infrastructure::LabelPrintEngine* printEngine,
+    LocalHttpLimits limits)
+    : m_router(std::move(settingsPath), printEngine, limits)
+    , m_limits(limits)
 {
     QObject::connect(&m_server, &QTcpServer::newConnection, &m_server, [this] {
         acceptConnection();
@@ -102,6 +142,13 @@ bool LocalHttpServer::listen(const QHostAddress& address, quint16 port)
 {
     // 端口绑定由应用启动阶段统一处理，失败时由 main.cpp 给出用户可见诊断。
     return m_server.listen(address, port);
+}
+
+void LocalHttpServer::setLimits(LocalHttpLimits limits)
+{
+    // socket 阶段和路由阶段必须使用同一份上限，否则超限请求可能在不同层表现不一致。
+    m_limits = limits;
+    m_router.setLimits(limits);
 }
 
 QString LocalHttpServer::errorString() const
@@ -121,6 +168,12 @@ void LocalHttpServer::acceptConnection()
         // 本地接口仍采用短连接，但会缓存同一连接上的分段数据，避免 POST 半包被提前解析。
         QObject::connect(socket, &QTcpSocket::readyRead, socket, [this, socket, requestBuffer] {
             requestBuffer->append(socket->readAll());
+            const auto limitErrorMessage = requestLimitErrorMessage(*requestBuffer, m_limits);
+            if (!limitErrorMessage.isEmpty()) {
+                socket->write(httpResponseBytes(requestTooLargeResponse(limitErrorMessage)));
+                socket->disconnectFromHost();
+                return;
+            }
             if (!hasCompleteRequestBody(*requestBuffer)) {
                 return;
             }

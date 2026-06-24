@@ -58,11 +58,21 @@ int main(int argc, char* argv[])
     const auto settingsFilePath = settingsPath();
     qInfo() << "sleekpr settings:" << settingsFilePath;
     sleekpr::infrastructure::QtLabelPrintEngine printEngine;
+    sleekpr::http::LocalHttpServer server(
+        settingsFilePath,
+        &printEngine,
+        sleekpr::http::LocalHttpLimits::fromSettings(sleekpr::core::FileSettingsStore(settingsFilePath).load()));
     // 设置窗口和模板设计器共用同一个纸张规格管理窗口，避免两个入口编辑不同实例导致状态不同步。
     std::unique_ptr<sleekpr::app::PaperSpecManagerWindow> paperSpecManagerWindow;
     std::unique_ptr<sleekpr::app::FieldPresetManagerWindow> fieldPresetManagerWindow;
     std::unique_ptr<sleekpr::app::TemplateDesignerWindow> templateDesignerWindow;
-    sleekpr::app::SettingsWindow settingsWindow(settingsFilePath, nullptr, templateLibraryDirectoryPath(settingsFilePath));
+    sleekpr::app::SettingsWindow settingsWindow(
+        settingsFilePath,
+        [&server](const sleekpr::core::PrintClientSettings& settings) {
+            // 本地接口上限保存后立即影响后续请求，不需要重启托盘服务。
+            server.setLimits(sleekpr::http::LocalHttpLimits::fromSettings(settings));
+        },
+        templateLibraryDirectoryPath(settingsFilePath));
     settingsWindow.setOpenTemplateDesignerCallback([&settingsFilePath, &settingsWindow, &paperSpecManagerWindow, &fieldPresetManagerWindow, &templateDesignerWindow] {
         const auto latestSettings = sleekpr::core::FileSettingsStore(settingsFilePath).load();
         templateDesignerWindow = std::make_unique<sleekpr::app::TemplateDesignerWindow>(
@@ -125,7 +135,6 @@ int main(int argc, char* argv[])
         sleekpr::app::showAndActivateWindow(*fieldPresetManagerWindow);
     });
 
-    sleekpr::http::LocalHttpServer server(settingsFilePath, &printEngine);
     if (!server.listen(QHostAddress::LocalHost, 37122)) {
         // 端口被占用时必须给出桌面提示，否则托盘程序会像“没有启动”一样难排查。
         QMessageBox::critical(

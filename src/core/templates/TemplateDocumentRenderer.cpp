@@ -551,6 +551,64 @@ void applyDeviceScale(NativePrintDrawingPlan& printPlan, const DeviceProfile& pr
 
 } // 匿名命名空间
 
+namespace {
+
+TemplatePrintRenderResult renderPrintInternal(
+    const TemplateDocument& document,
+    const LabelRenderPlan& labelPlan,
+    const LabelOffset& labelOffset,
+    const DeviceProfile& profile,
+    const TemplateRenderContext& context,
+    bool stopOnTableError)
+{
+    TemplatePrintRenderResult result;
+    result.plan.paperSize = labelPlan.paperSize;
+    result.plan.renderDpi = usableRenderDpi(profile.dpi);
+
+    const auto renderElements = visibleElementsInRenderOrder(document);
+    const auto offsetX = labelOffset.x + profile.offsetX;
+    const auto offsetY = labelOffset.y + profile.offsetY;
+    const auto baseCommands = renderTemplateElements(labelPlan, renderElements, context, offsetX, offsetY);
+
+    NativePrintPage firstPage;
+    firstPage.pageNumber = 1;
+    firstPage.commands = baseCommands;
+    result.plan.pages.append(firstPage);
+
+    const auto renderTables = visibleTablesInRenderOrder(document);
+    for (const auto& table : renderTables) {
+        const auto tableResult = TableElementRenderer::renderPages(table, context, offsetX, offsetY);
+        if (!tableResult.success()) {
+            if (stopOnTableError) {
+                // 正式打印和 HTTP 预览不能静默丢表格；必须把表格数据错误返回给调用方。
+                result.errorMessage = tableResult.errorMessage.isEmpty()
+                    ? QString::fromUtf8("表格渲染失败")
+                    : tableResult.errorMessage;
+                applyDeviceScale(result.plan, profile);
+                return result;
+            }
+            continue;
+        }
+
+        while (result.plan.pages.size() < tableResult.pages.size()) {
+            NativePrintPage page;
+            page.pageNumber = result.plan.pages.size() + 1;
+            // 当前模型还没有元素的首页/每页/末页作用域配置，非表格元素先按每页固定内容重复。
+            page.commands = baseCommands;
+            result.plan.pages.append(page);
+        }
+
+        for (int pageIndex = 0; pageIndex < tableResult.pages.size(); ++pageIndex) {
+            result.plan.pages[pageIndex].commands.append(tableResult.pages[pageIndex].commands);
+        }
+    }
+
+    applyDeviceScale(result.plan, profile);
+    return result;
+}
+
+} // 匿名命名空间
+
 NativeLabelDrawingPlan TemplateDocumentRenderer::render(
     const TemplateDocument& document,
     const LabelRenderPlan& labelPlan,
@@ -577,43 +635,17 @@ NativePrintDrawingPlan TemplateDocumentRenderer::renderPrint(
     const DeviceProfile& profile,
     const TemplateRenderContext& context) const
 {
-    NativePrintDrawingPlan printPlan;
-    printPlan.paperSize = labelPlan.paperSize;
-    printPlan.renderDpi = usableRenderDpi(profile.dpi);
+    return renderPrintInternal(document, labelPlan, labelOffset, profile, context, false).plan;
+}
 
-    const auto renderElements = visibleElementsInRenderOrder(document);
-    const auto offsetX = labelOffset.x + profile.offsetX;
-    const auto offsetY = labelOffset.y + profile.offsetY;
-    const auto baseCommands = renderTemplateElements(labelPlan, renderElements, context, offsetX, offsetY);
-
-    NativePrintPage firstPage;
-    firstPage.pageNumber = 1;
-    firstPage.commands = baseCommands;
-    printPlan.pages.append(firstPage);
-
-    const auto renderTables = visibleTablesInRenderOrder(document);
-    for (const auto& table : renderTables) {
-        const auto tableResult = TableElementRenderer::renderPages(table, context, offsetX, offsetY);
-        if (!tableResult.success()) {
-            // 当前渲染计划没有错误通道；表格入口校验会在后续打印流程统一阻止异常模板。
-            continue;
-        }
-
-        while (printPlan.pages.size() < tableResult.pages.size()) {
-            NativePrintPage page;
-            page.pageNumber = printPlan.pages.size() + 1;
-            // 当前模型还没有元素的首页/每页/末页作用域配置，非表格元素先按每页固定内容重复。
-            page.commands = baseCommands;
-            printPlan.pages.append(page);
-        }
-
-        for (int pageIndex = 0; pageIndex < tableResult.pages.size(); ++pageIndex) {
-            printPlan.pages[pageIndex].commands.append(tableResult.pages[pageIndex].commands);
-        }
-    }
-
-    applyDeviceScale(printPlan, profile);
-    return printPlan;
+TemplatePrintRenderResult TemplateDocumentRenderer::tryRenderPrint(
+    const TemplateDocument& document,
+    const LabelRenderPlan& labelPlan,
+    const LabelOffset& labelOffset,
+    const DeviceProfile& profile,
+    const TemplateRenderContext& context) const
+{
+    return renderPrintInternal(document, labelPlan, labelOffset, profile, context, true);
 }
 
 } // 命名空间 sleekpr::core

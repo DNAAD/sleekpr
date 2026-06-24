@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sleekpr/http/LocalHttpLimits.h"
 #include "sleekpr/infrastructure/printing/LabelPrintEngine.h"
 
 #include <QByteArray>
@@ -27,13 +28,16 @@ class LocalHttpRouter
 {
 public:
     explicit LocalHttpRouter(QString settingsPath, sleekpr::infrastructure::LabelPrintEngine* printEngine = nullptr);
+    LocalHttpRouter(QString settingsPath, sleekpr::infrastructure::LabelPrintEngine* printEngine, LocalHttpLimits limits);
 
     // 路由层不依赖 socket，单元测试可以直接验证 HTTP 契约和打印调用语义。
     LocalHttpResponse route(const LocalHttpRequest& request) const;
+    void setLimits(LocalHttpLimits limits);
 
 private:
     QString m_settingsPath;
     sleekpr::infrastructure::LabelPrintEngine* m_printEngine = nullptr;
+    LocalHttpLimits m_limits;
 };
 
 } // 命名空间 sleekpr::http

@@ -1,6 +1,10 @@
 #include "sleekpr/infrastructure/rendering/TextAutoFitSizer.h"
 
 #include <QFont>
+#include <QHash>
+#include <QMutex>
+#include <QMutexLocker>
+#include <QString>
 #include <QTextDocument>
 #include <QTextOption>
 
@@ -9,6 +13,8 @@
 
 namespace sleekpr::infrastructure {
 namespace {
+
+constexpr int kMaxAutoFitCacheEntries = 512;
 
 double normalizedDpi(double dpi)
 {
@@ -70,6 +76,52 @@ bool textFits(
         && textSize.height() <= layoutSizePx.height() + 0.5;
 }
 
+QHash<QString, double>& autoFitCache()
+{
+    static QHash<QString, double> cache;
+    return cache;
+}
+
+QMutex& autoFitCacheMutex()
+{
+    static QMutex mutex;
+    return mutex;
+}
+
+QString cacheNumber(double value)
+{
+    return QString::number(value, 'f', 3);
+}
+
+QString autoFitCacheKey(
+    const sleekpr::core::NativeDrawCommand& command,
+    QSizeF layoutSizePx,
+    double dpiX,
+    double dpiY,
+    double minFontSizePt,
+    double maxFontSizePt)
+{
+    QString key;
+    key.reserve(command.text.size() + 160);
+    const auto append = [&key](const QString& part) {
+        key += part;
+        key += QLatin1Char('|');
+    };
+
+    append(command.text);
+    append(command.bold ? QStringLiteral("1") : QStringLiteral("0"));
+    append(command.wrapText ? QStringLiteral("1") : QStringLiteral("0"));
+    append(command.ellipsis ? QStringLiteral("1") : QStringLiteral("0"));
+    append(cacheNumber(command.fontSizePt));
+    append(cacheNumber(minFontSizePt));
+    append(cacheNumber(maxFontSizePt));
+    append(cacheNumber(layoutSizePx.width()));
+    append(cacheNumber(layoutSizePx.height()));
+    append(cacheNumber(dpiX));
+    append(cacheNumber(dpiY));
+    return key;
+}
+
 } // 匿名命名空间
 
 double TextAutoFitSizer::fitPointSize(
@@ -91,6 +143,15 @@ double TextAutoFitSizer::fitPointSize(
         return maxFontSizePt;
     }
 
+    const auto cacheKey = autoFitCacheKey(command, layoutSizePx, dpiX, dpiY, minFontSizePt, maxFontSizePt);
+    {
+        QMutexLocker locker(&autoFitCacheMutex());
+        const auto cachedIt = autoFitCache().constFind(cacheKey);
+        if (cachedIt != autoFitCache().cend()) {
+            return cachedIt.value();
+        }
+    }
+
     double low = minFontSizePt;
     double high = maxFontSizePt;
     for (int iteration = 0; iteration < 16; ++iteration) {
@@ -101,7 +162,29 @@ double TextAutoFitSizer::fitPointSize(
             high = middle;
         }
     }
-    return std::clamp(low, minFontSizePt, maxFontSizePt);
+    const auto fittedSize = std::clamp(low, minFontSizePt, maxFontSizePt);
+    {
+        QMutexLocker locker(&autoFitCacheMutex());
+        auto& cache = autoFitCache();
+        if (cache.size() >= kMaxAutoFitCacheEntries && !cache.isEmpty()) {
+            // 缓存只服务交互编辑和短期批量渲染，达到上限时丢弃任意旧项即可避免无界增长。
+            cache.erase(cache.begin());
+        }
+        cache.insert(cacheKey, fittedSize);
+    }
+    return fittedSize;
+}
+
+void TextAutoFitSizer::clearCache()
+{
+    QMutexLocker locker(&autoFitCacheMutex());
+    autoFitCache().clear();
+}
+
+int TextAutoFitSizer::cacheEntryCount()
+{
+    QMutexLocker locker(&autoFitCacheMutex());
+    return autoFitCache().size();
 }
 
 } // 命名空间 sleekpr::infrastructure

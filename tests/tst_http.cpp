@@ -1,5 +1,7 @@
 #include <QtTest/QtTest>
 
+#include <QCoreApplication>
+#include <QDeadlineTimer>
 #include <QFile>
 #include <QImage>
 #include <QJsonArray>
@@ -16,6 +18,7 @@
 #include "sleekpr/core/templates/PaperSpecJson.h"
 #include "sleekpr/core/templates/PaperSpecStore.h"
 #include "sleekpr/core/templates/TemplateDocumentJson.h"
+#include "sleekpr/http/LocalHttpLimits.h"
 #include "sleekpr/http/LocalHttpRouter.h"
 #include "sleekpr/http/LocalHttpServer.h"
 #include "sleekpr/infrastructure/printing/LabelPrintEngine.h"
@@ -131,6 +134,44 @@ TemplateDocument createSchemaFreeHttpTemplateDocument()
     return document;
 }
 
+TemplateDocument createPagedPreviewTemplateDocument()
+{
+    TableColumn nameColumn;
+    nameColumn.id = QStringLiteral("name");
+    nameColumn.title = QString::fromUtf8("名称");
+    nameColumn.fieldKey = QStringLiteral("name");
+    nameColumn.widthMm = 35.0;
+
+    TableElement table;
+    table.id = QStringLiteral("paged-table");
+    table.displayName = QString::fromUtf8("分页表格");
+    table.visible = true;
+    table.x = 1.0;
+    table.y = 1.0;
+    table.width = 40.0;
+    table.height = 10.0;
+    table.dataPath = QStringLiteral("rows");
+    table.headerRowHeightMm = 5.0;
+    table.detailRowHeightMm = 5.0;
+    table.repeatHeaderOnPage = true;
+    table.drawBorders = true;
+    table.columns = {nameColumn};
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("base");
+    layer.name = QString::fromUtf8("基础图层");
+    layer.tables = {table};
+
+    TemplateDocument document;
+    document.id = QStringLiteral("template-paged-preview");
+    document.name = QString::fromUtf8("分页预览");
+    document.templateKey = QStringLiteral("paged-preview");
+    document.category = QStringLiteral("label");
+    document.paperSpecId = QStringLiteral("label-80x30");
+    document.layers = {layer};
+    return document;
+}
+
 class HttpTests final : public QObject
 {
     Q_OBJECT
@@ -146,6 +187,7 @@ private slots:
     void paperSpecRoutesReportStoreReadErrors();
     void fieldPresetRoutesPersistReadAndRemovePresets();
     void postPrintTemplateUsesRequestValuesAndConfiguredPrinter();
+    void postPrintTemplateRejectsInvalidTableDataBeforePrinting();
     void postPrintTemplateKeepsValuesWhenSchemaEmpty();
     void postPrintTemplateUsesFieldPresetValues();
     void postPrintTemplateUsesPaperSpecForPrintPlan();
@@ -153,9 +195,15 @@ private slots:
     void postPrintTemplateCanUseTemplateLibraryDocument();
     void postPreviewTemplateReturnsNativePngWithoutPrinting();
     void postPreviewTemplateReturnsBatchPreviewPages();
+    void postPreviewTemplateRejectsTooManyBatchItems();
+    void postPreviewTemplateRejectsTooManyPages();
+    void postPreviewTemplateRejectsOversizedResponse();
     void postPrintTemplateRejectsMissingRequiredFields();
     void postPrintTemplateRejectsInvalidTemplateStructure();
     void localServerWaitsForFullPostBody();
+    void localServerRejectsOversizedHeaders();
+    void localServerRejectsOversizedBodies();
+    void localServerRefreshesLimitsAtRuntime();
 };
 
 void HttpTests::optionsUsesTrustedCorsPolicy()
@@ -654,6 +702,65 @@ void HttpTests::postPrintTemplateUsesRequestValuesAndConfiguredPrinter()
     QCOMPARE(data["failed"].toInt(), 0);
 }
 
+void HttpTests::postPrintTemplateRejectsInvalidTableDataBeforePrinting()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    TableColumn nameColumn;
+    nameColumn.id = QStringLiteral("name");
+    nameColumn.title = QString::fromUtf8("品名");
+    nameColumn.fieldKey = QStringLiteral("productName");
+    nameColumn.widthMm = 45.0;
+
+    TableElement table;
+    table.id = QStringLiteral("itemsTable");
+    table.dataPath = QStringLiteral("items");
+    table.width = 45.0;
+    table.height = 15.0;
+    table.columns.append(nameColumn);
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("base");
+    layer.tables = {table};
+
+    TemplateDocument document;
+    document.id = QStringLiteral("template-with-table");
+    document.templateKey = QStringLiteral("table-template");
+    document.layers = {layer};
+
+    PrintClientSettings settings;
+    settings.templateDocuments["table-template"] = document;
+    QVERIFY(FileSettingsStore(dir.filePath("settings.json")).save(settings));
+
+    RecordingLabelPrintEngine printEngine;
+    LocalHttpRouter router(dir.filePath("settings.json"), &printEngine);
+
+    LocalHttpRequest request;
+    request.method = "POST";
+    request.path = "/print/template";
+    request.body = R"json({
+        "requestId": "invalid-table-request",
+        "templateKey": "table-template",
+        "executePrint": true,
+        "values": {
+            "items": {
+                "productName": "不是数组"
+            }
+        }
+    })json";
+
+    const auto response = router.route(request);
+
+    QCOMPARE(response.statusCode, 400);
+    QCOMPARE(printEngine.printCount, 0);
+
+    const auto payload = QJsonDocument::fromJson(response.body).object();
+    QVERIFY(!payload["success"].toBool());
+    QCOMPARE(payload["code"].toString(), QString("TEMPLATE_RENDER_FAILED"));
+    QVERIFY(payload["message"].toString().contains(QStringLiteral("items")));
+}
+
 void HttpTests::postPrintTemplateKeepsValuesWhenSchemaEmpty()
 {
     QTemporaryDir dir;
@@ -984,6 +1091,120 @@ void HttpTests::postPreviewTemplateReturnsBatchPreviewPages()
     QVERIFY(!pages.at(1).toObject()["imageBase64"].toString().isEmpty());
 }
 
+void HttpTests::postPreviewTemplateRejectsTooManyBatchItems()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    PrintClientSettings settings;
+    settings.templateDocuments["invoice"] = createHttpInvoiceTemplateDocument();
+    QVERIFY(FileSettingsStore(dir.filePath("settings.json")).save(settings));
+
+    LocalHttpLimits limits;
+    limits.maxPreviewBatchItems = 2;
+
+    RecordingLabelPrintEngine printEngine;
+    LocalHttpRouter router(dir.filePath("settings.json"), &printEngine, limits);
+
+    QJsonArray items;
+    for (int index = 0; index < 3; ++index) {
+        items.append(QJsonObject{
+            {QStringLiteral("requestId"), QStringLiteral("batch-item-%1").arg(index + 1)},
+            {QStringLiteral("values"), QJsonObject{{QStringLiteral("customerName"), QString::fromUtf8("客户")}}},
+        });
+    }
+
+    LocalHttpRequest request;
+    request.method = "POST";
+    request.path = "/preview/template";
+    request.body = QJsonDocument(QJsonObject{
+        {QStringLiteral("requestId"), QStringLiteral("too-many-batch-items")},
+        {QStringLiteral("templateKey"), QStringLiteral("invoice")},
+        {QStringLiteral("items"), items},
+    }).toJson(QJsonDocument::Compact);
+
+    const auto response = router.route(request);
+    QCOMPARE(response.statusCode, 413);
+    QCOMPARE(printEngine.printCount, 0);
+
+    const auto payload = QJsonDocument::fromJson(response.body).object();
+    QVERIFY(!payload["success"].toBool());
+    QCOMPARE(payload["code"].toString(), QString("REQUEST_TOO_LARGE"));
+}
+
+void HttpTests::postPreviewTemplateRejectsTooManyPages()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    PrintClientSettings settings;
+    settings.templateDocuments["paged-preview"] = createPagedPreviewTemplateDocument();
+    QVERIFY(FileSettingsStore(dir.filePath("settings.json")).save(settings));
+
+    LocalHttpLimits limits;
+    limits.maxPreviewPages = 2;
+
+    RecordingLabelPrintEngine printEngine;
+    LocalHttpRouter router(dir.filePath("settings.json"), &printEngine, limits);
+
+    QJsonArray rows;
+    rows.append(QJsonObject{{QStringLiteral("name"), QStringLiteral("A")}});
+    rows.append(QJsonObject{{QStringLiteral("name"), QStringLiteral("B")}});
+    rows.append(QJsonObject{{QStringLiteral("name"), QStringLiteral("C")}});
+
+    LocalHttpRequest request;
+    request.method = "POST";
+    request.path = "/preview/template";
+    request.body = QJsonDocument(QJsonObject{
+        {QStringLiteral("requestId"), QStringLiteral("too-many-preview-pages")},
+        {QStringLiteral("templateKey"), QStringLiteral("paged-preview")},
+        {QStringLiteral("values"), QJsonObject{{QStringLiteral("rows"), rows}}},
+    }).toJson(QJsonDocument::Compact);
+
+    const auto response = router.route(request);
+    QCOMPARE(response.statusCode, 413);
+    QCOMPARE(printEngine.printCount, 0);
+
+    const auto payload = QJsonDocument::fromJson(response.body).object();
+    QVERIFY(!payload["success"].toBool());
+    QCOMPARE(payload["code"].toString(), QString("REQUEST_TOO_LARGE"));
+}
+
+void HttpTests::postPreviewTemplateRejectsOversizedResponse()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    PrintClientSettings settings;
+    settings.templateDocuments["schema-free"] = createSchemaFreeHttpTemplateDocument();
+    QVERIFY(FileSettingsStore(dir.filePath("settings.json")).save(settings));
+
+    LocalHttpLimits limits;
+    limits.maxPreviewResponseBytes = 512;
+
+    RecordingLabelPrintEngine printEngine;
+    LocalHttpRouter router(dir.filePath("settings.json"), &printEngine, limits);
+
+    LocalHttpRequest request;
+    request.method = "POST";
+    request.path = "/preview/template";
+    request.body = R"json({
+        "requestId": "oversized-preview-response",
+        "templateKey": "schema-free",
+        "values": {
+            "productName": "足金串搭项链"
+        }
+    })json";
+
+    const auto response = router.route(request);
+    QCOMPARE(response.statusCode, 413);
+    QCOMPARE(printEngine.printCount, 0);
+
+    const auto payload = QJsonDocument::fromJson(response.body).object();
+    QVERIFY(!payload["success"].toBool());
+    QCOMPARE(payload["code"].toString(), QString("REQUEST_TOO_LARGE"));
+}
+
 void HttpTests::postPrintTemplateRejectsMissingRequiredFields()
 {
     QTemporaryDir dir;
@@ -1118,6 +1339,125 @@ void HttpTests::localServerWaitsForFullPostBody()
     const auto response = socket.readAll();
     QVERIFY(response.startsWith("HTTP/1.1 200 OK"));
     QCOMPARE(FileSettingsStore(dir.filePath("settings.json")).load().defaultPrinter, QString("Chunked Printer"));
+}
+
+void HttpTests::localServerRejectsOversizedHeaders()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    LocalHttpLimits limits;
+    limits.maxHeaderBytes = 128;
+
+    LocalHttpServer server(dir.filePath("settings.json"), nullptr, limits);
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+
+    QTcpSocket socket;
+    socket.connectToHost(QHostAddress::LocalHost, server.serverPort());
+    QVERIFY(socket.waitForConnected());
+
+    const QByteArray request =
+        "GET /health HTTP/1.1\r\n"
+        "Host: 127.0.0.1\r\n"
+        "X-Fill: " + QByteArray(180, 'a') + "\r\n\r\n";
+
+    socket.write(request);
+    QVERIFY(socket.waitForBytesWritten());
+    QTRY_VERIFY_WITH_TIMEOUT(socket.bytesAvailable() > 0, 1000);
+
+    const auto response = socket.readAll();
+    QVERIFY(response.startsWith("HTTP/1.1 413 Payload Too Large"));
+}
+
+void HttpTests::localServerRejectsOversizedBodies()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    LocalHttpLimits limits;
+    limits.maxContentLengthBytes = 16;
+
+    LocalHttpServer server(dir.filePath("settings.json"), nullptr, limits);
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+
+    QTcpSocket socket;
+    socket.connectToHost(QHostAddress::LocalHost, server.serverPort());
+    QVERIFY(socket.waitForConnected());
+
+    const QByteArray body = R"json({"defaultPrinter":"Chunked Printer"})json";
+    const QByteArray request =
+        "POST /settings HTTP/1.1\r\n"
+        "Host: 127.0.0.1\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: " + QByteArray::number(body.size()) + "\r\n\r\n" + body;
+
+    socket.write(request);
+    QVERIFY(socket.waitForBytesWritten());
+    QTRY_VERIFY_WITH_TIMEOUT(socket.bytesAvailable() > 0, 1000);
+
+    const auto response = socket.readAll();
+    QVERIFY(response.startsWith("HTTP/1.1 413 Payload Too Large"));
+    QVERIFY(FileSettingsStore(dir.filePath("settings.json")).load().defaultPrinter.isEmpty());
+}
+
+void HttpTests::localServerRefreshesLimitsAtRuntime()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const auto settingsPath = dir.filePath("settings.json");
+    LocalHttpLimits initialLimits;
+    initialLimits.maxContentLengthBytes = 1024;
+
+    LocalHttpServer server(settingsPath, nullptr, initialLimits);
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+
+    auto sendSettingsRequest = [&server](const QByteArray& body, bool* ok) {
+        *ok = false;
+        QTcpSocket socket;
+        socket.connectToHost(QHostAddress::LocalHost, server.serverPort());
+        if (!socket.waitForConnected()) {
+            return QByteArray{};
+        }
+
+        const QByteArray request =
+            "POST /settings HTTP/1.1\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: " + QByteArray::number(body.size()) + "\r\n\r\n" + body;
+
+        socket.write(request);
+        if (!socket.waitForBytesWritten()) {
+            return QByteArray{};
+        }
+        QDeadlineTimer deadline(1000);
+        while (socket.bytesAvailable() <= 0 && !deadline.hasExpired()) {
+            // 测试客户端和服务端在同一线程，等待响应时要让 Qt 事件循环继续分发服务端事件。
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            socket.waitForReadyRead(10);
+        }
+        if (socket.bytesAvailable() <= 0) {
+            return QByteArray{};
+        }
+        *ok = true;
+        return socket.readAll();
+    };
+
+    const QByteArray body = R"json({"defaultPrinter":"Runtime Limit Printer"})json";
+    bool requestOk = false;
+    const auto acceptedResponse = sendSettingsRequest(body, &requestOk);
+    QVERIFY(requestOk);
+    QVERIFY(acceptedResponse.startsWith("HTTP/1.1 200 OK"));
+    QCOMPARE(FileSettingsStore(settingsPath).load().defaultPrinter, QStringLiteral("Runtime Limit Printer"));
+
+    LocalHttpLimits strictLimits;
+    strictLimits.maxContentLengthBytes = 16;
+    server.setLimits(strictLimits);
+
+    const auto rejectedResponse = sendSettingsRequest(body, &requestOk);
+    QVERIFY(requestOk);
+    QVERIFY(rejectedResponse.startsWith("HTTP/1.1 413 Payload Too Large"));
+    QCOMPARE(FileSettingsStore(settingsPath).load().defaultPrinter, QStringLiteral("Runtime Limit Printer"));
 }
 
 QTEST_MAIN(HttpTests)

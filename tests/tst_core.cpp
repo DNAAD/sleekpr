@@ -60,6 +60,7 @@ private slots:
     void printUnitConverterMatchesDotnetBehavior();
     void nativePrintDrawingPlanWrapsSinglePagePlan();
     void settingsStoreReturnsDefaultsAndPersistsValues();
+    void settingsStorePersistsLocalHttpLimitSettings();
     void settingsStorePersistsTemplateElements();
     void templateDocumentJsonPersistsLayersVersionsAndProfiles();
     void templateDocumentJsonPersistsAutoFitTextFont();
@@ -128,6 +129,7 @@ private slots:
     void nativeDrawingPlannerAppendsTemplateElements();
     void templateDocumentRendererMarksFixedAndBoundTextForAutoFit();
     void textAutoFitSizerShrinksAndExpandsText();
+    void textAutoFitSizerCachesRepeatedMeasurements();
     void templateDocumentRendererRendersFixedTextVertically();
     void templateDocumentRendererInterpolatesQrCodePayloadTemplate();
     void nativeDrawingPlannerUsesSilverTemplateForFactory25003();
@@ -223,6 +225,36 @@ void CoreTests::settingsStoreReturnsDefaultsAndPersistsValues()
     const auto productNameOverride = actual.templateOverrides.value("default").value("productName");
     QCOMPARE(productNameOverride.x.value(), 10.8);
     QCOMPARE(productNameOverride.bold.value(), true);
+}
+
+void CoreTests::settingsStorePersistsLocalHttpLimitSettings()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    FileSettingsStore store(dir.filePath("settings.json"));
+    const auto defaults = store.load();
+    QVERIFY(!defaults.localHttpLimits.maxHeaderBytes.has_value());
+    QVERIFY(!defaults.localHttpLimits.maxContentLengthBytes.has_value());
+    QVERIFY(!defaults.localHttpLimits.maxPreviewBatchItems.has_value());
+    QVERIFY(!defaults.localHttpLimits.maxPreviewPages.has_value());
+    QVERIFY(!defaults.localHttpLimits.maxPreviewResponseBytes.has_value());
+
+    PrintClientSettings expected;
+    expected.localHttpLimits.maxHeaderBytes = 24 * 1024;
+    expected.localHttpLimits.maxContentLengthBytes = 9 * 1024 * 1024;
+    expected.localHttpLimits.maxPreviewBatchItems = 60;
+    expected.localHttpLimits.maxPreviewPages = 120;
+    expected.localHttpLimits.maxPreviewResponseBytes = 6 * 1024 * 1024;
+
+    QVERIFY(store.save(expected));
+    const auto actual = store.load();
+
+    QCOMPARE(actual.localHttpLimits.maxHeaderBytes.value(), qsizetype(24 * 1024));
+    QCOMPARE(actual.localHttpLimits.maxContentLengthBytes.value(), qsizetype(9 * 1024 * 1024));
+    QCOMPARE(actual.localHttpLimits.maxPreviewBatchItems.value(), 60);
+    QCOMPARE(actual.localHttpLimits.maxPreviewPages.value(), 120);
+    QCOMPARE(actual.localHttpLimits.maxPreviewResponseBytes.value(), qsizetype(6 * 1024 * 1024));
 }
 
 void CoreTests::settingsStorePersistsTemplateElements()
@@ -2720,6 +2752,44 @@ void CoreTests::textAutoFitSizerShrinksAndExpandsText()
         300.0);
     QVERIFY(shrunkenSize < expandedSize);
     QVERIFY(shrunkenSize >= command.autoFitMinFontSizePt);
+}
+
+void CoreTests::textAutoFitSizerCachesRepeatedMeasurements()
+{
+    NativeDrawCommand command;
+    command.type = NativeDrawCommandType::Text;
+    command.text = QString::fromUtf8("足金串搭项链南京东路旗舰店");
+    command.fontSizePt = 5.0;
+    command.wrapText = true;
+    command.autoFitFont = true;
+    command.autoFitMinFontSizePt = 3.0;
+    command.autoFitMaxFontSizePt = 12.0;
+
+    sleekpr::infrastructure::TextAutoFitSizer::clearCache();
+    QCOMPARE(sleekpr::infrastructure::TextAutoFitSizer::cacheEntryCount(), 0);
+
+    const auto firstSize = sleekpr::infrastructure::TextAutoFitSizer::fitPointSize(
+        command,
+        QSizeF(120.0, 32.0),
+        152.4,
+        152.4);
+    QCOMPARE(sleekpr::infrastructure::TextAutoFitSizer::cacheEntryCount(), 1);
+
+    const auto repeatedSize = sleekpr::infrastructure::TextAutoFitSizer::fitPointSize(
+        command,
+        QSizeF(120.0, 32.0),
+        152.4,
+        152.4);
+    QCOMPARE(repeatedSize, firstSize);
+    QCOMPARE(sleekpr::infrastructure::TextAutoFitSizer::cacheEntryCount(), 1);
+
+    command.text.append(QStringLiteral("A"));
+    sleekpr::infrastructure::TextAutoFitSizer::fitPointSize(
+        command,
+        QSizeF(120.0, 32.0),
+        152.4,
+        152.4);
+    QCOMPARE(sleekpr::infrastructure::TextAutoFitSizer::cacheEntryCount(), 2);
 }
 
 void CoreTests::templateDocumentRendererRendersFixedTextVertically()

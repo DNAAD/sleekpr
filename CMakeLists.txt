@@ -67,7 +67,13 @@ target_link_libraries(sleekpr_core
 
 add_library(sleekpr_http
     src/http/LocalHttpServer.cpp
+    src/http/LocalHttpRouteSupport.cpp
     src/http/LocalHttpRouter.cpp
+    src/http/PreviewRoutes.cpp
+    src/http/PrintRoutes.cpp
+    src/http/SettingsRoutes.cpp
+    src/http/TemplateRequestPlanner.cpp
+    src/http/TemplateRoutes.cpp
 )
 
 target_link_libraries(sleekpr_http
@@ -80,13 +86,23 @@ target_link_libraries(sleekpr_http
 
 add_executable(sleekpr
     src/app/AppTheme.cpp
+    src/app/TemplateDesignerCommand.cpp
     src/app/FieldPresetManagerWindow.cpp
     src/app/PaperSpecManagerWindow.cpp
     src/app/SettingsWindow.cpp
+    src/app/TemplateDesignerFactory.cpp
+    src/app/TemplateInspectorPanel.cpp
+    include/sleekpr/app/TemplateInspectorPanel.h
+    src/app/TemplateDesignerPresenter.cpp
+    src/app/TemplateDesignerState.cpp
     src/app/TemplateDesignerWindow.cpp
     src/app/TemplateDragCoordinateMapper.cpp
     src/app/TemplateElementHitTester.cpp
+    src/app/TemplateLayerPanel.cpp
+    src/app/TemplateLibraryPanel.cpp
     src/app/TemplatePreviewLabel.cpp
+    src/app/TemplateWorkspacePanel.cpp
+    src/app/TemplateWorkspaceToolbar.cpp
     src/app/WindowActivation.cpp
     src/app/main.cpp
 )

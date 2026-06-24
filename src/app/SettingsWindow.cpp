@@ -12,6 +12,7 @@
 #include "sleekpr/app/TemplateDragCoordinateMapper.h"
 #include "sleekpr/app/TemplateElementHitTester.h"
 #include "sleekpr/app/TemplatePreviewLabel.h"
+#include "sleekpr/http/LocalHttpLimits.h"
 #include "sleekpr/infrastructure/preview/LabelPreviewImageRenderer.h"
 #include "sleekpr/infrastructure/preview/LabelPreviewService.h"
 #include "sleekpr/infrastructure/preview/PreviewLabelFactory.h"
@@ -20,6 +21,7 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -36,6 +38,8 @@
 #include <QScrollArea>
 #include <QSet>
 #include <QSignalBlocker>
+#include <QSizePolicy>
+#include <QSpinBox>
 #include <QSplitter>
 #include <QUuid>
 #include <QVBoxLayout>
@@ -56,6 +60,47 @@ QDoubleSpinBox* millimeterSpinBox(double minimum = -50.0, double maximum = 100.0
     spinBox->setSingleStep(0.10);
     spinBox->setSuffix(QString::fromUtf8(" mm"));
     return spinBox;
+}
+
+QSpinBox* localHttpLimitSpinBox(int minimum, int maximum, int singleStep, const QString& suffix)
+{
+    auto* spinBox = new QSpinBox;
+    spinBox->setRange(minimum, maximum);
+    spinBox->setSingleStep(singleStep);
+    spinBox->setSuffix(suffix);
+    spinBox->setMinimumWidth(96);
+    spinBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    return spinBox;
+}
+
+QWidget* localHttpLimitField(const QString& title, QSpinBox* spinBox)
+{
+    auto* field = new QWidget;
+    auto* layout = new QVBoxLayout(field);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(4);
+
+    auto* titleLabel = new QLabel(title, field);
+    titleLabel->setStyleSheet(QStringLiteral("color: #334155; font-size: 12px;"));
+    layout->addWidget(titleLabel);
+    layout->addWidget(spinBox);
+    return field;
+}
+
+int bytesToWholeUnit(qsizetype bytes, qsizetype unit)
+{
+    const auto positiveBytes = std::max(bytes, unit);
+    return static_cast<int>((positiveBytes + unit - 1) / unit);
+}
+
+qsizetype kibibytesToBytes(int value)
+{
+    return static_cast<qsizetype>(value) * 1024;
+}
+
+qsizetype mebibytesToBytes(int value)
+{
+    return static_cast<qsizetype>(value) * 1024 * 1024;
 }
 
 bool sameDouble(double left, double right)
@@ -186,6 +231,12 @@ void SettingsWindow::reloadFromDisk()
     m_offsetXSpin->setValue(m_settings.labelOffset.x);
     m_offsetYSpin->setValue(m_settings.labelOffset.y);
     m_allowedOriginsEdit->setPlainText(m_settings.allowedOrigins.join(QStringLiteral("\n")));
+    const auto httpLimits = sleekpr::http::LocalHttpLimits::fromSettings(m_settings);
+    m_httpMaxHeaderKbSpin->setValue(bytesToWholeUnit(httpLimits.maxHeaderBytes, 1024));
+    m_httpMaxBodyMbSpin->setValue(bytesToWholeUnit(httpLimits.maxContentLengthBytes, 1024 * 1024));
+    m_httpMaxPreviewBatchItemsSpin->setValue(httpLimits.maxPreviewBatchItems);
+    m_httpMaxPreviewPagesSpin->setValue(httpLimits.maxPreviewPages);
+    m_httpMaxPreviewResponseMbSpin->setValue(bytesToWholeUnit(httpLimits.maxPreviewResponseBytes, 1024 * 1024));
 
     renderPreview(m_settings);
     refreshOverview();
@@ -382,6 +433,7 @@ QWidget* SettingsWindow::createPrinterPanel()
 
     auto* securityGroup = new QGroupBox(QString::fromUtf8("本地接口安全"));
     auto* securityLayout = new QVBoxLayout(securityGroup);
+    securityLayout->setSpacing(8);
     auto* allowedOriginsHint = new QLabel(
         QString::fromUtf8("允许访问本地服务的网页 Origin，每行一个；留空时只接受没有 Origin 的本机调用。"),
         securityGroup);
@@ -389,9 +441,68 @@ QWidget* SettingsWindow::createPrinterPanel()
     m_allowedOriginsEdit = new QPlainTextEdit(securityGroup);
     m_allowedOriginsEdit->setObjectName(QStringLiteral("allowedOriginsEdit"));
     m_allowedOriginsEdit->setPlaceholderText(QString::fromUtf8("https://manager.example.com"));
-    m_allowedOriginsEdit->setFixedHeight(82);
+    m_allowedOriginsEdit->setFixedHeight(72);
     securityLayout->addWidget(allowedOriginsHint);
     securityLayout->addWidget(m_allowedOriginsEdit);
+
+    auto* limitTitle = new QLabel(QString::fromUtf8("高级上限"), securityGroup);
+    limitTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #0f172a;"));
+    auto* limitHint = new QLabel(
+        QString::fromUtf8("在收包和预览响应阶段生效；调大前请确认 Web 端确实需要。"),
+        securityGroup);
+    limitHint->setWordWrap(true);
+    limitHint->setStyleSheet(QStringLiteral("color: #64748b;"));
+    auto* limitsGridPanel = new QWidget(securityGroup);
+    limitsGridPanel->setObjectName(QStringLiteral("settingsHttpLimitsGrid"));
+    auto* limitLayout = new QGridLayout(limitsGridPanel);
+    limitLayout->setContentsMargins(0, 0, 0, 0);
+    limitLayout->setHorizontalSpacing(10);
+    limitLayout->setVerticalSpacing(8);
+    limitLayout->setColumnStretch(0, 1);
+    limitLayout->setColumnStretch(1, 1);
+    m_httpMaxHeaderKbSpin = localHttpLimitSpinBox(
+        sleekpr::http::LocalHttpLimits::kMinMaxHeaderBytes / 1024,
+        sleekpr::http::LocalHttpLimits::kMaxMaxHeaderBytes / 1024,
+        4,
+        QStringLiteral(" KB"));
+    m_httpMaxHeaderKbSpin->setObjectName(QStringLiteral("settingsMaxHeaderKbSpin"));
+    m_httpMaxBodyMbSpin = localHttpLimitSpinBox(
+        sleekpr::http::LocalHttpLimits::kMinMaxContentLengthBytes / (1024 * 1024),
+        sleekpr::http::LocalHttpLimits::kMaxMaxContentLengthBytes / (1024 * 1024),
+        1,
+        QStringLiteral(" MB"));
+    m_httpMaxBodyMbSpin->setObjectName(QStringLiteral("settingsMaxBodyMbSpin"));
+    m_httpMaxPreviewBatchItemsSpin = localHttpLimitSpinBox(
+        sleekpr::http::LocalHttpLimits::kMinMaxPreviewBatchItems,
+        sleekpr::http::LocalHttpLimits::kMaxMaxPreviewBatchItems,
+        5,
+        QString::fromUtf8(" 条"));
+    m_httpMaxPreviewBatchItemsSpin->setObjectName(QStringLiteral("settingsMaxPreviewBatchItemsSpin"));
+    m_httpMaxPreviewPagesSpin = localHttpLimitSpinBox(
+        sleekpr::http::LocalHttpLimits::kMinMaxPreviewPages,
+        sleekpr::http::LocalHttpLimits::kMaxMaxPreviewPages,
+        10,
+        QString::fromUtf8(" 页"));
+    m_httpMaxPreviewPagesSpin->setObjectName(QStringLiteral("settingsMaxPreviewPagesSpin"));
+    m_httpMaxPreviewResponseMbSpin = localHttpLimitSpinBox(
+        sleekpr::http::LocalHttpLimits::kMinMaxPreviewResponseBytes / (1024 * 1024),
+        sleekpr::http::LocalHttpLimits::kMaxMaxPreviewResponseBytes / (1024 * 1024),
+        1,
+        QStringLiteral(" MB"));
+    m_httpMaxPreviewResponseMbSpin->setObjectName(QStringLiteral("settingsMaxPreviewResponseMbSpin"));
+    limitLayout->addWidget(localHttpLimitField(QString::fromUtf8("请求头"), m_httpMaxHeaderKbSpin), 0, 0);
+    limitLayout->addWidget(localHttpLimitField(QString::fromUtf8("请求体"), m_httpMaxBodyMbSpin), 0, 1);
+    limitLayout->addWidget(localHttpLimitField(QString::fromUtf8("批量预览"), m_httpMaxPreviewBatchItemsSpin), 1, 0);
+    limitLayout->addWidget(localHttpLimitField(QString::fromUtf8("预览页数"), m_httpMaxPreviewPagesSpin), 1, 1);
+    limitLayout->addWidget(localHttpLimitField(QString::fromUtf8("响应体"), m_httpMaxPreviewResponseMbSpin), 2, 0);
+
+    auto* resetLimitsButton = new QPushButton(QString::fromUtf8("恢复默认上限"), securityGroup);
+    resetLimitsButton->setObjectName(QStringLiteral("resetHttpLimitsButton"));
+    securityLayout->addSpacing(8);
+    securityLayout->addWidget(limitTitle);
+    securityLayout->addWidget(limitHint);
+    securityLayout->addWidget(limitsGridPanel);
+    securityLayout->addWidget(resetLimitsButton);
 
     layout->addWidget(templateGroup);
     layout->addWidget(printerGroup);
@@ -409,6 +520,13 @@ QWidget* SettingsWindow::createPrinterPanel()
         m_currentElementKey.clear();
         renderPreview(m_settings);
         refreshOverview();
+    });
+    connect(resetLimitsButton, &QPushButton::clicked, this, [this] {
+        m_httpMaxHeaderKbSpin->setValue(sleekpr::http::LocalHttpLimits::kDefaultMaxHeaderBytes / 1024);
+        m_httpMaxBodyMbSpin->setValue(sleekpr::http::LocalHttpLimits::kDefaultMaxContentLengthBytes / (1024 * 1024));
+        m_httpMaxPreviewBatchItemsSpin->setValue(sleekpr::http::LocalHttpLimits::kDefaultMaxPreviewBatchItems);
+        m_httpMaxPreviewPagesSpin->setValue(sleekpr::http::LocalHttpLimits::kDefaultMaxPreviewPages);
+        m_httpMaxPreviewResponseMbSpin->setValue(sleekpr::http::LocalHttpLimits::kDefaultMaxPreviewResponseBytes / (1024 * 1024));
     });
 
     return panel;
@@ -757,6 +875,11 @@ void SettingsWindow::collectGeneralSettings()
         }
     }
     m_settings.allowedOrigins = allowedOrigins;
+    m_settings.localHttpLimits.maxHeaderBytes = kibibytesToBytes(m_httpMaxHeaderKbSpin->value());
+    m_settings.localHttpLimits.maxContentLengthBytes = mebibytesToBytes(m_httpMaxBodyMbSpin->value());
+    m_settings.localHttpLimits.maxPreviewBatchItems = m_httpMaxPreviewBatchItemsSpin->value();
+    m_settings.localHttpLimits.maxPreviewPages = m_httpMaxPreviewPagesSpin->value();
+    m_settings.localHttpLimits.maxPreviewResponseBytes = mebibytesToBytes(m_httpMaxPreviewResponseMbSpin->value());
 }
 
 sleekpr::core::LabelTemplateKey SettingsWindow::currentLabelTemplateKey() const

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "sleekpr/app/TemplateDesignerPresenter.h"
+#include "sleekpr/app/TemplateDesignerState.h"
 #include "sleekpr/core/settings/PrintClientSettings.h"
 #include "sleekpr/core/native/NativeDrawCommand.h"
 #include "sleekpr/core/native/NativePrintDrawingPlan.h"
@@ -28,7 +30,6 @@ class QListWidgetItem;
 class QObject;
 class QPlainTextEdit;
 class QPushButton;
-class QSpinBox;
 class QTimer;
 
 namespace sleekpr::core {
@@ -40,6 +41,7 @@ struct TableElement;
 namespace sleekpr::app {
 
 class TemplatePreviewLabel;
+class TemplateInspectorPanel;
 
 class TemplateDesignerWindow final : public QWidget
 {
@@ -116,6 +118,7 @@ private:
     void refreshElementPropertyEditor();
     void refreshTablePropertyEditor();
     void refreshPreview();
+    void schedulePreviewRefresh(int delayMs);
     void refreshSampleDataEditor();
     QJsonObject sampleDataFromEditor(bool* ok = nullptr, QString* errorMessage = nullptr) const;
     bool syncSampleDataFromEditor(bool* ok = nullptr, QString* errorMessage = nullptr);
@@ -182,28 +185,11 @@ private:
     QListWidget* m_templateLibraryList = nullptr;
     QListWidget* m_layerList = nullptr;
     QListWidget* m_elementList = nullptr;
+    TemplateInspectorPanel* m_inspectorPanel = nullptr;
     TemplatePreviewLabel* m_previewLabel = nullptr;
     QLabel* m_statusLabel = nullptr;
     QLabel* m_sampleDataErrorLabel = nullptr;
     QPlainTextEdit* m_sampleDataEdit = nullptr;
-    QPlainTextEdit* m_elementValueEdit = nullptr;
-    QDoubleSpinBox* m_elementXSpin = nullptr;
-    QDoubleSpinBox* m_elementYSpin = nullptr;
-    QDoubleSpinBox* m_elementWidthSpin = nullptr;
-    QDoubleSpinBox* m_elementHeightSpin = nullptr;
-    QDoubleSpinBox* m_elementFontSizeSpin = nullptr;
-    QDoubleSpinBox* m_elementRotationSpin = nullptr;
-    QCheckBox* m_elementBoldCheck = nullptr;
-    QCheckBox* m_elementAutoFitFontCheck = nullptr;
-    QDoubleSpinBox* m_elementAutoFitMinFontSizeSpin = nullptr;
-    QDoubleSpinBox* m_elementAutoFitMaxFontSizeSpin = nullptr;
-    QCheckBox* m_elementVerticalTextCheck = nullptr;
-    QLineEdit* m_arrayGridDataPathEdit = nullptr;
-    QSpinBox* m_arrayGridRowsSpin = nullptr;
-    QSpinBox* m_arrayGridColumnsSpin = nullptr;
-    QDoubleSpinBox* m_arrayGridRowHeightSpin = nullptr;
-    QPlainTextEdit* m_arrayGridCellTemplateEdit = nullptr;
-    QCheckBox* m_arrayGridDrawBordersCheck = nullptr;
     QLineEdit* m_deviceProfilePrinterEdit = nullptr;
     QDoubleSpinBox* m_deviceProfileDpiSpin = nullptr;
     QDoubleSpinBox* m_deviceProfileScaleXSpin = nullptr;
@@ -214,26 +200,15 @@ private:
     QDoubleSpinBox* m_deviceCalibrationActualWidthSpin = nullptr;
     QDoubleSpinBox* m_deviceCalibrationExpectedHeightSpin = nullptr;
     QDoubleSpinBox* m_deviceCalibrationActualHeightSpin = nullptr;
-    QLineEdit* m_tableDisplayNameEdit = nullptr;
-    QLineEdit* m_tableDataPathEdit = nullptr;
-    QDoubleSpinBox* m_tableXSpin = nullptr;
-    QDoubleSpinBox* m_tableYSpin = nullptr;
-    QDoubleSpinBox* m_tableWidthSpin = nullptr;
-    QDoubleSpinBox* m_tableHeightSpin = nullptr;
-    QDoubleSpinBox* m_tableHeaderHeightSpin = nullptr;
-    QDoubleSpinBox* m_tableDetailHeightSpin = nullptr;
-    QCheckBox* m_tableRepeatHeaderCheck = nullptr;
-    QCheckBox* m_tableDrawBordersCheck = nullptr;
-    QLineEdit* m_tableColumnsEdit = nullptr;
     QList<sleekpr::core::NativeDrawCommand> m_previewCommands;
+    TemplateDesignerPresenter m_presenter;
+    TemplateDesignerState m_state;
     QTimer* m_elementAutoApplyTimer = nullptr;
     QTimer* m_tableAutoApplyTimer = nullptr;
-    QList<sleekpr::core::TemplateDocument> m_documentHistory;
-    int m_documentHistoryIndex = -1;
+    QTimer* m_previewRefreshTimer = nullptr;
     double m_previewZoomFactor = 1.0;
     bool m_updatingPropertyEditors = false;
     bool m_applyingElementListOrder = false;
-    bool m_restoringDocumentHistory = false;
 };
 
 } // 命名空间 sleekpr::app
