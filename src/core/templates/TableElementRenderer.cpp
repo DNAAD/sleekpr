@@ -19,38 +19,31 @@ constexpr double textPaddingY = 0.4;
 
 NativeDrawCommand rectangleCommand(double x, double y, double width, double height, const QString& key)
 {
-    return NativeDrawCommand{
-        NativeDrawCommandType::Rectangle,
-        x,
-        y,
-        width,
-        height,
-        QString(),
-        0.0,
-        false,
-        0.0,
-        0,
-        false,
-        key,
-    };
+    NativeDrawCommand command;
+    command.type = NativeDrawCommandType::Rectangle;
+    command.x = x;
+    command.y = y;
+    command.width = width;
+    command.height = height;
+    command.elementKey = key;
+    return command;
 }
 
 NativeDrawCommand textCommand(double x, double y, double width, double height, const QString& text, const TableColumn& column, const QString& key)
 {
-    return NativeDrawCommand{
-        NativeDrawCommandType::Text,
-        x + textPaddingX,
-        y + textPaddingY,
-        std::max(0.1, width - textPaddingX * 2.0),
-        std::max(0.1, height - textPaddingY * 2.0),
-        text,
-        column.fontSizePt > 0.0 ? column.fontSizePt : 8.0,
-        column.bold,
-        0.0,
-        1,
-        column.ellipsis,
-        key,
-    };
+    NativeDrawCommand command;
+    command.type = NativeDrawCommandType::Text;
+    command.x = x + textPaddingX;
+    command.y = y + textPaddingY;
+    command.width = std::max(0.1, width - textPaddingX * 2.0);
+    command.height = std::max(0.1, height - textPaddingY * 2.0);
+    command.text = text;
+    command.fontSizePt = column.fontSizePt > 0.0 ? column.fontSizePt : 8.0;
+    command.bold = column.bold;
+    command.maxLines = 1;
+    command.ellipsis = column.ellipsis;
+    command.elementKey = key;
+    return command;
 }
 
 QString valueToText(const QJsonValue& value)

@@ -32,6 +32,11 @@ struct NativeDrawCommand
 
     // 模板设计器文本需要按元素宽度自动换行，超过元素高度的内容由绘制后端裁切。
     bool wrapText = false;
+
+    // 文本自适应字号只影响 Qt 原生绘制阶段，不改变模板中保存的基础字号。
+    bool autoFitFont = false;
+    double autoFitMinFontSizePt = 0.0;
+    double autoFitMaxFontSizePt = 0.0;
 };
 
-} // namespace sleekpr::core
+} // 命名空间 sleekpr::core

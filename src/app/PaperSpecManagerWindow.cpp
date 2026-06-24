@@ -205,8 +205,10 @@ void PaperSpecManagerWindow::buildUi()
     addButton->setObjectName(QStringLiteral("addPaperSpecButton"));
     m_saveButton = new QPushButton(QString::fromUtf8("保存"), this);
     m_saveButton->setObjectName(QStringLiteral("savePaperSpecButton"));
+    m_saveButton->setProperty("buttonRole", QStringLiteral("primary"));
     m_deleteButton = new QPushButton(QString::fromUtf8("删除"), this);
     m_deleteButton->setObjectName(QStringLiteral("deletePaperSpecButton"));
+    m_deleteButton->setProperty("buttonRole", QStringLiteral("danger"));
     auto* reloadButton = new QPushButton(QString::fromUtf8("重新加载"), this);
     reloadButton->setObjectName(QStringLiteral("reloadPaperSpecsButton"));
     auto* closeButton = new QPushButton(QString::fromUtf8("关闭"), this);

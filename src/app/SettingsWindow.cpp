@@ -188,13 +188,28 @@ void SettingsWindow::reloadFromDisk()
     m_allowedOriginsEdit->setPlainText(m_settings.allowedOrigins.join(QStringLiteral("\n")));
 
     renderPreview(m_settings);
+    refreshOverview();
 }
 
 void SettingsWindow::buildUi()
 {
     auto* rootLayout = new QVBoxLayout(this);
-    rootLayout->setContentsMargins(14, 14, 14, 14);
-    rootLayout->setSpacing(10);
+    rootLayout->setContentsMargins(0, 0, 0, 0);
+    rootLayout->setSpacing(0);
+
+    auto* shell = new QWidget(this);
+    shell->setObjectName(QStringLiteral("settingsWorkbenchShell"));
+    auto* shellLayout = new QHBoxLayout(shell);
+    shellLayout->setContentsMargins(12, 12, 12, 12);
+    shellLayout->setSpacing(12);
+
+    shellLayout->addWidget(createWorkbenchNavigation(), 0);
+
+    auto* contentPanel = new QWidget(shell);
+    contentPanel->setObjectName(QStringLiteral("settingsContentPanel"));
+    auto* contentLayout = new QVBoxLayout(contentPanel);
+    contentLayout->setContentsMargins(12, 12, 12, 12);
+    contentLayout->setSpacing(10);
 
     auto* splitter = new QSplitter(Qt::Horizontal, this);
     splitter->addWidget(createPrinterPanel());
@@ -202,35 +217,72 @@ void SettingsWindow::buildUi()
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
     splitter->setSizes({260, 1040});
-    rootLayout->addWidget(splitter, 1);
+    contentLayout->addWidget(createOverviewPanel());
+    contentLayout->addWidget(splitter, 1);
 
     auto* buttonLayout = new QHBoxLayout;
     auto* saveButton = new QPushButton(QString::fromUtf8("保存"));
     auto* applyButton = new QPushButton(QString::fromUtf8("应用但不保存"));
     auto* refreshButton = new QPushButton(QString::fromUtf8("刷新预览"));
-    auto* openDesignerButton = new QPushButton(QString::fromUtf8("模板设计器"));
     auto* closeButton = new QPushButton(QString::fromUtf8("关闭"));
 
-    auto* openPaperSpecManagerButton = new QPushButton(QString::fromUtf8("纸张规格"));
-    auto* openFieldPresetManagerButton = new QPushButton(QString::fromUtf8("字段预设"));
-
     saveButton->setObjectName(QStringLiteral("saveSettingsButton"));
-    openDesignerButton->setObjectName(QStringLiteral("openTemplateDesignerButton"));
-    openPaperSpecManagerButton->setObjectName(QStringLiteral("openPaperSpecManagerButton"));
-    openFieldPresetManagerButton->setObjectName(QStringLiteral("openFieldPresetManagerButton"));
+    saveButton->setProperty("buttonRole", QStringLiteral("primary"));
     buttonLayout->addWidget(saveButton);
     buttonLayout->addWidget(applyButton);
     buttonLayout->addWidget(refreshButton);
-    buttonLayout->addWidget(openDesignerButton);
-    buttonLayout->addWidget(openPaperSpecManagerButton);
-    buttonLayout->addWidget(openFieldPresetManagerButton);
     buttonLayout->addStretch();
     buttonLayout->addWidget(closeButton);
-    rootLayout->addLayout(buttonLayout);
+    contentLayout->addLayout(buttonLayout);
+
+    shellLayout->addWidget(contentPanel, 1);
+    rootLayout->addWidget(shell, 1);
 
     connect(saveButton, &QPushButton::clicked, this, [this] { saveSettings(); });
     connect(applyButton, &QPushButton::clicked, this, [this] { applyWithoutSaving(); });
     connect(refreshButton, &QPushButton::clicked, this, [this] { refreshPreviewOnly(); });
+    connect(closeButton, &QPushButton::clicked, this, [this] { close(); });
+}
+
+QWidget* SettingsWindow::createWorkbenchNavigation()
+{
+    auto* panel = new QWidget(this);
+    panel->setObjectName(QStringLiteral("settingsNavigationRail"));
+    panel->setFixedWidth(196);
+    auto* layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(14, 14, 14, 14);
+    layout->setSpacing(8);
+
+    auto* titleLabel = new QLabel(QStringLiteral("sleekpr"), panel);
+    titleLabel->setObjectName(QStringLiteral("settingsBrandTitle"));
+    auto* subtitleLabel = new QLabel(QString::fromUtf8("本地打印工作台"), panel);
+    subtitleLabel->setObjectName(QStringLiteral("settingsBrandSubtitle"));
+    auto* hintLabel = new QLabel(QString::fromUtf8("服务运行中 · 37122"), panel);
+    hintLabel->setObjectName(QStringLiteral("settingsNavigationHint"));
+
+    auto* overviewButton = new QPushButton(QString::fromUtf8("服务概览"), panel);
+    overviewButton->setEnabled(false);
+    overviewButton->setProperty("buttonRole", QStringLiteral("nav"));
+    auto* openDesignerButton = new QPushButton(QString::fromUtf8("模板设计器"), panel);
+    openDesignerButton->setObjectName(QStringLiteral("openTemplateDesignerButton"));
+    openDesignerButton->setProperty("buttonRole", QStringLiteral("primary"));
+    auto* openPaperSpecManagerButton = new QPushButton(QString::fromUtf8("纸张规格"), panel);
+    openPaperSpecManagerButton->setObjectName(QStringLiteral("openPaperSpecManagerButton"));
+    openPaperSpecManagerButton->setProperty("buttonRole", QStringLiteral("nav"));
+    auto* openFieldPresetManagerButton = new QPushButton(QString::fromUtf8("字段预设"), panel);
+    openFieldPresetManagerButton->setObjectName(QStringLiteral("openFieldPresetManagerButton"));
+    openFieldPresetManagerButton->setProperty("buttonRole", QStringLiteral("nav"));
+
+    layout->addWidget(titleLabel);
+    layout->addWidget(subtitleLabel);
+    layout->addSpacing(10);
+    layout->addWidget(overviewButton);
+    layout->addWidget(openDesignerButton);
+    layout->addWidget(openPaperSpecManagerButton);
+    layout->addWidget(openFieldPresetManagerButton);
+    layout->addStretch(1);
+    layout->addWidget(hintLabel);
+
     connect(openDesignerButton, &QPushButton::clicked, this, [this] {
         if (m_openTemplateDesigner) {
             m_openTemplateDesigner();
@@ -246,7 +298,59 @@ void SettingsWindow::buildUi()
             m_openFieldPresetManager();
         }
     });
-    connect(closeButton, &QPushButton::clicked, this, [this] { close(); });
+
+    return panel;
+}
+
+QWidget* SettingsWindow::createOverviewPanel()
+{
+    auto* panel = new QWidget(this);
+    panel->setObjectName(QStringLiteral("settingsOverviewPanel"));
+    auto* layout = new QGridLayout(panel);
+    layout->setContentsMargins(12, 10, 12, 10);
+    layout->setHorizontalSpacing(10);
+    layout->setVerticalSpacing(8);
+
+    auto* titleLabel = new QLabel(QString::fromUtf8("服务概览"), panel);
+    titleLabel->setObjectName(QStringLiteral("settingsOverviewTitle"));
+    m_serviceStatusLabel = new QLabel(panel);
+    m_serviceStatusLabel->setObjectName(QStringLiteral("settingsServiceStatusLabel"));
+    m_printerStatusLabel = new QLabel(panel);
+    m_printerStatusLabel->setObjectName(QStringLiteral("settingsPrinterStatusLabel"));
+    m_templateStatusLabel = new QLabel(panel);
+    m_templateStatusLabel->setObjectName(QStringLiteral("settingsTemplateStatusLabel"));
+
+    layout->addWidget(titleLabel, 0, 0, 1, 3);
+    layout->addWidget(m_serviceStatusLabel, 1, 0);
+    layout->addWidget(m_printerStatusLabel, 1, 1);
+    layout->addWidget(m_templateStatusLabel, 1, 2);
+    layout->setColumnStretch(0, 1);
+    layout->setColumnStretch(1, 1);
+    layout->setColumnStretch(2, 1);
+
+    refreshOverview();
+    return panel;
+}
+
+void SettingsWindow::refreshOverview()
+{
+    if (m_serviceStatusLabel != nullptr) {
+        m_serviceStatusLabel->setText(QString::fromUtf8("本地服务：运行中 · 127.0.0.1:37122"));
+    }
+
+    if (m_printerStatusLabel != nullptr) {
+        const auto printerName = m_settings.defaultPrinter.trimmed().isEmpty()
+            ? QString::fromUtf8("系统默认打印机")
+            : m_settings.defaultPrinter.trimmed();
+        m_printerStatusLabel->setText(QString::fromUtf8("默认打印机：%1").arg(printerName));
+    }
+
+    if (m_templateStatusLabel != nullptr) {
+        const auto templateName = (m_templateCombo != nullptr && m_templateCombo->currentIndex() >= 0)
+            ? m_templateCombo->currentText()
+            : QString::fromUtf8("默认标签");
+        m_templateStatusLabel->setText(QString::fromUtf8("当前模板：%1").arg(templateName));
+    }
 }
 
 QWidget* SettingsWindow::createPrinterPanel()
@@ -298,11 +402,13 @@ QWidget* SettingsWindow::createPrinterPanel()
     connect(refreshPrintersButton, &QPushButton::clicked, this, [this] {
         collectGeneralSettings();
         populatePrinters();
+        refreshOverview();
     });
     connect(m_templateCombo, &QComboBox::currentIndexChanged, this, [this] {
         m_currentTemplateOverrideKey = m_templateCombo->currentData().toString();
         m_currentElementKey.clear();
         renderPreview(m_settings);
+        refreshOverview();
     });
 
     return panel;
@@ -667,6 +773,7 @@ void SettingsWindow::applyWithoutSaving()
 {
     collectGeneralSettings();
     renderPreview(m_settings);
+    refreshOverview();
     if (m_onSettingsApplied) {
         m_onSettingsApplied(m_settings);
     }
@@ -682,6 +789,7 @@ void SettingsWindow::saveSettings()
     }
 
     renderPreview(m_settings);
+    refreshOverview();
     if (m_onSettingsApplied) {
         m_onSettingsApplied(m_settings);
     }

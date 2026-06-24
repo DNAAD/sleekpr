@@ -73,6 +73,11 @@ struct TemplateElement
 
     // 文本超出区域时是否使用省略号。
     bool ellipsis = false;
+
+    // 文本自适应字号只对固定文本和绑定字段生效，放在末尾避免影响旧聚合初始化顺序。
+    bool autoFitFont = false;
+    double autoFitMinFontSizePt = 3.0;
+    double autoFitMaxFontSizePt = 12.0;
 };
 
 } // 命名空间 sleekpr::core

@@ -113,56 +113,45 @@ NativeDrawCommand NativeLabelDrawingPlanner::text(
     int maxLines,
     bool ellipsis)
 {
-    return NativeDrawCommand{
-        NativeDrawCommandType::Text,
-        x,
-        y,
-        width,
-        height,
-        value,
-        fontSizePt,
-        bold,
-        rotationDegrees,
-        maxLines,
-        ellipsis,
-        elementKey,
-    };
+    NativeDrawCommand command;
+    command.type = NativeDrawCommandType::Text;
+    command.x = x;
+    command.y = y;
+    command.width = width;
+    command.height = height;
+    command.text = value;
+    command.fontSizePt = fontSizePt;
+    command.bold = bold;
+    command.rotationDegrees = rotationDegrees;
+    command.maxLines = maxLines;
+    command.ellipsis = ellipsis;
+    command.elementKey = elementKey;
+    return command;
 }
 
 NativeDrawCommand NativeLabelDrawingPlanner::qrCode(double x, double y, double size, const QString& payload, const QString& elementKey)
 {
-    return NativeDrawCommand{
-        NativeDrawCommandType::QrCode,
-        x,
-        y,
-        size,
-        size,
-        payload,
-        0.0,
-        false,
-        0.0,
-        0,
-        false,
-        elementKey,
-    };
+    NativeDrawCommand command;
+    command.type = NativeDrawCommandType::QrCode;
+    command.x = x;
+    command.y = y;
+    command.width = size;
+    command.height = size;
+    command.text = payload;
+    command.elementKey = elementKey;
+    return command;
 }
 
 NativeDrawCommand NativeLabelDrawingPlanner::rectangle(double x, double y, double width, double height, const QString& elementKey)
 {
-    return NativeDrawCommand{
-        NativeDrawCommandType::Rectangle,
-        x,
-        y,
-        width,
-        height,
-        QString(),
-        0.0,
-        false,
-        0.0,
-        0,
-        false,
-        elementKey,
-    };
+    NativeDrawCommand command;
+    command.type = NativeDrawCommandType::Rectangle;
+    command.x = x;
+    command.y = y;
+    command.width = width;
+    command.height = height;
+    command.elementKey = elementKey;
+    return command;
 }
 
 void NativeLabelDrawingPlanner::addWeightCommands(QList<NativeDrawCommand>& commands, const QString& value, double x, double y, const QString& keyPrefix)
@@ -333,7 +322,7 @@ QList<NativeDrawCommand> NativeLabelDrawingPlanner::appendTemplateElements(
         switch (element.type) {
         case TemplateElementType::FixedText: {
             const auto value = interpolateTemplateText(element.text);
-            result.append(text(
+            auto command = text(
                 x,
                 y,
                 element.width,
@@ -344,12 +333,16 @@ QList<NativeDrawCommand> NativeLabelDrawingPlanner::appendTemplateElements(
                 elementKey,
                 element.rotationDegrees,
                 element.maxLines,
-                element.ellipsis));
+                element.ellipsis);
+            command.autoFitFont = element.autoFitFont;
+            command.autoFitMinFontSizePt = element.autoFitMinFontSizePt;
+            command.autoFitMaxFontSizePt = element.autoFitMaxFontSizePt;
+            result.append(command);
             break;
         }
-        case TemplateElementType::BoundField:
+        case TemplateElementType::BoundField: {
             // 绑定字段只读取渲染计划中的展示文本，避免自定义模板元素反向依赖原始业务对象。
-            result.append(text(
+            auto command = text(
                 x,
                 y,
                 element.width,
@@ -360,44 +353,41 @@ QList<NativeDrawCommand> NativeLabelDrawingPlanner::appendTemplateElements(
                 elementKey,
                 element.rotationDegrees,
                 element.maxLines,
-                element.ellipsis));
+                element.ellipsis);
+            command.autoFitFont = element.autoFitFont;
+            command.autoFitMinFontSizePt = element.autoFitMinFontSizePt;
+            command.autoFitMaxFontSizePt = element.autoFitMaxFontSizePt;
+            result.append(command);
             break;
+        }
         case TemplateElementType::QrCode: {
             const auto payload = element.payload.trimmed().isEmpty()
                 ? valueForField(labelPlan, element.fieldKey)
                 : interpolateTemplateText(element.payload);
-            result.append(NativeDrawCommand{
-                NativeDrawCommandType::QrCode,
-                x,
-                y,
-                element.width,
-                element.height,
-                payload,
-                0.0,
-                false,
-                element.rotationDegrees,
-                0,
-                false,
-                elementKey,
-            });
+            NativeDrawCommand command;
+            command.type = NativeDrawCommandType::QrCode;
+            command.x = x;
+            command.y = y;
+            command.width = element.width;
+            command.height = element.height;
+            command.text = payload;
+            command.rotationDegrees = element.rotationDegrees;
+            command.elementKey = elementKey;
+            result.append(command);
             break;
         }
-        case TemplateElementType::Rectangle:
-            result.append(NativeDrawCommand{
-                NativeDrawCommandType::Rectangle,
-                x,
-                y,
-                element.width,
-                element.height,
-                QString(),
-                0.0,
-                false,
-                element.rotationDegrees,
-                0,
-                false,
-                elementKey,
-            });
+        case TemplateElementType::Rectangle: {
+            NativeDrawCommand command;
+            command.type = NativeDrawCommandType::Rectangle;
+            command.x = x;
+            command.y = y;
+            command.width = element.width;
+            command.height = element.height;
+            command.rotationDegrees = element.rotationDegrees;
+            command.elementKey = elementKey;
+            result.append(command);
             break;
+        }
         }
     }
 

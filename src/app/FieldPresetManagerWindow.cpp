@@ -102,8 +102,10 @@ void FieldPresetManagerWindow::buildUi()
     addButton->setObjectName(QStringLiteral("addFieldPresetButton"));
     m_saveButton = new QPushButton(QString::fromUtf8("保存"), this);
     m_saveButton->setObjectName(QStringLiteral("saveFieldPresetButton"));
+    m_saveButton->setProperty("buttonRole", QStringLiteral("primary"));
     m_deleteButton = new QPushButton(QString::fromUtf8("删除"), this);
     m_deleteButton->setObjectName(QStringLiteral("deleteFieldPresetButton"));
+    m_deleteButton->setProperty("buttonRole", QStringLiteral("danger"));
     auto* reloadButton = new QPushButton(QString::fromUtf8("重新加载"), this);
     reloadButton->setObjectName(QStringLiteral("reloadFieldPresetsButton"));
     auto* closeButton = new QPushButton(QString::fromUtf8("关闭"), this);

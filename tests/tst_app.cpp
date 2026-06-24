@@ -1,17 +1,22 @@
 #include <QtTest/QtTest>
 
+#include <QAbstractItemView>
+#include <QAction>
 #include <QApplication>
 #include <QByteArray>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFile>
+#include <QFocusEvent>
 #include <QImage>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSplitter>
 #include <QSpinBox>
+#include <QTabWidget>
 #include <QTemporaryDir>
 
 #include <algorithm>
@@ -19,6 +24,7 @@
 
 #include "sleekpr/app/TemplateDragCoordinateMapper.h"
 #include "sleekpr/app/TemplateElementHitTester.h"
+#include "sleekpr/app/AppTheme.h"
 #include "sleekpr/app/FieldPresetManagerWindow.h"
 #include "sleekpr/app/PaperSpecManagerWindow.h"
 #include "sleekpr/app/TemplatePreviewLabel.h"
@@ -84,8 +90,10 @@ private slots:
     void settingsWindowShowsPreviewOnlyWithoutElementEditor();
     void settingsWindowLoadsTemplateLibraryDocuments();
     void settingsWindowEditsAllowedOrigins();
+    void settingsWindowShowsWorkbenchNavigationAndOverview();
     void templateElementHitTesterSelectsSmallestTopmostElement();
     void templateElementHitTesterReturnsArrayGridElementIdFromCellCommand();
+    void templateElementHitTesterReturnsTableElementIdFromRowCommand();
     void templateDesignerWindowAddsLayer();
     void templateDesignerWindowPreservesLegacyDynamicElements();
     void templateDesignerWindowAddsFixedTextToCurrentLayer();
@@ -116,6 +124,17 @@ private slots:
     void templateDesignerWindowCalculatesDeviceScaleFromMeasuredSize();
     void templateDesignerWindowSelectsPaperSpecFromStore();
     void templateDesignerWindowShowsTemplateValidationIssues();
+    void templateDesignerWindowUsesWorkbenchShell();
+    void templateDesignerWindowUsesProfessionalEditorLayout();
+    void templateDesignerWindowSwitchesInspectorTabWhenCanvasElementSelected();
+    void templateDesignerWindowElementListSupportsRenameMenuAndDragSort();
+    void templateDesignerWindowAutoAppliesElementAndTableProperties();
+    void templateDesignerWindowAutoAppliesTextAutoFitFontProperties();
+    void templateDesignerWindowAutoApplyKeepsElementListStable();
+    void templateDesignerWindowSkipsNoopPropertyApply();
+    void templateDesignerWindowAppliesPendingTextOnFocusOut();
+    void templateDesignerWindowShowsSampleJsonErrorNearEditor();
+    void templateDesignerWindowToolbarExposesEditingActionsAndZoom();
     void paperSpecManagerWindowSavesAndDeletesSpecs();
     void fieldPresetManagerWindowSavesAndDeletesPresets();
     void settingsWindowHasPaperSpecManagerEntry();
@@ -124,6 +143,7 @@ private slots:
     void templateDesignerWindowHasFieldPresetManagerEntry();
     void applicationRoutesPreviewOnlyThroughSettingsWindow();
     void settingsWindowHasTemplateDesignerEntry();
+    void appThemeDefinesWorkbenchStyle();
 };
 
 void AppTests::openingAndSavingSettingsDoesNotCreateImplicitElementOverride()
@@ -350,6 +370,42 @@ void AppTests::settingsWindowEditsAllowedOrigins()
     }));
 }
 
+void AppTests::settingsWindowShowsWorkbenchNavigationAndOverview()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const auto settingsPath = dir.filePath("settings.json");
+    PrintClientSettings settings;
+    settings.defaultPrinter = QStringLiteral("Office Label Printer");
+    QVERIFY(FileSettingsStore(settingsPath).save(settings));
+
+    SettingsWindow window(settingsPath, nullptr);
+
+    auto* shell = window.findChild<QWidget*>(QStringLiteral("settingsWorkbenchShell"));
+    auto* navigationRail = window.findChild<QWidget*>(QStringLiteral("settingsNavigationRail"));
+    auto* overviewPanel = window.findChild<QWidget*>(QStringLiteral("settingsOverviewPanel"));
+    auto* serviceStatusLabel = window.findChild<QLabel*>(QStringLiteral("settingsServiceStatusLabel"));
+    auto* printerStatusLabel = window.findChild<QLabel*>(QStringLiteral("settingsPrinterStatusLabel"));
+    auto* templateStatusLabel = window.findChild<QLabel*>(QStringLiteral("settingsTemplateStatusLabel"));
+    auto* designerButton = window.findChild<QPushButton*>(QStringLiteral("openTemplateDesignerButton"));
+    auto* paperSpecButton = window.findChild<QPushButton*>(QStringLiteral("openPaperSpecManagerButton"));
+    auto* fieldPresetButton = window.findChild<QPushButton*>(QStringLiteral("openFieldPresetManagerButton"));
+
+    QVERIFY(shell != nullptr);
+    QVERIFY(navigationRail != nullptr);
+    QVERIFY(overviewPanel != nullptr);
+    QVERIFY(serviceStatusLabel != nullptr);
+    QVERIFY(printerStatusLabel != nullptr);
+    QVERIFY(templateStatusLabel != nullptr);
+    QVERIFY(designerButton != nullptr);
+    QVERIFY(paperSpecButton != nullptr);
+    QVERIFY(fieldPresetButton != nullptr);
+    QVERIFY(serviceStatusLabel->text().contains(QStringLiteral("37122")));
+    QVERIFY(printerStatusLabel->text().contains(QStringLiteral("Office Label Printer")));
+    QVERIFY(templateStatusLabel->text().contains(QString::fromUtf8("默认标签")));
+}
+
 void AppTests::templateElementHitTesterSelectsSmallestTopmostElement()
 {
     QList<NativeDrawCommand> commands;
@@ -385,6 +441,30 @@ void AppTests::templateElementHitTesterReturnsArrayGridElementIdFromCellCommand(
 
     QVERIFY(hit.has_value());
     QCOMPARE(hit.value(), QStringLiteral("headerGrid"));
+}
+
+void AppTests::templateElementHitTesterReturnsTableElementIdFromRowCommand()
+{
+    QList<NativeDrawCommand> commands;
+    commands.append(NativeDrawCommand{
+        NativeDrawCommandType::Rectangle,
+        5.0,
+        10.0,
+        20.0,
+        5.0,
+        QString(),
+        0.0,
+        false,
+        0.0,
+        0,
+        false,
+        QStringLiteral("saleTable.row0.productName.border"),
+    });
+
+    const auto hit = TemplateElementHitTester().hitTest(commands, QSizeF(80.0, 30.0), QSize(800, 300), QPoint(80, 120));
+
+    QVERIFY(hit.has_value());
+    QCOMPARE(hit.value(), QStringLiteral("saleTable"));
 }
 
 void AppTests::templateDesignerWindowAddsLayer()
@@ -1607,6 +1687,418 @@ void AppTests::templateDesignerWindowShowsTemplateValidationIssues()
     QVERIFY(statusLabel->text().contains(QStringLiteral("unknownField")));
 }
 
+void AppTests::templateDesignerWindowUsesWorkbenchShell()
+{
+    TemplateDesignerWindow window(PrintClientSettings{}, nullptr);
+
+    auto* shell = window.findChild<QWidget*>(QStringLiteral("designerWorkbenchShell"));
+    auto* topToolbar = window.findChild<QWidget*>(QStringLiteral("designerTopToolbar"));
+    auto* layerPanel = window.findChild<QWidget*>(QStringLiteral("designerLayerPanel"));
+    auto* workspacePanel = window.findChild<QWidget*>(QStringLiteral("designerWorkspacePanel"));
+    auto* inspectorPanel = window.findChild<QWidget*>(QStringLiteral("designerInspectorPanel"));
+    TemplatePreviewLabel* previewLabel = nullptr;
+    for (auto* label : window.findChildren<QLabel*>(QStringLiteral("designerPreviewLabel"))) {
+        previewLabel = dynamic_cast<TemplatePreviewLabel*>(label);
+        if (previewLabel != nullptr) {
+            break;
+        }
+    }
+    auto* elementList = window.findChild<QListWidget*>(QStringLiteral("templateElementList"));
+    auto* prePrintButton = window.findChild<QPushButton*>(QStringLiteral("prePrintCurrentTemplateButton"));
+
+    QVERIFY(shell != nullptr);
+    QVERIFY(topToolbar != nullptr);
+    QVERIFY(layerPanel != nullptr);
+    QVERIFY(workspacePanel != nullptr);
+    QVERIFY(inspectorPanel != nullptr);
+    QVERIFY(previewLabel != nullptr);
+    QVERIFY(elementList != nullptr);
+    QVERIFY(prePrintButton != nullptr);
+    QVERIFY(workspacePanel->isAncestorOf(previewLabel));
+    QVERIFY(inspectorPanel->isAncestorOf(elementList));
+    QVERIFY(topToolbar->isAncestorOf(prePrintButton));
+}
+
+void AppTests::templateDesignerWindowUsesProfessionalEditorLayout()
+{
+    TemplateDesignerWindow window(PrintClientSettings{}, nullptr);
+
+    auto* splitter = window.findChild<QSplitter*>(QStringLiteral("designerMainSplitter"));
+    auto* leftResourceSplitter = window.findChild<QSplitter*>(QStringLiteral("designerLeftResourceSplitter"));
+    auto* inspectorTabs = window.findChild<QTabWidget*>(QStringLiteral("designerInspectorTabs"));
+    auto* layerSection = window.findChild<QWidget*>(QStringLiteral("designerLayerSection"));
+    auto* librarySection = window.findChild<QWidget*>(QStringLiteral("designerLibrarySection"));
+    auto* elementTab = window.findChild<QWidget*>(QStringLiteral("designerElementInspectorTab"));
+    auto* tableTab = window.findChild<QWidget*>(QStringLiteral("designerTableInspectorTab"));
+    auto* arrayGridTab = window.findChild<QWidget*>(QStringLiteral("designerArrayGridInspectorTab"));
+    auto* deviceTab = window.findChild<QWidget*>(QStringLiteral("designerDeviceInspectorTab"));
+    auto* layerList = window.findChild<QListWidget*>(QStringLiteral("templateLayerList"));
+    auto* libraryList = window.findChild<QListWidget*>(QStringLiteral("templateLibraryList"));
+    auto* elementList = window.findChild<QListWidget*>(QStringLiteral("templateElementList"));
+    auto* tableColumnsEdit = window.findChild<QLineEdit*>(QStringLiteral("tableColumnsEdit"));
+    auto* arrayGridTemplateEdit = window.findChild<QPlainTextEdit*>(QStringLiteral("arrayGridCellTemplateEdit"));
+    auto* deviceProfileEdit = window.findChild<QLineEdit*>(QStringLiteral("deviceProfilePrinterEdit"));
+
+    QVERIFY(splitter != nullptr);
+    QVERIFY(leftResourceSplitter != nullptr);
+    QVERIFY(inspectorTabs != nullptr);
+    QVERIFY(layerSection != nullptr);
+    QVERIFY(librarySection != nullptr);
+    QVERIFY(elementTab != nullptr);
+    QVERIFY(tableTab != nullptr);
+    QVERIFY(arrayGridTab != nullptr);
+    QVERIFY(deviceTab != nullptr);
+    QCOMPARE(splitter->orientation(), Qt::Horizontal);
+    QCOMPARE(leftResourceSplitter->orientation(), Qt::Vertical);
+    QCOMPARE(inspectorTabs->count(), 4);
+    QVERIFY(inspectorTabs->tabText(0).contains(QString::fromUtf8("元素")));
+    QVERIFY(inspectorTabs->tabText(1).contains(QString::fromUtf8("表格")));
+    QVERIFY(inspectorTabs->tabText(2).contains(QString::fromUtf8("数组")));
+    QVERIFY(inspectorTabs->tabText(3).contains(QString::fromUtf8("设备")));
+    QVERIFY(layerSection->isAncestorOf(layerList));
+    QVERIFY(librarySection->isAncestorOf(libraryList));
+    QVERIFY(elementTab->isAncestorOf(elementList));
+    QVERIFY(tableTab->isAncestorOf(tableColumnsEdit));
+    QVERIFY(arrayGridTab->isAncestorOf(arrayGridTemplateEdit));
+    QVERIFY(deviceTab->isAncestorOf(deviceProfileEdit));
+}
+
+void AppTests::templateDesignerWindowSwitchesInspectorTabWhenCanvasElementSelected()
+{
+    TemplateDesignerWindow window(PrintClientSettings{}, nullptr);
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* addTableButton = window.findChild<QPushButton*>(QStringLiteral("designerAddTableButton"));
+    auto* addArrayGridButton = window.findChild<QPushButton*>(QStringLiteral("designerAddArrayGridButton"));
+    auto* inspectorTabs = window.findChild<QTabWidget*>(QStringLiteral("designerInspectorTabs"));
+    auto* elementTab = window.findChild<QWidget*>(QStringLiteral("designerElementInspectorTab"));
+    auto* tableTab = window.findChild<QWidget*>(QStringLiteral("designerTableInspectorTab"));
+    auto* arrayGridTab = window.findChild<QWidget*>(QStringLiteral("designerArrayGridInspectorTab"));
+    auto* sampleDataEdit = window.findChild<QPlainTextEdit*>(QStringLiteral("templateSampleDataEdit"));
+    TemplatePreviewLabel* previewLabel = nullptr;
+    for (auto* label : window.findChildren<QLabel*>(QStringLiteral("designerPreviewLabel"))) {
+        previewLabel = dynamic_cast<TemplatePreviewLabel*>(label);
+        if (previewLabel != nullptr) {
+            break;
+        }
+    }
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(addTableButton != nullptr);
+    QVERIFY(addArrayGridButton != nullptr);
+    QVERIFY(inspectorTabs != nullptr);
+    QVERIFY(elementTab != nullptr);
+    QVERIFY(tableTab != nullptr);
+    QVERIFY(arrayGridTab != nullptr);
+    QVERIFY(sampleDataEdit != nullptr);
+    QVERIFY(previewLabel != nullptr);
+    QVERIFY(!previewLabel->pixmap().isNull());
+
+    addLayerButton->click();
+    addArrayGridButton->click();
+    addTableButton->click();
+    sampleDataEdit->setPlainText(QString::fromUtf8(R"json({
+  "header_items": [
+    {"text": "A", "value": "1"},
+    {"text": "B", "value": "2"},
+    {"text": "C", "value": "3"}
+  ],
+  "items": [
+    {"productName": "Ring", "weight": "1.2"}
+  ]
+})json"));
+
+    const auto pointAtMm = [previewLabel](double xMm, double yMm) {
+        const auto origin = previewLabel->printableImageOriginPx();
+        const auto imageSize = previewLabel->printableImageSizePx();
+        return QPoint(
+            origin.x() + static_cast<int>(std::round(xMm / 80.0 * imageSize.width())),
+            origin.y() + static_cast<int>(std::round(yMm / 30.0 * imageSize.height())));
+    };
+
+    inspectorTabs->setCurrentWidget(elementTab);
+    QTest::mousePress(previewLabel, Qt::LeftButton, Qt::NoModifier, pointAtMm(10.0, 6.0));
+    QTest::mouseRelease(previewLabel, Qt::LeftButton, Qt::NoModifier, pointAtMm(10.0, 6.0));
+    QCOMPARE(inspectorTabs->currentWidget(), arrayGridTab);
+
+    inspectorTabs->setCurrentWidget(elementTab);
+    QTest::mousePress(previewLabel, Qt::LeftButton, Qt::NoModifier, pointAtMm(60.0, 12.0));
+    QTest::mouseRelease(previewLabel, Qt::LeftButton, Qt::NoModifier, pointAtMm(60.0, 12.0));
+    QCOMPARE(inspectorTabs->currentWidget(), tableTab);
+}
+
+void AppTests::templateDesignerWindowElementListSupportsRenameMenuAndDragSort()
+{
+    PrintClientSettings changedSettings;
+    TemplateDesignerWindow window(PrintClientSettings{}, [&changedSettings](const PrintClientSettings& nextSettings) {
+        changedSettings = nextSettings;
+    });
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* addFixedTextButton = window.findChild<QPushButton*>(QStringLiteral("designerAddFixedTextButton"));
+    auto* addQrCodeButton = window.findChild<QPushButton*>(QStringLiteral("designerAddQrCodeButton"));
+    auto* elementList = window.findChild<QListWidget*>(QStringLiteral("templateElementList"));
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(addFixedTextButton != nullptr);
+    QVERIFY(addQrCodeButton != nullptr);
+    QVERIFY(elementList != nullptr);
+
+    addLayerButton->click();
+    addFixedTextButton->click();
+    addQrCodeButton->click();
+
+    QCOMPARE(elementList->editTriggers() & QAbstractItemView::DoubleClicked, QAbstractItemView::DoubleClicked);
+    QCOMPARE(elementList->dragDropMode(), QAbstractItemView::InternalMove);
+    QCOMPARE(elementList->defaultDropAction(), Qt::MoveAction);
+    QVERIFY(elementList->findChild<QAction*>(QStringLiteral("renameElementAction")) != nullptr);
+    QVERIFY(elementList->findChild<QAction*>(QStringLiteral("deleteElementAction")) != nullptr);
+    QVERIFY(elementList->findChild<QAction*>(QStringLiteral("moveElementUpAction")) != nullptr);
+    QVERIFY(elementList->findChild<QAction*>(QStringLiteral("moveElementDownAction")) != nullptr);
+
+    elementList->setCurrentRow(1);
+    elementList->currentItem()->setText(QString::fromUtf8("二维码载荷"));
+    QCoreApplication::processEvents();
+
+    auto document = changedSettings.templateDocuments.value(QStringLiteral("default"));
+    QVERIFY(!document.layers.isEmpty());
+    QCOMPARE(document.layers.last().elements.size(), 2);
+    QCOMPARE(document.layers.last().elements[1].displayName, QString::fromUtf8("二维码载荷"));
+
+    QVERIFY(elementList->model()->moveRow(QModelIndex(), 1, QModelIndex(), 0));
+    QCoreApplication::processEvents();
+
+    document = changedSettings.templateDocuments.value(QStringLiteral("default"));
+    QCOMPARE(document.layers.last().elements[0].displayName, QString::fromUtf8("二维码载荷"));
+    QCOMPARE(document.layers.last().elements[0].zIndex, 0);
+    QCOMPARE(document.layers.last().elements[1].zIndex, 1);
+}
+
+void AppTests::templateDesignerWindowAutoAppliesElementAndTableProperties()
+{
+    PrintClientSettings changedSettings;
+    TemplateDesignerWindow window(PrintClientSettings{}, [&changedSettings](const PrintClientSettings& nextSettings) {
+        changedSettings = nextSettings;
+    });
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* addFixedTextButton = window.findChild<QPushButton*>(QStringLiteral("designerAddFixedTextButton"));
+    auto* addTableButton = window.findChild<QPushButton*>(QStringLiteral("designerAddTableButton"));
+    auto* valueEdit = window.findChild<QPlainTextEdit*>(QStringLiteral("elementValueEdit"));
+    auto* xSpin = window.findChild<QDoubleSpinBox*>(QStringLiteral("elementXSpin"));
+    auto* tableDisplayNameEdit = window.findChild<QLineEdit*>(QStringLiteral("tableDisplayNameEdit"));
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(addFixedTextButton != nullptr);
+    QVERIFY(addTableButton != nullptr);
+    QVERIFY(valueEdit != nullptr);
+    QVERIFY(xSpin != nullptr);
+    QVERIFY(tableDisplayNameEdit != nullptr);
+
+    addLayerButton->click();
+    addFixedTextButton->click();
+    valueEdit->setPlainText(QString::fromUtf8("自动应用文本"));
+    xSpin->setValue(18.5);
+
+    QTRY_COMPARE(
+        changedSettings.templateDocuments.value(QStringLiteral("default")).layers.last().elements.first().text,
+        QString::fromUtf8("自动应用文本"));
+    QCOMPARE(changedSettings.templateDocuments.value(QStringLiteral("default")).layers.last().elements.first().x, 18.5);
+
+    addTableButton->click();
+    tableDisplayNameEdit->setText(QString::fromUtf8("自动应用表格"));
+
+    QTRY_COMPARE(
+        changedSettings.templateDocuments.value(QStringLiteral("default")).layers.last().tables.first().displayName,
+        QString::fromUtf8("自动应用表格"));
+}
+
+void AppTests::templateDesignerWindowAutoAppliesTextAutoFitFontProperties()
+{
+    PrintClientSettings changedSettings;
+    TemplateDesignerWindow window(PrintClientSettings{}, [&changedSettings](const PrintClientSettings& nextSettings) {
+        changedSettings = nextSettings;
+    });
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* addFixedTextButton = window.findChild<QPushButton*>(QStringLiteral("designerAddFixedTextButton"));
+    auto* autoFitCheck = window.findChild<QCheckBox*>(QStringLiteral("elementAutoFitFontCheck"));
+    auto* minSpin = window.findChild<QDoubleSpinBox*>(QStringLiteral("elementAutoFitMinFontSizeSpin"));
+    auto* maxSpin = window.findChild<QDoubleSpinBox*>(QStringLiteral("elementAutoFitMaxFontSizeSpin"));
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(addFixedTextButton != nullptr);
+    QVERIFY(autoFitCheck != nullptr);
+    QVERIFY(minSpin != nullptr);
+    QVERIFY(maxSpin != nullptr);
+
+    addLayerButton->click();
+    addFixedTextButton->click();
+    autoFitCheck->setChecked(true);
+    minSpin->setValue(3.5);
+    maxSpin->setValue(12.5);
+
+    QTRY_VERIFY(changedSettings.templateDocuments.value(QStringLiteral("default")).layers.last().elements.first().autoFitFont);
+    const auto element = changedSettings.templateDocuments.value(QStringLiteral("default")).layers.last().elements.first();
+    QCOMPARE(element.autoFitMinFontSizePt, 3.5);
+    QCOMPARE(element.autoFitMaxFontSizePt, 12.5);
+}
+
+void AppTests::templateDesignerWindowAutoApplyKeepsElementListStable()
+{
+    PrintClientSettings changedSettings;
+    TemplateDesignerWindow window(PrintClientSettings{}, [&changedSettings](const PrintClientSettings& nextSettings) {
+        changedSettings = nextSettings;
+    });
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* addFixedTextButton = window.findChild<QPushButton*>(QStringLiteral("designerAddFixedTextButton"));
+    auto* valueEdit = window.findChild<QPlainTextEdit*>(QStringLiteral("elementValueEdit"));
+    auto* elementList = window.findChild<QListWidget*>(QStringLiteral("templateElementList"));
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(addFixedTextButton != nullptr);
+    QVERIFY(valueEdit != nullptr);
+    QVERIFY(elementList != nullptr);
+
+    addLayerButton->click();
+    addFixedTextButton->click();
+    QCOMPARE(elementList->count(), 1);
+
+    QSignalSpy modelResetSpy(elementList->model(), &QAbstractItemModel::modelReset);
+    QSignalSpy rowsInsertedSpy(elementList->model(), &QAbstractItemModel::rowsInserted);
+    QSignalSpy rowsRemovedSpy(elementList->model(), &QAbstractItemModel::rowsRemoved);
+
+    valueEdit->setPlainText(QString::fromUtf8("轻量自动应用文本"));
+
+    QTRY_COMPARE(
+        changedSettings.templateDocuments.value(QStringLiteral("default")).layers.last().elements.first().text,
+        QString::fromUtf8("轻量自动应用文本"));
+    QCOMPARE(modelResetSpy.count(), 0);
+    QCOMPARE(rowsInsertedSpy.count(), 0);
+    QCOMPARE(rowsRemovedSpy.count(), 0);
+    QCOMPARE(elementList->count(), 1);
+}
+
+void AppTests::templateDesignerWindowSkipsNoopPropertyApply()
+{
+    int changeCount = 0;
+    TemplateDesignerWindow window(PrintClientSettings{}, [&changeCount](const PrintClientSettings&) {
+        ++changeCount;
+    });
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* addFixedTextButton = window.findChild<QPushButton*>(QStringLiteral("designerAddFixedTextButton"));
+    auto* applyButton = window.findChild<QPushButton*>(QStringLiteral("applyElementPropertiesButton"));
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(addFixedTextButton != nullptr);
+    QVERIFY(applyButton != nullptr);
+
+    addLayerButton->click();
+    addFixedTextButton->click();
+    changeCount = 0;
+
+    applyButton->click();
+    QCoreApplication::processEvents();
+
+    QCOMPARE(changeCount, 0);
+}
+
+void AppTests::templateDesignerWindowAppliesPendingTextOnFocusOut()
+{
+    PrintClientSettings changedSettings;
+    TemplateDesignerWindow window(PrintClientSettings{}, [&changedSettings](const PrintClientSettings& nextSettings) {
+        changedSettings = nextSettings;
+    });
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* addFixedTextButton = window.findChild<QPushButton*>(QStringLiteral("designerAddFixedTextButton"));
+    auto* valueEdit = window.findChild<QPlainTextEdit*>(QStringLiteral("elementValueEdit"));
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(addFixedTextButton != nullptr);
+    QVERIFY(valueEdit != nullptr);
+
+    addLayerButton->click();
+    addFixedTextButton->click();
+
+    valueEdit->setFocus();
+    QCoreApplication::processEvents();
+    valueEdit->setPlainText(QString::fromUtf8("失焦立即提交文本"));
+    QVERIFY(changedSettings.templateDocuments.value(QStringLiteral("default")).layers.last().elements.first().text
+        != QString::fromUtf8("失焦立即提交文本"));
+
+    QFocusEvent focusOut(QEvent::FocusOut);
+    QCoreApplication::sendEvent(valueEdit, &focusOut);
+    QCoreApplication::processEvents();
+
+    QCOMPARE(
+        changedSettings.templateDocuments.value(QStringLiteral("default")).layers.last().elements.first().text,
+        QString::fromUtf8("失焦立即提交文本"));
+}
+
+void AppTests::templateDesignerWindowShowsSampleJsonErrorNearEditor()
+{
+    TemplateDesignerWindow window(PrintClientSettings{}, nullptr);
+
+    auto* sampleDataEdit = window.findChild<QPlainTextEdit*>(QStringLiteral("templateSampleDataEdit"));
+    auto* errorLabel = window.findChild<QLabel*>(QStringLiteral("templateSampleDataErrorLabel"));
+    QVERIFY(sampleDataEdit != nullptr);
+    QVERIFY(errorLabel != nullptr);
+
+    sampleDataEdit->setPlainText(QString::fromUtf8("{\n  \"product_name\": \"A\",\n}"));
+    QCoreApplication::processEvents();
+
+    QVERIFY(!errorLabel->isHidden());
+    QVERIFY(errorLabel->text().contains(QString::fromUtf8("模拟数据 JSON 解析失败")));
+    QVERIFY(errorLabel->text().contains(QString::fromUtf8("第")));
+    QVERIFY(errorLabel->text().contains(QString::fromUtf8("行")));
+    QVERIFY(errorLabel->text().contains(QString::fromUtf8("列")));
+
+    sampleDataEdit->setPlainText(QString::fromUtf8("{\"product_name\":\"A\"}"));
+    QCoreApplication::processEvents();
+    QVERIFY(errorLabel->isHidden());
+}
+
+void AppTests::templateDesignerWindowToolbarExposesEditingActionsAndZoom()
+{
+    TemplateDesignerWindow window(PrintClientSettings{}, nullptr);
+
+    auto* topToolbar = window.findChild<QWidget*>(QStringLiteral("designerTopToolbar"));
+    auto* saveButton = window.findChild<QPushButton*>(QStringLiteral("saveTemplateToLibraryButton"));
+    auto* prePrintButton = window.findChild<QPushButton*>(QStringLiteral("prePrintCurrentTemplateButton"));
+    auto* importButton = window.findChild<QPushButton*>(QStringLiteral("importTemplateButton"));
+    auto* exportButton = window.findChild<QPushButton*>(QStringLiteral("exportTemplateButton"));
+    auto* undoButton = window.findChild<QPushButton*>(QStringLiteral("designerUndoButton"));
+    auto* redoButton = window.findChild<QPushButton*>(QStringLiteral("designerRedoButton"));
+    auto* zoomCombo = window.findChild<QComboBox*>(QStringLiteral("designerZoomCombo"));
+    auto* designAidCheck = window.findChild<QCheckBox*>(QStringLiteral("designerDesignAidCheck"));
+    auto* layerSection = window.findChild<QWidget*>(QStringLiteral("designerLayerSection"));
+    auto* librarySection = window.findChild<QWidget*>(QStringLiteral("designerLibrarySection"));
+    auto* layerList = window.findChild<QListWidget*>(QStringLiteral("templateLayerList"));
+    auto* libraryList = window.findChild<QListWidget*>(QStringLiteral("templateLibraryList"));
+    QVERIFY(topToolbar != nullptr);
+    QVERIFY(saveButton != nullptr);
+    QVERIFY(prePrintButton != nullptr);
+    QVERIFY(importButton != nullptr);
+    QVERIFY(exportButton != nullptr);
+    QVERIFY(undoButton != nullptr);
+    QVERIFY(redoButton != nullptr);
+    QVERIFY(zoomCombo != nullptr);
+    QVERIFY(designAidCheck != nullptr);
+    QVERIFY(layerSection != nullptr);
+    QVERIFY(librarySection != nullptr);
+    QVERIFY(layerList != nullptr);
+    QVERIFY(libraryList != nullptr);
+
+    QVERIFY(topToolbar->isAncestorOf(saveButton));
+    QVERIFY(topToolbar->isAncestorOf(prePrintButton));
+    QVERIFY(topToolbar->isAncestorOf(importButton));
+    QVERIFY(topToolbar->isAncestorOf(exportButton));
+    QVERIFY(topToolbar->isAncestorOf(undoButton));
+    QVERIFY(topToolbar->isAncestorOf(redoButton));
+    QVERIFY(topToolbar->isAncestorOf(zoomCombo));
+    QVERIFY(topToolbar->isAncestorOf(designAidCheck));
+    QVERIFY(layerSection->isAncestorOf(layerList));
+    QVERIFY(librarySection->isAncestorOf(libraryList));
+    QVERIFY(zoomCombo->count() >= 4);
+    QVERIFY(zoomCombo->findData(1.0) >= 0);
+}
+
 void AppTests::paperSpecManagerWindowSavesAndDeletesSpecs()
 {
     QTemporaryDir dir;
@@ -1865,6 +2357,22 @@ void AppTests::settingsWindowHasTemplateDesignerEntry()
 
     openDesignerButton->click();
     QCOMPARE(openCount, 1);
+}
+
+void AppTests::appThemeDefinesWorkbenchStyle()
+{
+    const auto styleSheet = sleekpr::app::sleekprAppStyleSheet();
+
+    QVERIFY(styleSheet.contains(QStringLiteral("settingsNavigationRail")));
+    QVERIFY(styleSheet.contains(QStringLiteral("designerTopToolbar")));
+    QVERIFY(styleSheet.contains(QStringLiteral("designerLibrarySection")));
+    QVERIFY(styleSheet.contains(QStringLiteral("designerLayerSection")));
+    QVERIFY(styleSheet.contains(QStringLiteral("designerZoomCombo")));
+    QVERIFY(styleSheet.contains(QStringLiteral("designerInspectorTabs")));
+    QVERIFY(styleSheet.contains(QStringLiteral("QSplitter::handle")));
+    QVERIFY(styleSheet.contains(QStringLiteral("buttonRole=\"primary\"")));
+    QVERIFY(styleSheet.contains(QStringLiteral("buttonRole=\"danger\"")));
+    QVERIFY(styleSheet.contains(QStringLiteral("QListWidget")));
 }
 
 int main(int argc, char* argv[])

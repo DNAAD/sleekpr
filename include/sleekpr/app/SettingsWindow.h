@@ -56,9 +56,12 @@ public:
 
 private:
     void buildUi();
+    QWidget* createWorkbenchNavigation();
+    QWidget* createOverviewPanel();
     QWidget* createPrinterPanel();
     QWidget* createPreviewPanel();
     QWidget* createElementPanel();
+    void refreshOverview();
     void populateTemplateCombo(const QString& preferredTemplateKey = QString());
     void populatePrinters();
     void populateElements();
@@ -117,6 +120,9 @@ private:
     QDoubleSpinBox* m_offsetYSpin = nullptr;
     TemplatePreviewLabel* m_previewLabel = nullptr;
     QLabel* m_statusLabel = nullptr;
+    QLabel* m_serviceStatusLabel = nullptr;
+    QLabel* m_printerStatusLabel = nullptr;
+    QLabel* m_templateStatusLabel = nullptr;
     QCheckBox* m_snapToGridCheck = nullptr;
     QSize m_previewImageSize;
     QListWidget* m_elementList = nullptr;

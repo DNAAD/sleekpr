@@ -46,6 +46,7 @@
 #include "sleekpr/infrastructure/preview/LabelPreviewService.h"
 #include "sleekpr/infrastructure/preview/PreviewLabelFactory.h"
 #include "sleekpr/infrastructure/preview/QrCodeMatrixRenderer.h"
+#include "sleekpr/infrastructure/rendering/TextAutoFitSizer.h"
 #include "sleekpr/infrastructure/printing/QrModulePixelLayout.h"
 
 using namespace sleekpr::core;
@@ -61,6 +62,7 @@ private slots:
     void settingsStoreReturnsDefaultsAndPersistsValues();
     void settingsStorePersistsTemplateElements();
     void templateDocumentJsonPersistsLayersVersionsAndProfiles();
+    void templateDocumentJsonPersistsAutoFitTextFont();
     void templateDocumentJsonPersistsSampleData();
     void templateDocumentJsonRejectsInvalidImportDocument();
     void templateDocumentEditModelManagesLayers();
@@ -124,6 +126,8 @@ private slots:
     void labelPlannerMapsFieldsToRenderPlan();
     void nativeDrawingPlannerEmitsMillimeterCommandsAndOffsets();
     void nativeDrawingPlannerAppendsTemplateElements();
+    void templateDocumentRendererMarksFixedAndBoundTextForAutoFit();
+    void textAutoFitSizerShrinksAndExpandsText();
     void templateDocumentRendererRendersFixedTextVertically();
     void templateDocumentRendererInterpolatesQrCodePayloadTemplate();
     void nativeDrawingPlannerUsesSilverTemplateForFactory25003();
@@ -394,6 +398,38 @@ void CoreTests::templateDocumentJsonPersistsSampleData()
     QCOMPARE(actual.sampleData["product_name"].toString(), QString::fromUtf8("足金串搭项链"));
     QCOMPARE(actual.sampleData["sales_code"].toString(), QStringLiteral("606178PD35"));
     QCOMPARE(actual.sampleData["header_items"].toArray().size(), 2);
+}
+
+void CoreTests::templateDocumentJsonPersistsAutoFitTextFont()
+{
+    TemplateElement element;
+    element.id = QStringLiteral("auto-fit-title");
+    element.type = TemplateElementType::FixedText;
+    element.text = QString::fromUtf8("自动适配文本");
+    element.fontSizePt = 5.0;
+    element.autoFitFont = true;
+    element.autoFitMinFontSizePt = 3.0;
+    element.autoFitMaxFontSizePt = 12.0;
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("layer-main");
+    element.layerId = layer.id;
+    layer.elements = {element};
+
+    TemplateDocument document;
+    document.id = QStringLiteral("template-auto-fit");
+    document.name = QString::fromUtf8("自动适配模板");
+    document.templateKey = QStringLiteral("default");
+    document.layers = {layer};
+
+    const auto json = TemplateDocumentJson::toJson(document);
+    const auto actual = TemplateDocumentJson::fromJson(json);
+    const auto actualElement = actual.layers.first().elements.first();
+
+    QVERIFY(json["layers"].toArray().first().toObject()["elements"].toArray().first().toObject()["autoFitFont"].toBool());
+    QCOMPARE(actualElement.autoFitFont, true);
+    QCOMPARE(actualElement.autoFitMinFontSizePt, 3.0);
+    QCOMPARE(actualElement.autoFitMaxFontSizePt, 12.0);
 }
 
 void CoreTests::templateDocumentJsonRejectsInvalidImportDocument()
@@ -2573,6 +2609,117 @@ void CoreTests::nativeDrawingPlannerAppendsTemplateElements()
     QCOMPARE(drawingPlan.commands[drawingPlan.commands.size() - 3].elementKey, QString("custom_qr"));
     QCOMPARE(drawingPlan.commands[drawingPlan.commands.size() - 2].elementKey, QString("custom_bound"));
     QCOMPARE(drawingPlan.commands[drawingPlan.commands.size() - 1].elementKey, QString("custom_fixed"));
+}
+
+void CoreTests::templateDocumentRendererMarksFixedAndBoundTextForAutoFit()
+{
+    TemplateElement fixedText;
+    fixedText.id = QStringLiteral("fixed-title");
+    fixedText.type = TemplateElementType::FixedText;
+    fixedText.text = QString::fromUtf8("门店：${storeName}");
+    fixedText.width = 22.0;
+    fixedText.height = 5.0;
+    fixedText.autoFitFont = true;
+    fixedText.autoFitMinFontSizePt = 3.0;
+    fixedText.autoFitMaxFontSizePt = 11.0;
+
+    TemplateElement boundField;
+    boundField.id = QStringLiteral("bound-name");
+    boundField.type = TemplateElementType::BoundField;
+    boundField.fieldKey = QStringLiteral("productName");
+    boundField.y = 6.0;
+    boundField.width = 22.0;
+    boundField.height = 5.0;
+    boundField.autoFitFont = true;
+    boundField.autoFitMinFontSizePt = 4.0;
+    boundField.autoFitMaxFontSizePt = 13.0;
+
+    TemplateElement arrayGrid;
+    arrayGrid.id = QStringLiteral("grid");
+    arrayGrid.type = TemplateElementType::ArrayGrid;
+    arrayGrid.y = 12.0;
+    arrayGrid.width = 22.0;
+    arrayGrid.height = 8.0;
+    arrayGrid.dataPath = QStringLiteral("items");
+    arrayGrid.arrayGridRows = 1;
+    arrayGrid.arrayGridColumns = 1;
+    arrayGrid.autoFitFont = true;
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("layer-main");
+    fixedText.layerId = layer.id;
+    boundField.layerId = layer.id;
+    arrayGrid.layerId = layer.id;
+    layer.elements = {fixedText, boundField, arrayGrid};
+
+    TemplateDocument document;
+    document.id = QStringLiteral("template-auto-fit");
+    document.name = QStringLiteral("auto-fit");
+    document.templateKey = QStringLiteral("default");
+    document.layers = {layer};
+
+    TemplateRenderContext context;
+    context.values.insert(QStringLiteral("storeName"), QString::fromUtf8("南京东路旗舰店"));
+    context.values.insert(QStringLiteral("productName"), QString::fromUtf8("足金串搭项链"));
+    context.values.insert(QStringLiteral("items"), QJsonArray{
+        QJsonObject{{QStringLiteral("text"), QString::fromUtf8("素金KA")}},
+    });
+
+    const auto drawingPlan = TemplateDocumentRenderer().render(document, LabelRenderPlan{}, LabelOffset{}, DeviceProfile{}, context);
+    auto findCommand = [&drawingPlan](const QString& key) -> std::optional<NativeDrawCommand> {
+        for (const auto& command : drawingPlan.commands) {
+            if (command.elementKey == key) {
+                return command;
+            }
+        }
+        return std::nullopt;
+    };
+
+    const auto fixedCommand = findCommand(QStringLiteral("fixed-title"));
+    const auto boundCommand = findCommand(QStringLiteral("bound-name"));
+    const auto gridCommand = findCommand(QStringLiteral("grid.cell0"));
+    QVERIFY(fixedCommand.has_value());
+    QVERIFY(boundCommand.has_value());
+    QVERIFY(gridCommand.has_value());
+
+    QCOMPARE(fixedCommand->autoFitFont, true);
+    QCOMPARE(fixedCommand->autoFitMinFontSizePt, 3.0);
+    QCOMPARE(fixedCommand->autoFitMaxFontSizePt, 11.0);
+    QCOMPARE(boundCommand->autoFitFont, true);
+    QCOMPARE(boundCommand->autoFitMinFontSizePt, 4.0);
+    QCOMPARE(boundCommand->autoFitMaxFontSizePt, 13.0);
+    QCOMPARE(gridCommand->autoFitFont, false);
+}
+
+void CoreTests::textAutoFitSizerShrinksAndExpandsText()
+{
+    NativeDrawCommand command;
+    command.type = NativeDrawCommandType::Text;
+    command.width = 18.0;
+    command.height = 4.0;
+    command.fontSizePt = 5.0;
+    command.wrapText = true;
+    command.autoFitFont = true;
+    command.autoFitMinFontSizePt = 3.0;
+    command.autoFitMaxFontSizePt = 12.0;
+
+    command.text = QStringLiteral("SKU");
+    const auto expandedSize = sleekpr::infrastructure::TextAutoFitSizer::fitPointSize(
+        command,
+        QSizeF(180.0, 40.0),
+        300.0,
+        300.0);
+    QVERIFY(expandedSize > command.fontSizePt);
+    QVERIFY(expandedSize <= command.autoFitMaxFontSizePt);
+
+    command.text = QString::fromUtf8("足金串搭项链南京东路旗舰店限时活动价");
+    const auto shrunkenSize = sleekpr::infrastructure::TextAutoFitSizer::fitPointSize(
+        command,
+        QSizeF(80.0, 18.0),
+        300.0,
+        300.0);
+    QVERIFY(shrunkenSize < expandedSize);
+    QVERIFY(shrunkenSize >= command.autoFitMinFontSizePt);
 }
 
 void CoreTests::templateDocumentRendererRendersFixedTextVertically()

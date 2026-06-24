@@ -273,24 +273,27 @@ NativeDrawCommand textCommand(
     const TemplateElement& element,
     const QString& value,
     double offsetX,
-    double offsetY)
+    double offsetY,
+    bool enableAutoFitFont)
 {
-    NativeDrawCommand command{
-        NativeDrawCommandType::Text,
-        element.x + offsetX,
-        element.y + offsetY,
-        element.width,
-        element.height,
-        value,
-        element.fontSizePt,
-        element.bold,
-        element.rotationDegrees,
-        element.maxLines,
-        element.ellipsis,
-        element.id.trimmed(),
-    };
+    NativeDrawCommand command;
+    command.type = NativeDrawCommandType::Text;
+    command.x = element.x + offsetX;
+    command.y = element.y + offsetY;
+    command.width = element.width;
+    command.height = element.height;
+    command.text = value;
+    command.fontSizePt = element.fontSizePt;
+    command.bold = element.bold;
+    command.rotationDegrees = element.rotationDegrees;
+    command.maxLines = element.maxLines;
+    command.ellipsis = element.ellipsis;
+    command.elementKey = element.id.trimmed();
     // 完整模板的文本元素以设计器矩形为排版边界：宽度内自动换行，高度外交给后端裁切。
     command.wrapText = true;
+    command.autoFitFont = enableAutoFitFont && element.autoFitFont;
+    command.autoFitMinFontSizePt = element.autoFitMinFontSizePt;
+    command.autoFitMaxFontSizePt = element.autoFitMaxFontSizePt;
     return command;
 }
 
@@ -300,38 +303,29 @@ NativeDrawCommand qrCommand(
     double offsetX,
     double offsetY)
 {
-    return NativeDrawCommand{
-        NativeDrawCommandType::QrCode,
-        element.x + offsetX,
-        element.y + offsetY,
-        element.width,
-        element.height,
-        payload,
-        0.0,
-        false,
-        element.rotationDegrees,
-        0,
-        false,
-        element.id.trimmed(),
-    };
+    NativeDrawCommand command;
+    command.type = NativeDrawCommandType::QrCode;
+    command.x = element.x + offsetX;
+    command.y = element.y + offsetY;
+    command.width = element.width;
+    command.height = element.height;
+    command.text = payload;
+    command.rotationDegrees = element.rotationDegrees;
+    command.elementKey = element.id.trimmed();
+    return command;
 }
 
 NativeDrawCommand rectangleCommand(const TemplateElement& element, double offsetX, double offsetY)
 {
-    return NativeDrawCommand{
-        NativeDrawCommandType::Rectangle,
-        element.x + offsetX,
-        element.y + offsetY,
-        element.width,
-        element.height,
-        QString(),
-        0.0,
-        false,
-        element.rotationDegrees,
-        0,
-        false,
-        element.id.trimmed(),
-    };
+    NativeDrawCommand command;
+    command.type = NativeDrawCommandType::Rectangle;
+    command.x = element.x + offsetX;
+    command.y = element.y + offsetY;
+    command.width = element.width;
+    command.height = element.height;
+    command.rotationDegrees = element.rotationDegrees;
+    command.elementKey = element.id.trimmed();
+    return command;
 }
 
 QJsonValue valueAtPath(const QJsonObject& object, const QString& path)
@@ -400,20 +394,15 @@ NativeDrawCommand arrayGridBorderCommand(
     double width,
     double height)
 {
-    return NativeDrawCommand{
-        NativeDrawCommandType::Rectangle,
-        x,
-        y,
-        width,
-        height,
-        QString(),
-        0.0,
-        false,
-        element.rotationDegrees,
-        0,
-        false,
-        QStringLiteral("%1.cell%2.border").arg(element.id.trimmed()).arg(cellIndex),
-    };
+    NativeDrawCommand command;
+    command.type = NativeDrawCommandType::Rectangle;
+    command.x = x;
+    command.y = y;
+    command.width = width;
+    command.height = height;
+    command.rotationDegrees = element.rotationDegrees;
+    command.elementKey = QStringLiteral("%1.cell%2.border").arg(element.id.trimmed()).arg(cellIndex);
+    return command;
 }
 
 NativeDrawCommand arrayGridTextCommand(
@@ -427,20 +416,19 @@ NativeDrawCommand arrayGridTextCommand(
 {
     constexpr double paddingX = 0.6;
     constexpr double paddingY = 0.4;
-    NativeDrawCommand command{
-        NativeDrawCommandType::Text,
-        x + paddingX,
-        y + paddingY,
-        std::max(0.1, width - paddingX * 2.0),
-        std::max(0.1, height - paddingY * 2.0),
-        text,
-        element.fontSizePt,
-        element.bold,
-        element.rotationDegrees,
-        element.maxLines,
-        element.ellipsis,
-        QStringLiteral("%1.cell%2").arg(element.id.trimmed()).arg(cellIndex),
-    };
+    NativeDrawCommand command;
+    command.type = NativeDrawCommandType::Text;
+    command.x = x + paddingX;
+    command.y = y + paddingY;
+    command.width = std::max(0.1, width - paddingX * 2.0);
+    command.height = std::max(0.1, height - paddingY * 2.0);
+    command.text = text;
+    command.fontSizePt = element.fontSizePt;
+    command.bold = element.bold;
+    command.rotationDegrees = element.rotationDegrees;
+    command.maxLines = element.maxLines;
+    command.ellipsis = element.ellipsis;
+    command.elementKey = QStringLiteral("%1.cell%2").arg(element.id.trimmed()).arg(cellIndex);
     // 数组网格单元格同样按单元格宽度换行，避免动态数据被横向截断。
     command.wrapText = true;
     return command;
@@ -509,12 +497,12 @@ QList<NativeDrawCommand> renderTemplateElements(
         case TemplateElementType::FixedText: {
             const auto text = interpolateTemplateText(labelPlan, context, element.text);
             // 竖排固定文本只改变绘制命令中的文本换行，不改变元素坐标和旋转语义。
-            result.append(textCommand(element, element.verticalText ? verticalTextValue(text) : text, offsetX, offsetY));
+            result.append(textCommand(element, element.verticalText ? verticalTextValue(text) : text, offsetX, offsetY, true));
             break;
         }
         case TemplateElementType::BoundField:
             // 完整模板优先使用本次打印上下文，实现任意自定义字段；没有上下文值时回退旧标签字段。
-            result.append(textCommand(element, valueForTemplateField(labelPlan, context, element.fieldKey), offsetX, offsetY));
+            result.append(textCommand(element, valueForTemplateField(labelPlan, context, element.fieldKey), offsetX, offsetY, true));
             break;
         case TemplateElementType::QrCode: {
             const auto payload = element.payload.trimmed().isEmpty()

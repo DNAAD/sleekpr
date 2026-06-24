@@ -84,6 +84,9 @@ QJsonObject elementToJson(const TemplateElement& element)
     json["payload"] = element.payload;
     json["fontSizePt"] = element.fontSizePt;
     json["bold"] = element.bold;
+    json["autoFitFont"] = element.autoFitFont;
+    json["autoFitMinFontSizePt"] = element.autoFitMinFontSizePt;
+    json["autoFitMaxFontSizePt"] = element.autoFitMaxFontSizePt;
     json["rotationDegrees"] = element.rotationDegrees;
     json["verticalText"] = element.verticalText;
     json["dataPath"] = element.dataPath;
@@ -119,6 +122,9 @@ TemplateElement elementFromJson(const QJsonObject& json, const QString& parentLa
     element.payload = json["payload"].toString();
     element.fontSizePt = json["fontSizePt"].toDouble(element.fontSizePt);
     element.bold = json["bold"].toBool(element.bold);
+    element.autoFitFont = json["autoFitFont"].toBool(element.autoFitFont);
+    element.autoFitMinFontSizePt = json["autoFitMinFontSizePt"].toDouble(element.autoFitMinFontSizePt);
+    element.autoFitMaxFontSizePt = json["autoFitMaxFontSizePt"].toDouble(element.autoFitMaxFontSizePt);
     element.rotationDegrees = json["rotationDegrees"].toDouble(element.rotationDegrees);
     element.verticalText = json["verticalText"].toBool(element.verticalText);
     element.dataPath = json["dataPath"].toString(element.dataPath);

@@ -10,26 +10,45 @@ namespace {
 
 QString editableElementKey(const QString& commandKey)
 {
-    const auto cellMarkerIndex = commandKey.indexOf(QStringLiteral(".cell"));
-    if (cellMarkerIndex <= 0) {
-        return commandKey;
+    auto normalizedKey = commandKey.trimmed();
+    if (normalizedKey.endsWith(QStringLiteral(".border"))) {
+        normalizedKey.chop(QStringLiteral(".border").size());
     }
 
-    const auto cellNumberStart = cellMarkerIndex + QStringLiteral(".cell").size();
-    auto cursor = cellNumberStart;
-    while (cursor < commandKey.size() && commandKey.at(cursor).isDigit()) {
-        ++cursor;
+    // 底层绘制会把数组网格和表格拆成多个单元格命令，命中后必须回到模板元素本身。
+    const auto cellMarkerIndex = normalizedKey.indexOf(QStringLiteral(".cell"));
+    if (cellMarkerIndex > 0) {
+        const auto cellNumberStart = cellMarkerIndex + QStringLiteral(".cell").size();
+        auto cursor = cellNumberStart;
+        while (cursor < normalizedKey.size() && normalizedKey.at(cursor).isDigit()) {
+            ++cursor;
+        }
+        if (cursor > cellNumberStart && cursor == normalizedKey.size()) {
+            return normalizedKey.left(cellMarkerIndex);
+        }
     }
 
-    const auto suffix = commandKey.mid(cursor);
-    // 数组网格会把一个元素拆成多个单元格绘制命令，交互命中时必须回到元素本身才能拖动和编辑。
-    if (cursor > cellNumberStart && (suffix.isEmpty() || suffix == QStringLiteral(".border"))) {
-        return commandKey.left(cellMarkerIndex);
+    const auto headerMarkerIndex = normalizedKey.indexOf(QStringLiteral(".header."));
+    if (headerMarkerIndex > 0) {
+        return normalizedKey.left(headerMarkerIndex);
     }
-    return commandKey;
+
+    const auto rowMarkerIndex = normalizedKey.indexOf(QStringLiteral(".row"));
+    if (rowMarkerIndex > 0) {
+        auto cursor = rowMarkerIndex + QStringLiteral(".row").size();
+        while (cursor < normalizedKey.size() && normalizedKey.at(cursor).isDigit()) {
+            ++cursor;
+        }
+        if (cursor > rowMarkerIndex + QStringLiteral(".row").size()
+            && (cursor == normalizedKey.size() || normalizedKey.at(cursor) == QChar('.'))) {
+            return normalizedKey.left(rowMarkerIndex);
+        }
+    }
+
+    return normalizedKey;
 }
 
-} // namespace
+} // 匿名命名空间
 
 std::optional<QString> TemplateElementHitTester::hitTest(
     const QList<sleekpr::core::NativeDrawCommand>& commands,

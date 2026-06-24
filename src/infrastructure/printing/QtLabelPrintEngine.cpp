@@ -3,6 +3,7 @@
 #include "sleekpr/core/native/NativeDrawCommandType.h"
 #include "sleekpr/infrastructure/preview/QrCodeMatrixRenderer.h"
 #include "sleekpr/infrastructure/printing/QrModulePixelLayout.h"
+#include "sleekpr/infrastructure/rendering/TextAutoFitSizer.h"
 
 #include <QFont>
 #include <QMarginsF>
@@ -85,11 +86,11 @@ QRectF pixelAlignedRect(const sleekpr::core::NativeDrawCommand& command, const P
         std::max(1.0, std::round(height)));
 }
 
-QFont commandFont(const sleekpr::core::NativeDrawCommand& command, const PagePixelMetrics& metrics)
+QFont commandFont(const sleekpr::core::NativeDrawCommand& command, const PagePixelMetrics& metrics, double fontSizePt)
 {
     QFont font(QStringLiteral("Microsoft YaHei"));
     const auto averageDpi = (metrics.dpiX + metrics.dpiY) / 2.0;
-    const auto pixelSize = std::max(1, static_cast<int>(std::round(command.fontSizePt * averageDpi / 72.0)));
+    const auto pixelSize = std::max(1, static_cast<int>(std::round(fontSizePt * averageDpi / 72.0)));
     font.setPixelSize(pixelSize);
     font.setBold(command.bold);
     font.setHintingPreference(QFont::PreferFullHinting);
@@ -183,9 +184,13 @@ void drawText(QPainter& painter, const sleekpr::core::NativeDrawCommand& command
     QTextOption option;
     option.setWrapMode(command.wrapText || command.ellipsis ? QTextOption::WrapAtWordBoundaryOrAnywhere : QTextOption::NoWrap);
     option.setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    const auto layoutSize = command.rotationDegrees == 0.0
+        ? QSizeF(rect.width(), rect.height())
+        : QSizeF(rect.height(), rect.width());
+    const auto effectiveFontSizePt = TextAutoFitSizer::fitPointSize(command, layoutSize, metrics.dpiX, metrics.dpiY);
 
     painter.save();
-    painter.setFont(commandFont(command, metrics));
+    painter.setFont(commandFont(command, metrics, effectiveFontSizePt));
     painter.setPen(Qt::black);
     if (command.rotationDegrees != 0.0) {
         if (isTopToBottomTextRotation(command.rotationDegrees)) {
@@ -219,7 +224,7 @@ void drawCommand(QPainter& painter, const sleekpr::core::NativeDrawCommand& comm
     drawText(painter, command, metrics);
 }
 
-} // namespace
+} // 匿名命名空间
 
 bool QtLabelPrintEngine::print(const sleekpr::core::NativeLabelDrawingPlan& plan, const QString& printerName)
 {
@@ -258,4 +263,4 @@ bool QtLabelPrintEngine::print(const sleekpr::core::NativePrintDrawingPlan& plan
     return true;
 }
 
-} // namespace sleekpr::infrastructure
+} // 命名空间 sleekpr::infrastructure

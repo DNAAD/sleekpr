@@ -2,6 +2,7 @@
 
 #include "sleekpr/core/printing/PrintUnitConverter.h"
 #include "sleekpr/infrastructure/preview/QrCodeMatrixRenderer.h"
+#include "sleekpr/infrastructure/rendering/TextAutoFitSizer.h"
 
 #include <QBuffer>
 #include <QFont>
@@ -45,7 +46,7 @@ void drawRotatedText(QPainter& painter, const QRectF& rect, const sleekpr::core:
     painter.drawText(rotatedRect, command.text, option);
 }
 
-} // namespace
+} // 匿名命名空间
 
 QImage LabelPreviewImageRenderer::renderImage(const sleekpr::core::NativeLabelDrawingPlan& plan, double dpi) const
 {
@@ -83,9 +84,14 @@ QImage LabelPreviewImageRenderer::renderImage(const sleekpr::core::NativeLabelDr
             continue;
         }
 
+        const auto layoutSize = command.rotationDegrees == 0.0
+            ? QSizeF(rect.width(), rect.height())
+            : QSizeF(rect.height(), rect.width());
+        const auto effectiveFontSizePt = TextAutoFitSizer::fitPointSize(command, layoutSize, dpi, dpi);
+
         // 字号仍使用 pt，由 Qt 根据目标设备换算；坐标和区域大小保持毫米计划换算后的像素值。
         QFont font("Microsoft YaHei");
-        font.setPointSizeF(command.fontSizePt);
+        font.setPointSizeF(effectiveFontSizePt);
         font.setBold(command.bold);
         painter.setFont(font);
 

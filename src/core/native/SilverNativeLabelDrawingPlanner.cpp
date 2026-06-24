@@ -70,38 +70,33 @@ NativeDrawCommand SilverNativeLabelDrawingPlanner::text(
     int maxLines,
     bool ellipsis)
 {
-    return NativeDrawCommand{
-        NativeDrawCommandType::Text,
-        x,
-        y,
-        width,
-        height,
-        value,
-        fontSizePt,
-        bold,
-        rotationDegrees,
-        maxLines,
-        ellipsis,
-        elementKey,
-    };
+    NativeDrawCommand command;
+    command.type = NativeDrawCommandType::Text;
+    command.x = x;
+    command.y = y;
+    command.width = width;
+    command.height = height;
+    command.text = value;
+    command.fontSizePt = fontSizePt;
+    command.bold = bold;
+    command.rotationDegrees = rotationDegrees;
+    command.maxLines = maxLines;
+    command.ellipsis = ellipsis;
+    command.elementKey = elementKey;
+    return command;
 }
 
 NativeDrawCommand SilverNativeLabelDrawingPlanner::qrCode(double x, double y, double size, const QString& payload, const QString& elementKey)
 {
-    return NativeDrawCommand{
-        NativeDrawCommandType::QrCode,
-        x,
-        y,
-        size,
-        size,
-        payload,
-        0.0,
-        false,
-        0.0,
-        0,
-        false,
-        elementKey,
-    };
+    NativeDrawCommand command;
+    command.type = NativeDrawCommandType::QrCode;
+    command.x = x;
+    command.y = y;
+    command.width = size;
+    command.height = size;
+    command.text = payload;
+    command.elementKey = elementKey;
+    return command;
 }
 
 void SilverNativeLabelDrawingPlanner::addWeightCommands(QList<NativeDrawCommand>& commands, const QString& value, double x, double y, const QString& keyPrefix)

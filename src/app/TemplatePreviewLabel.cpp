@@ -62,7 +62,7 @@ QString designAidElementKey(QString commandKey)
     return commandKey;
 }
 
-} // namespace
+} // 匿名命名空间
 
 TemplatePreviewLabel::TemplatePreviewLabel(QWidget* parent)
     : QLabel(parent)

@@ -21,11 +21,15 @@
 class QLabel;
 class QCheckBox;
 class QDoubleSpinBox;
+class QEvent;
 class QLineEdit;
 class QListWidget;
+class QListWidgetItem;
+class QObject;
 class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
+class QTimer;
 
 namespace sleekpr::core {
 struct TemplateElement;
@@ -64,6 +68,9 @@ public:
     void setOpenFieldPresetManagerCallback(OpenFieldPresetManagerCallback callback);
     void reloadPaperSpecsFromDisk();
 
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
 private:
     void buildUi();
     void ensureCurrentTemplateDocument();
@@ -98,6 +105,8 @@ private:
     void exportTemplateWithDialog();
     void prePrintCurrentTemplate();
     void saveSampleDataFromEditor();
+    void undoCurrentTemplateChange();
+    void redoCurrentTemplateChange();
     void calculateDeviceCalibrationScale();
     void saveDeviceProfile();
     void refreshTemplateLibraryList();
@@ -120,6 +129,9 @@ private:
     bool selectTemplateInLibraryList(const QString& templateId);
     bool canEditElement(const QString& elementId) const;
     bool currentSelectionIsTable() const;
+    void renameElementFromListItem(QListWidgetItem* item);
+    void beginRenameCurrentElement();
+    void applyElementListOrderFromList();
     bool loadTemplateDocumentFromFile(const QString& path, sleekpr::core::TemplateDocument* document, QString* errorMessage) const;
     void applyImportedTemplateDocument(const sleekpr::core::TemplateDocument& document);
     QString paperSpecFilePath() const;
@@ -136,8 +148,19 @@ private:
     sleekpr::core::TableElement* currentTable();
     void addElement(sleekpr::core::TemplateElement element);
     void addTable(sleekpr::core::TableElement table);
-    void applyCurrentElementProperties();
-    void applyCurrentTableProperties();
+    bool applyCurrentElementProperties(bool lightweightRefresh = false);
+    bool applyCurrentTableProperties(bool lightweightRefresh = false);
+    void scheduleElementAutoApply(int delayMs);
+    void scheduleTableAutoApply(int delayMs);
+    void applyPendingElementAutoApply();
+    void applyPendingTableAutoApply();
+    bool isElementAutoApplyEditor(QObject* watched) const;
+    bool isTableAutoApplyEditor(QObject* watched) const;
+    void updateSampleDataErrorLabel(const QString& errorMessage);
+    void refreshInspectorTabForCurrentSelection();
+    void resetDocumentHistory();
+    void rememberCurrentDocumentHistory();
+    void updateHistoryButtons();
     void moveSelectedElementByPixels(QPoint delta);
     void nudgeSelectedElement(QPoint direction, Qt::KeyboardModifiers modifiers);
 
@@ -150,7 +173,10 @@ private:
     QString m_templateKey = QStringLiteral("default");
     QComboBox* m_paperSpecCombo = nullptr;
     QComboBox* m_rulerPrecisionCombo = nullptr;
+    QComboBox* m_zoomCombo = nullptr;
     QCheckBox* m_designAidCheck = nullptr;
+    QPushButton* m_undoButton = nullptr;
+    QPushButton* m_redoButton = nullptr;
     QLineEdit* m_templateLibrarySearchEdit = nullptr;
     QLineEdit* m_templateLibraryNameEdit = nullptr;
     QListWidget* m_templateLibraryList = nullptr;
@@ -158,6 +184,7 @@ private:
     QListWidget* m_elementList = nullptr;
     TemplatePreviewLabel* m_previewLabel = nullptr;
     QLabel* m_statusLabel = nullptr;
+    QLabel* m_sampleDataErrorLabel = nullptr;
     QPlainTextEdit* m_sampleDataEdit = nullptr;
     QPlainTextEdit* m_elementValueEdit = nullptr;
     QDoubleSpinBox* m_elementXSpin = nullptr;
@@ -167,6 +194,9 @@ private:
     QDoubleSpinBox* m_elementFontSizeSpin = nullptr;
     QDoubleSpinBox* m_elementRotationSpin = nullptr;
     QCheckBox* m_elementBoldCheck = nullptr;
+    QCheckBox* m_elementAutoFitFontCheck = nullptr;
+    QDoubleSpinBox* m_elementAutoFitMinFontSizeSpin = nullptr;
+    QDoubleSpinBox* m_elementAutoFitMaxFontSizeSpin = nullptr;
     QCheckBox* m_elementVerticalTextCheck = nullptr;
     QLineEdit* m_arrayGridDataPathEdit = nullptr;
     QSpinBox* m_arrayGridRowsSpin = nullptr;
@@ -196,6 +226,14 @@ private:
     QCheckBox* m_tableDrawBordersCheck = nullptr;
     QLineEdit* m_tableColumnsEdit = nullptr;
     QList<sleekpr::core::NativeDrawCommand> m_previewCommands;
+    QTimer* m_elementAutoApplyTimer = nullptr;
+    QTimer* m_tableAutoApplyTimer = nullptr;
+    QList<sleekpr::core::TemplateDocument> m_documentHistory;
+    int m_documentHistoryIndex = -1;
+    double m_previewZoomFactor = 1.0;
+    bool m_updatingPropertyEditors = false;
+    bool m_applyingElementListOrder = false;
+    bool m_restoringDocumentHistory = false;
 };
 
 } // 命名空间 sleekpr::app

@@ -99,6 +99,9 @@ QJsonObject templateElementToJson(const TemplateElement& element)
     json["payload"] = element.payload;
     json["fontSizePt"] = element.fontSizePt;
     json["bold"] = element.bold;
+    json["autoFitFont"] = element.autoFitFont;
+    json["autoFitMinFontSizePt"] = element.autoFitMinFontSizePt;
+    json["autoFitMaxFontSizePt"] = element.autoFitMaxFontSizePt;
     json["rotationDegrees"] = element.rotationDegrees;
     json["verticalText"] = element.verticalText;
     json["dataPath"] = element.dataPath;
@@ -148,6 +151,15 @@ TemplateElement templateElementFromJson(const QJsonObject& json)
     }
     if (json.contains("bold")) {
         element.bold = json["bold"].toBool(element.bold);
+    }
+    if (json.contains("autoFitFont")) {
+        element.autoFitFont = json["autoFitFont"].toBool(element.autoFitFont);
+    }
+    if (json.contains("autoFitMinFontSizePt")) {
+        element.autoFitMinFontSizePt = json["autoFitMinFontSizePt"].toDouble(element.autoFitMinFontSizePt);
+    }
+    if (json.contains("autoFitMaxFontSizePt")) {
+        element.autoFitMaxFontSizePt = json["autoFitMaxFontSizePt"].toDouble(element.autoFitMaxFontSizePt);
     }
     if (json.contains("rotationDegrees")) {
         element.rotationDegrees = json["rotationDegrees"].toDouble(element.rotationDegrees);

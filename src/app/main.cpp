@@ -1,3 +1,4 @@
+#include "sleekpr/app/AppTheme.h"
 #include "sleekpr/app/FieldPresetManagerWindow.h"
 #include "sleekpr/app/PaperSpecManagerWindow.h"
 #include "sleekpr/app/SettingsWindow.h"
@@ -52,6 +53,7 @@ int main(int argc, char* argv[])
     QApplication::setApplicationName("sleekpr");
     QApplication::setOrganizationName("zytxt");
     QApplication::setQuitOnLastWindowClosed(false);
+    app.setStyleSheet(sleekpr::app::sleekprAppStyleSheet());
 
     const auto settingsFilePath = settingsPath();
     qInfo() << "sleekpr settings:" << settingsFilePath;

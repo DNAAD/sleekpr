@@ -50,6 +50,7 @@ add_library(sleekpr_core
     src/infrastructure/preview/QrCodeMatrixRenderer.cpp
     src/infrastructure/printing/QrModulePixelLayout.cpp
     src/infrastructure/printing/QtLabelPrintEngine.cpp
+    src/infrastructure/rendering/TextAutoFitSizer.cpp
 )
 
 target_include_directories(sleekpr_core
@@ -78,6 +79,7 @@ target_link_libraries(sleekpr_http
 )
 
 add_executable(sleekpr
+    src/app/AppTheme.cpp
     src/app/FieldPresetManagerWindow.cpp
     src/app/PaperSpecManagerWindow.cpp
     src/app/SettingsWindow.cpp
