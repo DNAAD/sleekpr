@@ -86,6 +86,8 @@ target_link_libraries(sleekpr_http
 
 add_executable(sleekpr
     src/app/AppTheme.cpp
+    src/app/TableColumnTextCodec.cpp
+    include/sleekpr/app/TableColumnTextCodec.h
     src/app/TemplateDesignerCommand.cpp
     src/app/FieldPresetManagerWindow.cpp
     src/app/PaperSpecManagerWindow.cpp

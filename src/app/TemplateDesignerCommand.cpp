@@ -1,11 +1,10 @@
 #include "sleekpr/app/TemplateDesignerCommand.h"
 
+#include "sleekpr/app/TableColumnTextCodec.h"
 #include "sleekpr/core/templates/TemplateDocument.h"
 #include "sleekpr/core/templates/TemplateDocumentEditModel.h"
 
 #include <QtGlobal>
-
-#include <QStringList>
 
 #include <algorithm>
 #include <utility>
@@ -113,6 +112,22 @@ sleekpr::core::TableElement* findTable(sleekpr::core::TemplateDocument& document
 
 } // 匿名命名空间
 
+static sleekpr::core::TableColumn columnFromModel(const DesignerTableColumnModel& model)
+{
+    sleekpr::core::TableColumn column;
+    column.id = model.columnId.trimmed().isEmpty() ? model.fieldKey.trimmed() : model.columnId.trimmed();
+    column.title = model.title;
+    column.fieldKey = model.fieldKey.trimmed();
+    column.widthMode = model.widthMode;
+    column.widthMm = std::max(0.1, model.widthMm);
+    column.flexWeight = std::max(0.1, model.flexWeight);
+    column.alignment = model.alignment;
+    column.fontSizePt = std::max(1.0, model.fontSizePt);
+    column.bold = model.bold;
+    column.ellipsis = model.ellipsis;
+    return column;
+}
+
 ElementPropertiesCommand::ElementPropertiesCommand(DesignerElementPropertyModel model)
     : m_model(std::move(model))
 {
@@ -206,12 +221,20 @@ TemplateDesignerCommandResult TablePropertiesCommand::apply(sleekpr::core::Templ
     updated.repeatHeaderOnPage = m_model.repeatHeaderOnPage;
     updated.drawBorders = m_model.drawBorders;
 
-    const auto parsedColumns = parseColumns(m_model.columnsText);
-    if (parsedColumns.isEmpty()) {
+    QList<sleekpr::core::TableColumn> nextColumns;
+    if (!m_model.columns.isEmpty()) {
+        nextColumns.reserve(m_model.columns.size());
+        for (const auto& columnModel : m_model.columns) {
+            nextColumns.append(columnFromModel(columnModel));
+        }
+    } else {
+        nextColumns = parseColumns(m_model.columnsText);
+    }
+    if (nextColumns.isEmpty()) {
         result.errorMessage = QString::fromUtf8("表格列配置无效");
         return result;
     }
-    updated.columns = parsedColumns;
+    updated.columns = nextColumns;
 
     if (sameTableElement(*table, updated)) {
         return result;
@@ -229,44 +252,15 @@ TemplateDesignerCommandResult TablePropertiesCommand::apply(sleekpr::core::Templ
 QString TablePropertiesCommand::formatColumns(const QList<sleekpr::core::TableColumn>& columns)
 {
     // 当前 UI 仍使用单行列定义文本，命令层统一负责和结构化列模型互转。
-    QStringList parts;
-    for (const auto& column : columns) {
-        parts.append(QStringLiteral("%1=%2:%3").arg(
-            column.title,
-            column.fieldKey,
-            QString::number(column.widthMm, 'f', 2)));
-    }
-    return parts.join(QStringLiteral(","));
+    return TableColumnTextCodec::format(columns);
 }
 
 QList<sleekpr::core::TableColumn> TablePropertiesCommand::parseColumns(const QString& text)
 {
     // 列配置语法：列标题=字段key:列宽，多列用英文逗号分隔。
-    QList<sleekpr::core::TableColumn> columns;
-    const auto parts = text.split(QStringLiteral(","), Qt::SkipEmptyParts);
-    for (const auto& part : parts) {
-        const auto trimmed = part.trimmed();
-        const auto equalsIndex = trimmed.indexOf(QStringLiteral("="));
-        const auto widthIndex = trimmed.lastIndexOf(QStringLiteral(":"));
-        if (equalsIndex <= 0 || widthIndex <= equalsIndex + 1 || widthIndex >= trimmed.size() - 1) {
-            return {};
-        }
-
-        bool widthOk = false;
-        const auto width = trimmed.mid(widthIndex + 1).trimmed().toDouble(&widthOk);
-        const auto title = trimmed.left(equalsIndex).trimmed();
-        const auto fieldKey = trimmed.mid(equalsIndex + 1, widthIndex - equalsIndex - 1).trimmed();
-        if (!widthOk || width <= 0.0 || title.isEmpty() || fieldKey.isEmpty()) {
-            return {};
-        }
-
-        sleekpr::core::TableColumn column;
-        column.id = fieldKey;
-        column.title = title;
-        column.fieldKey = fieldKey;
-        column.widthMm = width;
-        columns.append(column);
-    }
+    QString errorMessage;
+    auto columns = TableColumnTextCodec::parse(text, &errorMessage);
+    Q_UNUSED(errorMessage);
     return columns;
 }
 

@@ -25,8 +25,10 @@
 #include <cmath>
 
 #include "sleekpr/app/TemplateDragCoordinateMapper.h"
+#include "sleekpr/app/TemplateDesignerCommand.h"
 #include "sleekpr/app/TemplateDesignerFactory.h"
 #include "sleekpr/app/TemplateDesignerPresenter.h"
+#include "sleekpr/app/TableColumnTextCodec.h"
 #include "sleekpr/app/TemplateInspectorPanel.h"
 #include "sleekpr/app/TemplateElementHitTester.h"
 #include "sleekpr/app/AppTheme.h"
@@ -150,6 +152,8 @@ private slots:
     void templateDesignerStateSkipsDuplicateDocumentHistory();
     void templateInspectorPanelEmitsSemanticPropertySignals();
     void templateDesignerPresenterAppliesElementPropertyCommand();
+    void tableColumnTextCodecFormatsAndParsesLegacyColumns();
+    void tableDesignerCommandUsesStructuredColumnsWhenPresent();
     void templateDesignerPresenterRejectsInvalidTableColumns();
     void paperSpecManagerWindowSavesAndDeletesSpecs();
     void fieldPresetManagerWindowSavesAndDeletesPresets();
@@ -2527,6 +2531,90 @@ void AppTests::templateDesignerPresenterAppliesElementPropertyCommand()
     QVERIFY(element.autoFitFont);
     QCOMPARE(element.autoFitMinFontSizePt, 3.5);
     QCOMPARE(element.autoFitMaxFontSizePt, 13.0);
+}
+
+void AppTests::tableColumnTextCodecFormatsAndParsesLegacyColumns()
+{
+    TableColumn fixed;
+    fixed.id = QStringLiteral("name");
+    fixed.title = QString::fromUtf8("品名");
+    fixed.fieldKey = QStringLiteral("productName");
+    fixed.widthMm = 26.0;
+    fixed.widthMode = TableColumnWidthMode::Fixed;
+    fixed.alignment = TableCellAlignment::Left;
+
+    TableColumn flex;
+    flex.id = QStringLiteral("weight");
+    flex.title = QString::fromUtf8("重量");
+    flex.fieldKey = QStringLiteral("weight");
+    flex.widthMm = 18.0;
+
+    const auto text = TableColumnTextCodec::format({fixed, flex});
+    QCOMPARE(text, QString::fromUtf8("品名=productName:26.00,重量=weight:18.00"));
+
+    QString errorMessage;
+    const auto parsed = TableColumnTextCodec::parse(text, &errorMessage);
+    QVERIFY2(errorMessage.isEmpty(), qPrintable(errorMessage));
+    QCOMPARE(parsed.size(), 2);
+    QCOMPARE(parsed[0].id, QStringLiteral("productName"));
+    QCOMPARE(parsed[0].title, QString::fromUtf8("品名"));
+    QCOMPARE(parsed[0].fieldKey, QStringLiteral("productName"));
+    QCOMPARE(parsed[0].widthMm, 26.0);
+}
+
+void AppTests::tableDesignerCommandUsesStructuredColumnsWhenPresent()
+{
+    TableElement table;
+    table.id = QStringLiteral("table-1");
+    table.layerId = QStringLiteral("main");
+    table.displayName = QString::fromUtf8("明细");
+    table.dataPath = QStringLiteral("items");
+    table.columns = TableColumnTextCodec::parse(QString::fromUtf8("旧列=oldField:20.00"));
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("main");
+    layer.tables.append(table);
+
+    TemplateDocument document;
+    document.layers.append(layer);
+
+    DesignerTableColumnModel column;
+    column.columnId = QStringLiteral("structured-name");
+    column.title = QString::fromUtf8("新列");
+    column.fieldKey = QStringLiteral("newField");
+    column.widthMode = TableColumnWidthMode::Flex;
+    column.widthMm = 22.0;
+    column.flexWeight = 2.0;
+    column.alignment = TableCellAlignment::Right;
+    column.fontSizePt = 7.0;
+    column.bold = true;
+    column.ellipsis = true;
+
+    DesignerTablePropertyModel model;
+    model.tableId = table.id;
+    model.visible = true;
+    model.canEdit = true;
+    model.displayName = table.displayName;
+    model.dataPath = table.dataPath;
+    model.width = table.width;
+    model.height = table.height;
+    model.headerRowHeightMm = table.headerRowHeightMm;
+    model.detailRowHeightMm = table.detailRowHeightMm;
+    model.repeatHeaderOnPage = table.repeatHeaderOnPage;
+    model.drawBorders = table.drawBorders;
+    model.columnsText = QString::fromUtf8("旧列=oldField:20.00");
+    model.columns = {column};
+
+    const auto result = TablePropertiesCommand(model).apply(document, table.id);
+    QVERIFY2(result.errorMessage.isEmpty(), qPrintable(result.errorMessage));
+    QVERIFY(result.changed);
+    const auto actual = document.layers.first().tables.first().columns.first();
+    QCOMPARE(actual.id, QStringLiteral("structured-name"));
+    QCOMPARE(actual.fieldKey, QStringLiteral("newField"));
+    QCOMPARE(actual.widthMode, TableColumnWidthMode::Flex);
+    QCOMPARE(actual.alignment, TableCellAlignment::Right);
+    QVERIFY(actual.bold);
+    QVERIFY(actual.ellipsis);
 }
 
 void AppTests::templateDesignerPresenterRejectsInvalidTableColumns()

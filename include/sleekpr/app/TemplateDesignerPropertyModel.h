@@ -1,7 +1,9 @@
 #pragma once
 
 #include "sleekpr/core/settings/TemplateElement.h"
+#include "sleekpr/core/templates/TableElement.h"
 
+#include <QList>
 #include <QString>
 
 namespace sleekpr::app {
@@ -38,6 +40,21 @@ struct DesignerElementPropertyModel
     bool arrayGridDrawBorders = true;
 };
 
+struct DesignerTableColumnModel
+{
+    // 右侧属性面板使用结构化列模型，避免复杂表格继续依赖单行文本拼接。
+    QString columnId;
+    QString title;
+    QString fieldKey;
+    sleekpr::core::TableColumnWidthMode widthMode = sleekpr::core::TableColumnWidthMode::Fixed;
+    double widthMm = 20.0;
+    double flexWeight = 1.0;
+    sleekpr::core::TableCellAlignment alignment = sleekpr::core::TableCellAlignment::Left;
+    double fontSizePt = 8.0;
+    bool bold = false;
+    bool ellipsis = false;
+};
+
 struct DesignerTablePropertyModel
 {
     QString tableId;
@@ -54,6 +71,7 @@ struct DesignerTablePropertyModel
     bool repeatHeaderOnPage = true;
     bool drawBorders = true;
     QString columnsText;
+    QList<DesignerTableColumnModel> columns;
 };
 
 } // 命名空间 sleekpr::app

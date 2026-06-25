@@ -28,6 +28,8 @@ configure_qt_test_runtime(sleekpr_core_tests)
 add_executable(sleekpr_app_tests
     tst_app.cpp
     ../src/app/AppTheme.cpp
+    ../src/app/TableColumnTextCodec.cpp
+    ../include/sleekpr/app/TableColumnTextCodec.h
     ../src/app/TemplateDesignerCommand.cpp
     ../src/app/FieldPresetManagerWindow.cpp
     ../src/app/PaperSpecManagerWindow.cpp
