@@ -119,6 +119,8 @@ private:
     void refreshTablePropertyEditor();
     void refreshPreview();
     void schedulePreviewRefresh(int delayMs);
+    void scheduleSelectionPropertyRefresh(int delayMs);
+    void scheduleSettingsChanged(int delayMs);
     void refreshSampleDataEditor();
     QJsonObject sampleDataFromEditor(bool* ok = nullptr, QString* errorMessage = nullptr) const;
     bool syncSampleDataFromEditor(bool* ok = nullptr, QString* errorMessage = nullptr);
@@ -206,6 +208,8 @@ private:
     QTimer* m_elementAutoApplyTimer = nullptr;
     QTimer* m_tableAutoApplyTimer = nullptr;
     QTimer* m_previewRefreshTimer = nullptr;
+    QTimer* m_propertyRefreshTimer = nullptr;
+    QTimer* m_settingsChangedTimer = nullptr;
     double m_previewZoomFactor = 1.0;
     bool m_updatingPropertyEditors = false;
     bool m_applyingElementListOrder = false;

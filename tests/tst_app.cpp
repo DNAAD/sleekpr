@@ -141,6 +141,8 @@ private slots:
     void templateDesignerWindowAutoAppliesTextAutoFitFontProperties();
     void templateDesignerWindowAutoApplyKeepsElementListStable();
     void templateDesignerWindowCoalescesAutoApplyPreviewRefresh();
+    void templateDesignerWindowAppliesNumericPropertyPromptly();
+    void templateDesignerWindowCoalescesDragPreviewRefresh();
     void templateDesignerWindowSkipsNoopPropertyApply();
     void templateDesignerWindowAppliesPendingTextOnFocusOut();
     void templateDesignerWindowShowsSampleJsonErrorNearEditor();
@@ -2175,8 +2177,6 @@ void AppTests::templateDesignerWindowCoalescesAutoApplyPreviewRefresh()
     QVERIFY(previewLabel != nullptr);
     QVERIFY(previewTimer != nullptr);
     QVERIFY(previewTimer->isSingleShot());
-    // 测试只验证“自动应用先合并预览刷新”，临时拉长预览定时器窗口，避免 CI/本机负载下踩到 120ms 边界。
-    previewTimer->setInterval(500);
 
     addLayerButton->click();
     addFixedTextButton->click();
@@ -2184,16 +2184,137 @@ void AppTests::templateDesignerWindowCoalescesAutoApplyPreviewRefresh()
     const auto beforePreview = imageBytes(previewLabel->pixmap());
 
     valueEdit->setPlainText(QString::fromUtf8("自动应用预览合并刷新"));
+    QCOMPARE(imageBytes(previewLabel->pixmap()), beforePreview);
 
     QTRY_COMPARE_WITH_TIMEOUT(
         changedSettings.templateDocuments.value(QStringLiteral("default")).layers.last().elements.first().text,
         QString::fromUtf8("自动应用预览合并刷新"),
         1500);
-    QVERIFY(previewTimer->isActive());
-    QCOMPARE(imageBytes(previewLabel->pixmap()), beforePreview);
 
+    QTRY_VERIFY_WITH_TIMEOUT(imageBytes(previewLabel->pixmap()) != beforePreview, 500);
+}
+
+void AppTests::templateDesignerWindowAppliesNumericPropertyPromptly()
+{
+    PrintClientSettings changedSettings;
+    TemplateDesignerWindow window(PrintClientSettings{}, [&changedSettings](const PrintClientSettings& nextSettings) {
+        changedSettings = nextSettings;
+    });
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* addFixedTextButton = window.findChild<QPushButton*>(QStringLiteral("designerAddFixedTextButton"));
+    auto* xSpin = window.findChild<QDoubleSpinBox*>(QStringLiteral("elementXSpin"));
+    TemplatePreviewLabel* previewLabel = nullptr;
+    for (auto* label : window.findChildren<QLabel*>(QStringLiteral("designerPreviewLabel"))) {
+        previewLabel = dynamic_cast<TemplatePreviewLabel*>(label);
+        if (previewLabel != nullptr) {
+            break;
+        }
+    }
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(addFixedTextButton != nullptr);
+    QVERIFY(xSpin != nullptr);
+    QVERIFY(previewLabel != nullptr);
+
+    addLayerButton->click();
+    addFixedTextButton->click();
+    QVERIFY(!previewLabel->pixmap().isNull());
+    const auto beforePreview = imageBytes(previewLabel->pixmap());
+
+    const auto targetX = xSpin->value() + 8.0;
+    xSpin->setValue(targetX);
+
+    QTRY_VERIFY_WITH_TIMEOUT(
+        std::abs(changedSettings.templateDocuments.value(QStringLiteral("default")).layers.last().elements.first().x - targetX) < 0.001,
+        220);
+    QTRY_VERIFY_WITH_TIMEOUT(imageBytes(previewLabel->pixmap()) != beforePreview, 260);
+}
+
+void AppTests::templateDesignerWindowCoalescesDragPreviewRefresh()
+{
+    PrintClientSettings changedSettings;
+    int changedCount = 0;
+    TemplateDesignerWindow window(PrintClientSettings{}, [&changedSettings, &changedCount](const PrintClientSettings& nextSettings) {
+        changedSettings = nextSettings;
+        ++changedCount;
+    });
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* addFixedTextButton = window.findChild<QPushButton*>(QStringLiteral("designerAddFixedTextButton"));
+    auto* elementList = window.findChild<QListWidget*>(QStringLiteral("templateElementList"));
+    auto* previewTimer = window.findChild<QTimer*>(QStringLiteral("designerPreviewRefreshTimer"));
+    auto* propertyTimer = window.findChild<QTimer*>(QStringLiteral("designerPropertyRefreshTimer"));
+    auto* settingsTimer = window.findChild<QTimer*>(QStringLiteral("designerSettingsChangedTimer"));
+    TemplatePreviewLabel* previewLabel = nullptr;
+    for (auto* label : window.findChildren<QLabel*>(QStringLiteral("designerPreviewLabel"))) {
+        previewLabel = dynamic_cast<TemplatePreviewLabel*>(label);
+        if (previewLabel != nullptr) {
+            break;
+        }
+    }
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(addFixedTextButton != nullptr);
+    QVERIFY(elementList != nullptr);
+    QVERIFY(previewTimer != nullptr);
+    QVERIFY(propertyTimer != nullptr);
+    QVERIFY(settingsTimer != nullptr);
+    QVERIFY(previewLabel != nullptr);
+
+    addLayerButton->click();
+    addFixedTextButton->click();
+    QVERIFY(!previewLabel->pixmap().isNull());
+
+    const auto pointAtMm = [previewLabel](double xMm, double yMm) {
+        const auto origin = previewLabel->printableImageOriginPx();
+        const auto imageSize = previewLabel->printableImageSizePx();
+        return QPoint(
+            origin.x() + static_cast<int>(std::round(xMm / 80.0 * imageSize.width())),
+            origin.y() + static_cast<int>(std::round(yMm / 30.0 * imageSize.height())));
+    };
+
+    QTest::mousePress(previewLabel, Qt::LeftButton, Qt::NoModifier, pointAtMm(12.0, 7.0));
+    QVERIFY(elementList->currentItem() != nullptr);
+    const auto elementId = elementList->currentItem()->data(Qt::UserRole).toString();
+    const auto elementX = [](const PrintClientSettings& settings, const QString& id, double* x) {
+        const auto document = settings.templateDocuments.value(QStringLiteral("default"));
+        for (const auto& layer : document.layers) {
+            for (const auto& element : layer.elements) {
+                if (element.id == id) {
+                    *x = element.x;
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+
+    const auto beforePreview = imageBytes(previewLabel->pixmap());
+    const auto beforeChangedCount = changedCount;
+    double beforeX = 0.0;
+    QVERIFY(elementX(changedSettings, elementId, &beforeX));
+
+    QSignalSpy modelResetSpy(elementList->model(), &QAbstractItemModel::modelReset);
+    QSignalSpy rowsInsertedSpy(elementList->model(), &QAbstractItemModel::rowsInserted);
+    QSignalSpy rowsRemovedSpy(elementList->model(), &QAbstractItemModel::rowsRemoved);
+
+    QTest::mouseMove(previewLabel, pointAtMm(18.0, 7.0));
+
+    QVERIFY(previewTimer->isActive());
+    QVERIFY(propertyTimer->isActive());
+    QVERIFY(settingsTimer->isActive());
+    QCOMPARE(imageBytes(previewLabel->pixmap()), beforePreview);
+    QCOMPARE(modelResetSpy.count(), 0);
+    QCOMPARE(rowsInsertedSpy.count(), 0);
+    QCOMPARE(rowsRemovedSpy.count(), 0);
+    QTRY_VERIFY_WITH_TIMEOUT(imageBytes(previewLabel->pixmap()) != beforePreview, 90);
+
+    QTest::mouseRelease(previewLabel, Qt::LeftButton, Qt::NoModifier, pointAtMm(18.0, 7.0));
     QTRY_VERIFY(!previewTimer->isActive());
     QVERIFY(imageBytes(previewLabel->pixmap()) != beforePreview);
+    QTRY_VERIFY(changedCount > beforeChangedCount);
+    double afterX = 0.0;
+    QVERIFY(elementX(changedSettings, elementId, &afterX));
+    QVERIFY(afterX > beforeX);
 }
 
 void AppTests::templateDesignerWindowSkipsNoopPropertyApply()

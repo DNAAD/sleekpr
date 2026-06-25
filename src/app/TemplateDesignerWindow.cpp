@@ -65,8 +65,9 @@ namespace sleekpr::app {
 namespace {
 
 constexpr auto kDefaultPaperSpecId = "label-80x30";
-constexpr int kControlAutoApplyDelayMs = 300;
-constexpr int kPreviewRefreshDelayMs = 120;
+constexpr int kControlAutoApplyDelayMs = 80;
+constexpr int kPreviewRefreshDelayMs = 16;
+constexpr int kSettingsChangedDelayMs = 240;
 constexpr double kDesignerInteractivePreviewDpi = 152.4;
 
 struct JsonTextPosition
@@ -351,6 +352,22 @@ void TemplateDesignerWindow::buildUi()
     m_previewRefreshTimer->setSingleShot(true);
     m_previewRefreshTimer->setInterval(kPreviewRefreshDelayMs);
     connect(m_previewRefreshTimer, &QTimer::timeout, this, [this] { refreshPreview(); });
+    m_propertyRefreshTimer = new QTimer(this);
+    m_propertyRefreshTimer->setObjectName(QStringLiteral("designerPropertyRefreshTimer"));
+    m_propertyRefreshTimer->setSingleShot(true);
+    m_propertyRefreshTimer->setInterval(kPreviewRefreshDelayMs);
+    connect(m_propertyRefreshTimer, &QTimer::timeout, this, [this] {
+        if (currentSelectionIsTable()) {
+            refreshTablePropertyEditor();
+            return;
+        }
+        refreshElementPropertyEditor();
+    });
+    m_settingsChangedTimer = new QTimer(this);
+    m_settingsChangedTimer->setObjectName(QStringLiteral("designerSettingsChangedTimer"));
+    m_settingsChangedTimer->setSingleShot(true);
+    m_settingsChangedTimer->setInterval(kSettingsChangedDelayMs);
+    connect(m_settingsChangedTimer, &QTimer::timeout, this, [this] { notifySettingsChanged(); });
 
     auto* inspectorPanel = new TemplateInspectorPanel(this);
     m_inspectorPanel = inspectorPanel;
@@ -1620,6 +1637,32 @@ void TemplateDesignerWindow::schedulePreviewRefresh(int delayMs)
     m_previewRefreshTimer->start(std::max(0, delayMs));
 }
 
+void TemplateDesignerWindow::scheduleSelectionPropertyRefresh(int delayMs)
+{
+    if (m_propertyRefreshTimer == nullptr) {
+        if (currentSelectionIsTable()) {
+            refreshTablePropertyEditor();
+            return;
+        }
+        refreshElementPropertyEditor();
+        return;
+    }
+
+    // 拖动过程中只合并刷新当前属性页，避免每个鼠标事件都重写整组编辑控件。
+    m_propertyRefreshTimer->start(std::max(0, delayMs));
+}
+
+void TemplateDesignerWindow::scheduleSettingsChanged(int delayMs)
+{
+    if (m_settingsChangedTimer == nullptr) {
+        notifySettingsChanged();
+        return;
+    }
+
+    // 拖拽和键盘微调会高频修改坐标，设置回调与撤销快照统一合并，避免每一帧都序列化模板。
+    m_settingsChangedTimer->start(std::max(0, delayMs));
+}
+
 void TemplateDesignerWindow::applySelectedPaperSpec()
 {
     if (m_paperSpecCombo == nullptr || m_paperSpecCombo->currentIndex() < 0) {
@@ -1663,6 +1706,9 @@ void TemplateDesignerWindow::refreshSampleDataEditor()
 
 void TemplateDesignerWindow::notifySettingsChanged()
 {
+    if (m_settingsChangedTimer != nullptr && m_settingsChangedTimer->isActive()) {
+        m_settingsChangedTimer->stop();
+    }
     if (m_onSettingsChanged) {
         m_onSettingsChanged(m_settings);
     }
@@ -2506,9 +2552,9 @@ void TemplateDesignerWindow::moveSelectedElementByPixels(QPoint delta)
 
         auto& document = m_settings.templateDocuments[m_templateKey];
         if (sleekpr::core::TemplateDocumentEditModel::moveTable(document, tableId, moved.x(), moved.y())) {
-            refreshAll();
-            selectElement(tableId);
-            notifySettingsChanged();
+            scheduleSelectionPropertyRefresh(kPreviewRefreshDelayMs);
+            schedulePreviewRefresh(kPreviewRefreshDelayMs);
+            scheduleSettingsChanged(kSettingsChangedDelayMs);
         }
         return;
     }
@@ -2527,9 +2573,9 @@ void TemplateDesignerWindow::moveSelectedElementByPixels(QPoint delta)
 
     auto& document = m_settings.templateDocuments[m_templateKey];
     if (sleekpr::core::TemplateDocumentEditModel::moveElement(document, elementId, moved.x(), moved.y())) {
-        refreshAll();
-        selectElement(elementId);
-        notifySettingsChanged();
+        scheduleSelectionPropertyRefresh(kPreviewRefreshDelayMs);
+        schedulePreviewRefresh(kPreviewRefreshDelayMs);
+        scheduleSettingsChanged(kSettingsChangedDelayMs);
     }
 }
 
@@ -2549,9 +2595,9 @@ void TemplateDesignerWindow::nudgeSelectedElement(QPoint direction, Qt::Keyboard
                 tableId,
                 std::max(0.0, table->x + direction.x() * step),
                 std::max(0.0, table->y + direction.y() * step))) {
-            refreshAll();
-            selectElement(tableId);
-            notifySettingsChanged();
+            scheduleSelectionPropertyRefresh(kPreviewRefreshDelayMs);
+            schedulePreviewRefresh(kPreviewRefreshDelayMs);
+            scheduleSettingsChanged(kSettingsChangedDelayMs);
         }
         return;
     }
@@ -2569,9 +2615,9 @@ void TemplateDesignerWindow::nudgeSelectedElement(QPoint direction, Qt::Keyboard
             elementId,
             std::max(0.0, element->x + direction.x() * step),
             std::max(0.0, element->y + direction.y() * step))) {
-        refreshAll();
-        selectElement(elementId);
-        notifySettingsChanged();
+        scheduleSelectionPropertyRefresh(kPreviewRefreshDelayMs);
+        schedulePreviewRefresh(kPreviewRefreshDelayMs);
+        scheduleSettingsChanged(kSettingsChangedDelayMs);
     }
 }
 

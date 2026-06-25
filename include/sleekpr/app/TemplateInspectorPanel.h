@@ -23,7 +23,7 @@ class TemplateInspectorPanel final : public QScrollArea
 
 public:
     static constexpr int TextAutoApplyDelayMs = 650;
-    static constexpr int ControlAutoApplyDelayMs = 300;
+    static constexpr int ControlAutoApplyDelayMs = 80;
 
     // 只负责检查器控件创建、属性模型映射和语义信号，模板写回由 Presenter/Command 协调。
     explicit TemplateInspectorPanel(QWidget* parent = nullptr);
