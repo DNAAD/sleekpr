@@ -30,13 +30,22 @@ struct NativeDrawCommand
     // 模板元素 key，用于设置页覆盖位置、字号和加粗状态。
     QString elementKey;
 
-    // 模板设计器文本需要按元素宽度自动换行，超过元素高度的内容由绘制后端裁切。
+    // 模板设计器文本需要按元素宽度自动换行，超出元素高度的内容由绘制后端裁切。
     bool wrapText = false;
 
     // 文本自适应字号只影响 Qt 原生绘制阶段，不改变模板中保存的基础字号。
     bool autoFitFont = false;
     double autoFitMinFontSizePt = 0.0;
     double autoFitMaxFontSizePt = 0.0;
+
+    // 单元格背景色给 Qt 原生预览和打印后端使用；空值表示透明。
+    QString backgroundColor;
+
+    // 单元格文字色给 Qt 原生预览和打印后端使用；空值表示使用默认画笔。
+    QString textColor;
+
+    // 单元格边框宽度使用毫米单位，0 表示沿用当前后端默认线宽。
+    double borderWidthMm = 0.0;
 };
 
-} // 命名空间 sleekpr::core
+} // namespace sleekpr::core

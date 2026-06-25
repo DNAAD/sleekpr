@@ -102,6 +102,7 @@ private slots:
     void tableElementLayoutAppliesCellTemplatesAndMergeRegions();
     void tableElementLayoutRendersSummaryAndFooterBands();
     void tableElementRendererBuildsSinglePageCommands();
+    void tableElementRendererUsesComplexLayoutCells();
     void tableElementRendererDistributesFlexibleColumnWidths();
     void tableElementRendererRejectsNonArrayData();
     void tableElementRendererResolvesNestedDataPathsAndFields();
@@ -1881,6 +1882,65 @@ void CoreTests::tableElementRendererBuildsSinglePageCommands()
     QCOMPARE(result.commands[9].text, QString::fromUtf8("足金项链"));
     QCOMPARE(result.commands[0].x, 6.0);
     QCOMPARE(result.commands[0].y, 12.0);
+}
+
+void CoreTests::tableElementRendererUsesComplexLayoutCells()
+{
+    TableElement table;
+    table.id = QStringLiteral("render-complex");
+    table.dataPath = QStringLiteral("items");
+    table.width = 40.0;
+    table.height = 30.0;
+
+    TableColumn column;
+    column.id = QStringLiteral("name");
+    column.title = QString::fromUtf8("品名");
+    column.fieldKey = QStringLiteral("productName");
+    column.widthMm = 40.0;
+    column.wrapText = true;
+    table.columns.append(column);
+
+    TableCellStyle style;
+    style.id = QStringLiteral("highlight");
+    style.fontSizePt = 9.0;
+    style.bold = true;
+    style.wrapText = true;
+    style.backgroundColor = QStringLiteral("#FFFFCC");
+    style.textColor = QStringLiteral("#222222");
+    table.cellStyles.append(style);
+
+    TableCellTemplate detail;
+    detail.id = QStringLiteral("detail-name");
+    detail.rowBandId = QStringLiteral("detail");
+    detail.columnId = QStringLiteral("name");
+    detail.textTemplate = QStringLiteral("${productName}\n${spec}");
+    detail.styleId = QStringLiteral("highlight");
+    detail.overflowPolicy = TableCellOverflowPolicy::Wrap;
+    detail.maxLines = 2;
+    table.cellTemplates.append(detail);
+
+    TemplateRenderContext context;
+    context.values = QJsonObject{
+        {QStringLiteral("items"),
+         QJsonArray{
+             QJsonObject{{QStringLiteral("productName"), QString::fromUtf8("戒指")}, {QStringLiteral("spec"), QStringLiteral("16#")}},
+         }},
+    };
+
+    const auto result = TableElementRenderer::renderSinglePage(table, context);
+    QVERIFY2(result.success(), qPrintable(result.errorMessage));
+
+    const auto textCommand = std::find_if(result.commands.cbegin(), result.commands.cend(), [](const NativeDrawCommand& command) {
+        return command.elementKey == QStringLiteral("render-complex.row0.name");
+    });
+    QVERIFY(textCommand != result.commands.cend());
+    QCOMPARE(textCommand->text, QString::fromUtf8("戒指\n16#"));
+    QVERIFY(textCommand->wrapText);
+    QCOMPARE(textCommand->maxLines, 2);
+    QCOMPARE(textCommand->fontSizePt, 9.0);
+    QVERIFY(textCommand->bold);
+    QCOMPARE(textCommand->backgroundColor, QStringLiteral("#FFFFCC"));
+    QCOMPARE(textCommand->textColor, QStringLiteral("#222222"));
 }
 
 void CoreTests::tableElementRendererDistributesFlexibleColumnWidths()

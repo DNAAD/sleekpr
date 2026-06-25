@@ -5,12 +5,14 @@
 #include "sleekpr/infrastructure/rendering/TextAutoFitSizer.h"
 
 #include <QBuffer>
+#include <QColor>
 #include <QFont>
 #include <QImage>
 #include <QPainter>
 #include <QPen>
 #include <QTextOption>
 
+#include <algorithm>
 #include <cmath>
 #include <exception>
 
@@ -25,6 +27,12 @@ bool isTopToBottomTextRotation(double rotationDegrees)
         normalized += 360.0;
     }
     return std::abs(normalized - 90.0) < 0.001;
+}
+
+QColor colorOrDefault(const QString& rawColor, const QColor& fallback)
+{
+    const QColor color(rawColor.trimmed());
+    return color.isValid() ? color : fallback;
 }
 
 void drawRotatedText(QPainter& painter, const QRectF& rect, const sleekpr::core::NativeDrawCommand& command, const QTextOption& option)
@@ -75,6 +83,14 @@ QImage LabelPreviewImageRenderer::renderImage(const sleekpr::core::NativeLabelDr
                 painter.rotate(-command.rotationDegrees);
                 painter.translate(-rect.center());
             }
+            if (!command.backgroundColor.trimmed().isEmpty()) {
+                painter.fillRect(rect, colorOrDefault(command.backgroundColor, Qt::transparent));
+            }
+            QPen pen(colorOrDefault(command.textColor, Qt::black));
+            if (command.borderWidthMm > 0.0) {
+                pen.setWidthF(std::max(1.0, command.borderWidthMm * scale));
+            }
+            painter.setPen(pen);
             painter.drawRect(rect);
             painter.restore();
             continue;
@@ -100,6 +116,7 @@ QImage LabelPreviewImageRenderer::renderImage(const sleekpr::core::NativeLabelDr
         option.setAlignment(Qt::AlignLeft | Qt::AlignTop);
 
         painter.save();
+        painter.setPen(colorOrDefault(command.textColor, Qt::black));
         if (command.rotationDegrees != 0.0) {
             drawRotatedText(painter, rect, command, option);
         } else {

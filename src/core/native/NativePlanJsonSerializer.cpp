@@ -23,6 +23,9 @@ QJsonObject NativePlanJsonSerializer::toJson(const NativeLabelDrawingPlan& plan)
             {"ellipsis", command.ellipsis},
             {"elementKey", command.elementKey},
             {"wrapText", command.wrapText},
+            {"backgroundColor", command.backgroundColor},
+            {"textColor", command.textColor},
+            {"borderWidthMm", command.borderWidthMm},
         });
     }
 

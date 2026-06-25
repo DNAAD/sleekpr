@@ -5,6 +5,7 @@
 #include "sleekpr/infrastructure/printing/QrModulePixelLayout.h"
 #include "sleekpr/infrastructure/rendering/TextAutoFitSizer.h"
 
+#include <QColor>
 #include <QFont>
 #include <QMarginsF>
 #include <QPageLayout>
@@ -117,12 +118,29 @@ bool isTopToBottomTextRotation(double rotationDegrees)
     return std::abs(normalized - 90.0) < 0.001;
 }
 
+QColor colorOrDefault(const QString& rawColor, const QColor& fallback)
+{
+    const QColor color(rawColor.trimmed());
+    return color.isValid() ? color : fallback;
+}
+
+double borderWidthPixels(const sleekpr::core::NativeDrawCommand& command, const PagePixelMetrics& metrics)
+{
+    if (command.borderWidthMm <= 0.0) {
+        return 1.0;
+    }
+    return std::max(1.0, command.borderWidthMm * (metrics.scaleX + metrics.scaleY) / 2.0);
+}
+
 void drawRectangle(QPainter& painter, const sleekpr::core::NativeDrawCommand& command, const PagePixelMetrics& metrics)
 {
     const auto rect = pixelAlignedRect(command, metrics);
     painter.save();
     rotateAroundCenter(painter, rect, command.rotationDegrees);
-    painter.setPen(QPen(Qt::black, 1));
+    if (!command.backgroundColor.trimmed().isEmpty()) {
+        painter.fillRect(rect, colorOrDefault(command.backgroundColor, Qt::transparent));
+    }
+    painter.setPen(QPen(Qt::black, borderWidthPixels(command, metrics)));
     painter.drawRect(rect.adjusted(0.0, 0.0, -1.0, -1.0));
     painter.restore();
 }
@@ -191,7 +209,7 @@ void drawText(QPainter& painter, const sleekpr::core::NativeDrawCommand& command
 
     painter.save();
     painter.setFont(commandFont(command, metrics, effectiveFontSizePt));
-    painter.setPen(Qt::black);
+    painter.setPen(colorOrDefault(command.textColor, Qt::black));
     if (command.rotationDegrees != 0.0) {
         if (isTopToBottomTextRotation(command.rotationDegrees)) {
             painter.translate(rect.right(), rect.top());

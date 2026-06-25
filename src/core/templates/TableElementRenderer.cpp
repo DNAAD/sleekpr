@@ -1,6 +1,7 @@
 #include "sleekpr/core/templates/TableElementRenderer.h"
 
 #include "sleekpr/core/native/NativeDrawCommandType.h"
+#include "sleekpr/core/templates/TableElementLayout.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -44,6 +45,113 @@ NativeDrawCommand textCommand(double x, double y, double width, double height, c
     command.ellipsis = column.ellipsis;
     command.elementKey = key;
     return command;
+}
+
+bool usesComplexLayout(const TableElement& table)
+{
+    if (!table.cellStyles.isEmpty()
+        || !table.rowBands.isEmpty()
+        || !table.cellTemplates.isEmpty()
+        || !table.mergeRegions.isEmpty()) {
+        return true;
+    }
+
+    return std::any_of(table.columns.cbegin(), table.columns.cend(), [](const TableColumn& column) {
+        return column.wrapText || !column.defaultCellStyleId.trimmed().isEmpty() || column.minWidthMm > 1.0;
+    });
+}
+
+NativeDrawCommand cellBorderCommand(const TableElement& table,
+                                    const TableLayoutCell& cell,
+                                    double originX,
+                                    double originY)
+{
+    NativeDrawCommand command;
+    command.type = NativeDrawCommandType::Rectangle;
+    command.x = originX + cell.rect.x();
+    command.y = originY + cell.rect.y();
+    command.width = cell.rect.width();
+    command.height = cell.rect.height();
+    command.elementKey = cell.elementKey + QStringLiteral(".border");
+    command.backgroundColor = cell.style.backgroundColor;
+    if (table.drawBorders && cell.style.drawBorder) {
+        command.borderWidthMm = cell.style.borderWidthMm;
+    }
+    return command;
+}
+
+NativeDrawCommand cellTextCommand(const TableLayoutCell& cell, double originX, double originY)
+{
+    NativeDrawCommand command;
+    command.type = NativeDrawCommandType::Text;
+    command.x = originX + cell.rect.x() + cell.style.paddingLeftMm;
+    command.y = originY + cell.rect.y() + cell.style.paddingTopMm;
+    command.width = std::max(0.1, cell.rect.width() - cell.style.paddingLeftMm - cell.style.paddingRightMm);
+    command.height = std::max(0.1, cell.rect.height() - cell.style.paddingTopMm - cell.style.paddingBottomMm);
+    command.text = cell.text;
+    command.fontSizePt = cell.style.fontSizePt;
+    command.bold = cell.style.bold;
+    command.maxLines = cell.maxLines;
+    command.ellipsis = cell.overflowPolicy == TableCellOverflowPolicy::Ellipsis || cell.style.ellipsis;
+    command.elementKey = cell.elementKey;
+    command.wrapText = cell.overflowPolicy == TableCellOverflowPolicy::Wrap || cell.style.wrapText;
+    command.backgroundColor = cell.style.backgroundColor;
+    command.textColor = cell.style.textColor;
+    command.borderWidthMm = cell.style.borderWidthMm;
+    return command;
+}
+
+QList<NativeDrawCommand> layoutPageCommands(const TableElement& table,
+                                            const TableLayoutPage& page,
+                                            double offsetX,
+                                            double offsetY)
+{
+    QList<NativeDrawCommand> commands;
+    const auto originX = table.x + offsetX;
+    const auto originY = table.y + offsetY;
+
+    for (const auto& cell : page.cells) {
+        if (cell.coveredByMerge) {
+            continue;
+        }
+
+        // 背景和边框先生成矩形命令，文本命令只负责排版和字形绘制。
+        const auto hasBackground = !cell.style.backgroundColor.trimmed().isEmpty();
+        if ((table.drawBorders && cell.style.drawBorder) || hasBackground) {
+            commands.append(cellBorderCommand(table, cell, originX, originY));
+        }
+        if (!cell.text.isEmpty()) {
+            commands.append(cellTextCommand(cell, originX, originY));
+        }
+    }
+
+    return commands;
+}
+
+TableRenderResult complexLayoutResult(const TableElement& table,
+                                      const TemplateRenderContext& context,
+                                      double offsetX,
+                                      double offsetY)
+{
+    TableRenderResult result;
+    const auto layout = TableElementLayout::layout(table, context);
+    if (!layout.success()) {
+        result.errorMessage = layout.errorMessage;
+        return result;
+    }
+
+    for (const auto& layoutPage : layout.pages) {
+        TableRenderPage page;
+        page.pageNumber = layoutPage.pageNumber;
+        page.firstRowIndex = layoutPage.firstRowIndex;
+        page.rowCount = layoutPage.rowCount;
+        page.commands = layoutPageCommands(table, layoutPage, offsetX, offsetY);
+        result.pages.append(page);
+    }
+    if (!result.pages.isEmpty()) {
+        result.commands = result.pages.first().commands;
+    }
+    return result;
 }
 
 QString valueToText(const QJsonValue& value)
@@ -215,6 +323,10 @@ TableRenderResult TableElementRenderer::renderSinglePage(const TableElement& tab
                                                          double offsetX,
                                                          double offsetY)
 {
+    if (usesComplexLayout(table)) {
+        return complexLayoutResult(table, context, offsetX, offsetY);
+    }
+
     TableRenderResult result;
     const auto tableId = table.id.trimmed();
     if (tableId.isEmpty()) {
@@ -267,6 +379,10 @@ TableRenderResult TableElementRenderer::renderPages(const TableElement& table,
                                                     double offsetX,
                                                     double offsetY)
 {
+    if (usesComplexLayout(table)) {
+        return complexLayoutResult(table, context, offsetX, offsetY);
+    }
+
     TableRenderResult result;
     const auto tableId = table.id.trimmed();
     if (tableId.isEmpty()) {
