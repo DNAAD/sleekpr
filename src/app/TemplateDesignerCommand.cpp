@@ -222,7 +222,7 @@ TemplateDesignerCommandResult TablePropertiesCommand::apply(sleekpr::core::Templ
     updated.drawBorders = m_model.drawBorders;
 
     QList<sleekpr::core::TableColumn> nextColumns;
-    if (!m_model.columns.isEmpty()) {
+    if (m_model.preferStructuredColumns && !m_model.columns.isEmpty()) {
         nextColumns.reserve(m_model.columns.size());
         for (const auto& columnModel : m_model.columns) {
             nextColumns.append(columnFromModel(columnModel));

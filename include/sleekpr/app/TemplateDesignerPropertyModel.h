@@ -72,6 +72,8 @@ struct DesignerTablePropertyModel
     bool drawBorders = true;
     QString columnsText;
     QList<DesignerTableColumnModel> columns;
+    // 结构化列编辑器发出的模型才优先使用 columns；高级文本框编辑仍走旧文本解析。
+    bool preferStructuredColumns = false;
 };
 
 } // 命名空间 sleekpr::app

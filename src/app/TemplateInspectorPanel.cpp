@@ -585,6 +585,7 @@ void TemplateInspectorPanel::setTableProperties(const DesignerTablePropertyModel
 {
     QScopedValueRollback<bool> setting(m_settingTableProperties, true);
     m_tableModel = model;
+    m_tableColumnsTextEdited = false;
     const auto canEdit = model.visible && model.canEdit;
 
     if (m_tableDisplayNameEdit != nullptr) {
@@ -678,6 +679,7 @@ DesignerTablePropertyModel TemplateInspectorPanel::tableProperties() const
     }
     if (m_tableColumnEditor != nullptr) {
         model.columns = m_tableColumnEditor->columns();
+        model.preferStructuredColumns = !m_tableColumnsTextEdited && !model.columns.isEmpty();
     }
     return model;
 }
@@ -833,11 +835,17 @@ void TemplateInspectorPanel::connectPropertySignals()
     connect(m_tableDetailHeightSpin, &QDoubleSpinBox::valueChanged, this, emitTableControlEdited);
     connect(m_tableRepeatHeaderCheck, &QCheckBox::toggled, this, emitTableControlEdited);
     connect(m_tableDrawBordersCheck, &QCheckBox::toggled, this, emitTableControlEdited);
-    connect(m_tableColumnsEdit, &QLineEdit::textChanged, this, emitTableTextEdited);
+    connect(m_tableColumnsEdit, &QLineEdit::textChanged, this, [this] {
+        if (!m_settingTableProperties) {
+            m_tableColumnsTextEdited = true;
+            emit tablePropertiesEdited(TextAutoApplyDelayMs);
+        }
+    });
     connect(m_tableColumnEditor, &TableColumnEditorPanel::columnsEdited, this, [this] {
         if (m_settingTableProperties) {
             return;
         }
+        m_tableColumnsTextEdited = false;
         if (m_tableColumnsEdit != nullptr && m_tableColumnEditor != nullptr) {
             const QSignalBlocker blocker(m_tableColumnsEdit);
             m_tableColumnsEdit->setText(TableColumnTextCodec::format(tableColumnsFromDesignerModels(m_tableColumnEditor->columns())));

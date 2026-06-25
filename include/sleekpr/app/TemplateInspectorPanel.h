@@ -193,6 +193,7 @@ private:
     DesignerTablePropertyModel m_tableModel;
     bool m_settingElementProperties = false;
     bool m_settingTableProperties = false;
+    bool m_tableColumnsTextEdited = false;
 };
 
 } // 命名空间 sleekpr::app

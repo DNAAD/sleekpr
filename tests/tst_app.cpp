@@ -2682,6 +2682,7 @@ void AppTests::tableDesignerCommandUsesStructuredColumnsWhenPresent()
     model.drawBorders = table.drawBorders;
     model.columnsText = QString::fromUtf8("旧列=oldField:20.00");
     model.columns = {column};
+    model.preferStructuredColumns = true;
 
     const auto result = TablePropertiesCommand(model).apply(document, table.id);
     QVERIFY2(result.errorMessage.isEmpty(), qPrintable(result.errorMessage));
