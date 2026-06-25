@@ -44,6 +44,7 @@ build/
 Build/
 build-*/
 dist/
+.worktrees/
 
 # CMake generated files
 CMakeFiles/
