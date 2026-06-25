@@ -13,8 +13,10 @@
 #include <QImage>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSet>
 #include <QSplitter>
 #include <QSpinBox>
 #include <QTabWidget>
@@ -160,6 +162,7 @@ private slots:
     void tableDesignerCommandUsesStructuredColumnsWhenPresent();
     void templateDesignerPresenterMapsTableColumns();
     void tableColumnEditorPanelEditsAndReordersColumns();
+    void tableColumnEditorPanelGuardsDestructiveColumnActions();
     void templateInspectorPanelExposesTableColumnEditor();
     void templateDesignerPresenterRejectsInvalidTableColumns();
     void paperSpecManagerWindowSavesAndDeletesSpecs();
@@ -2763,6 +2766,56 @@ void AppTests::tableColumnEditorPanelEditsAndReordersColumns()
     moveUp->click();
     QTRY_COMPARE(movedSpy.count(), 1);
     QCOMPARE(panel.columns().first().columnId, QStringLiteral("weight"));
+}
+
+void AppTests::tableColumnEditorPanelGuardsDestructiveColumnActions()
+{
+    TableColumnEditorPanel panel;
+    DesignerTableColumnModel column;
+    column.columnId = QStringLiteral("column1");
+    column.title = QString::fromUtf8("列1");
+    column.fieldKey = QStringLiteral("field1");
+    panel.setColumns({column});
+    panel.selectColumn(0);
+
+    auto* deleteButton = panel.findChild<QPushButton*>(QStringLiteral("tableColumnDeleteButton"));
+    auto* resetButton = panel.findChild<QPushButton*>(QStringLiteral("tableColumnResetButton"));
+    auto* duplicateButton = panel.findChild<QPushButton*>(QStringLiteral("tableColumnDuplicateButton"));
+    auto* addButton = panel.findChild<QPushButton*>(QStringLiteral("tableColumnAddButton"));
+    QVERIFY(deleteButton != nullptr);
+    QVERIFY(resetButton != nullptr);
+    QVERIFY(duplicateButton != nullptr);
+    QVERIFY(addButton != nullptr);
+
+    QVERIFY(!deleteButton->isEnabled());
+    deleteButton->click();
+    QCOMPARE(panel.columns().size(), 1);
+
+    QSignalSpy editedSpy(&panel, &TableColumnEditorPanel::columnsEdited);
+    bool sawResetDialog = false;
+    QTimer::singleShot(0, [&sawResetDialog] {
+        auto* messageBox = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (messageBox == nullptr) {
+            return;
+        }
+        sawResetDialog = true;
+        messageBox->button(QMessageBox::No)->click();
+    });
+    resetButton->click();
+    QVERIFY(sawResetDialog);
+    QCOMPARE(panel.columns().first().columnId, QStringLiteral("column1"));
+    QCOMPARE(editedSpy.count(), 0);
+
+    duplicateButton->click();
+    panel.selectColumn(1);
+    duplicateButton->click();
+    addButton->click();
+
+    QSet<QString> ids;
+    for (const auto& item : panel.columns()) {
+        QVERIFY2(!ids.contains(item.columnId), qPrintable(item.columnId));
+        ids.insert(item.columnId);
+    }
 }
 
 void AppTests::templateInspectorPanelExposesTableColumnEditor()

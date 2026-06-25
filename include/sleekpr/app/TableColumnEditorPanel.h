@@ -37,6 +37,9 @@ private:
     DesignerTableColumnModel columnFromRow(int row) const;
     void writeColumnToRow(int row, const DesignerTableColumnModel& column);
     DesignerTableColumnModel createDefaultColumn() const;
+    QString uniqueColumnId(const QString& preferredId) const;
+    bool hasColumnId(const QString& columnId) const;
+    bool confirmResetColumns();
 
     QTableWidget* m_table = nullptr;
     QPushButton* m_addButton = nullptr;

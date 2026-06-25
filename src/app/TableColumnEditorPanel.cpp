@@ -5,6 +5,7 @@
 #include <QComboBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QTableWidget>
@@ -155,7 +156,7 @@ TableColumnEditorPanel::TableColumnEditorPanel(QWidget* parent)
     });
     connect(m_deleteButton, &QPushButton::clicked, this, [this] {
         const auto row = currentRow();
-        if (row < 0 || row >= m_columns.size()) {
+        if (row < 0 || row >= m_columns.size() || m_columns.size() <= 1) {
             return;
         }
         emit columnDeleteRequested(row);
@@ -170,7 +171,7 @@ TableColumnEditorPanel::TableColumnEditorPanel(QWidget* parent)
             return;
         }
         auto copy = m_columns[row];
-        copy.columnId = copy.columnId + QStringLiteral("_copy");
+        copy.columnId = uniqueColumnId(copy.columnId + QStringLiteral("_copy"));
         copy.title = copy.title + QString::fromUtf8(" 副本");
         emit columnDuplicateRequested(row);
         m_columns.insert(row + 1, copy);
@@ -201,6 +202,9 @@ TableColumnEditorPanel::TableColumnEditorPanel(QWidget* parent)
         emitEdited();
     });
     connect(m_resetButton, &QPushButton::clicked, this, [this] {
+        if (!confirmResetColumns()) {
+            return;
+        }
         emit columnsResetRequested();
         m_columns = {createDefaultColumn()};
         rebuildTable();
@@ -260,7 +264,7 @@ void TableColumnEditorPanel::updateButtonState()
     const auto row = currentRow();
     const auto hasSelection = row >= 0 && row < m_table->rowCount();
     m_addButton->setEnabled(m_editable);
-    m_deleteButton->setEnabled(m_editable && hasSelection);
+    m_deleteButton->setEnabled(m_editable && hasSelection && m_table->rowCount() > 1);
     m_duplicateButton->setEnabled(m_editable && hasSelection);
     m_moveUpButton->setEnabled(m_editable && hasSelection && row > 0);
     m_moveDownButton->setEnabled(m_editable && hasSelection && row < m_table->rowCount() - 1);
@@ -356,12 +360,55 @@ void TableColumnEditorPanel::writeColumnToRow(int row, const DesignerTableColumn
 
 DesignerTableColumnModel TableColumnEditorPanel::createDefaultColumn() const
 {
-    const auto nextIndex = m_columns.size() + 1;
+    auto nextIndex = 1;
+    while (hasColumnId(QStringLiteral("column%1").arg(nextIndex))) {
+        ++nextIndex;
+    }
+
     DesignerTableColumnModel column;
     column.columnId = QStringLiteral("column%1").arg(nextIndex);
     column.title = QString::fromUtf8("新列%1").arg(nextIndex);
     column.fieldKey = QStringLiteral("field%1").arg(nextIndex);
     return column;
+}
+
+QString TableColumnEditorPanel::uniqueColumnId(const QString& preferredId) const
+{
+    auto base = preferredId.trimmed();
+    if (base.isEmpty()) {
+        base = QStringLiteral("column");
+    }
+    auto candidate = base;
+    auto suffix = 2;
+    while (hasColumnId(candidate)) {
+        candidate = QStringLiteral("%1_%2").arg(base).arg(suffix);
+        ++suffix;
+    }
+    return candidate;
+}
+
+bool TableColumnEditorPanel::hasColumnId(const QString& columnId) const
+{
+    for (const auto& column : m_columns) {
+        if (column.columnId == columnId) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool TableColumnEditorPanel::confirmResetColumns()
+{
+    // 重置会覆盖整组列定义，必须让用户显式确认，避免误点破坏复杂表格配置。
+    QMessageBox messageBox(QMessageBox::Question,
+        QString::fromUtf8("重置列配置"),
+        QString::fromUtf8("确定要恢复默认列配置吗？当前列设置会被覆盖。"),
+        QMessageBox::Yes | QMessageBox::No,
+        this);
+    messageBox.setDefaultButton(QMessageBox::No);
+    messageBox.setButtonText(QMessageBox::Yes, QString::fromUtf8("重置"));
+    messageBox.setButtonText(QMessageBox::No, QString::fromUtf8("取消"));
+    return messageBox.exec() == QMessageBox::Yes;
 }
 
 } // namespace sleekpr::app
