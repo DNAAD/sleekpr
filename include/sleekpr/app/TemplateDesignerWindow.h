@@ -74,6 +74,12 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
+    struct TableColumnResizeDrag
+    {
+        QString tableId;
+        int leftColumnIndex = -1;
+    };
+
     void buildUi();
     void ensureCurrentTemplateDocument();
     void addLayer();
@@ -167,7 +173,9 @@ private:
     void rememberCurrentDocumentHistory();
     void updateHistoryButtons();
     void moveSelectedElementByPixels(QPoint delta);
+    void resizeTableColumnByPixels(QPoint delta);
     void nudgeSelectedElement(QPoint direction, Qt::KeyboardModifiers modifiers);
+    std::optional<TableColumnResizeDrag> tableColumnResizeDragAt(QPoint position) const;
 
     sleekpr::core::PrintClientSettings m_settings;
     SettingsChangedCallback m_onSettingsChanged;
@@ -213,6 +221,7 @@ private:
     double m_previewZoomFactor = 1.0;
     bool m_updatingPropertyEditors = false;
     bool m_applyingElementListOrder = false;
+    std::optional<TableColumnResizeDrag> m_tableColumnResizeDrag;
 };
 
 } // 命名空间 sleekpr::app

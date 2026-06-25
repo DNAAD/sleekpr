@@ -69,6 +69,8 @@ constexpr int kControlAutoApplyDelayMs = 80;
 constexpr int kPreviewRefreshDelayMs = 16;
 constexpr int kSettingsChangedDelayMs = 240;
 constexpr double kDesignerInteractivePreviewDpi = 152.4;
+constexpr double kColumnResizeHandleTolerancePx = 6.0;
+constexpr double kColumnResizeMinimumWidthMm = 2.0;
 
 struct JsonTextPosition
 {
@@ -99,6 +101,37 @@ private:
 QSizeF defaultPaperSizeMm()
 {
     return QSizeF(80.0, 30.0);
+}
+
+double designerColumnFlexWeight(const sleekpr::core::TableColumn& column)
+{
+    return column.flexWeight > 0.0 ? column.flexWeight : 1.0;
+}
+
+QList<double> resolvedDesignerColumnWidths(const sleekpr::core::TableElement& table)
+{
+    QList<double> widths;
+    widths.reserve(table.columns.size());
+
+    double fixedTotal = 0.0;
+    double flexWeightTotal = 0.0;
+    for (const auto& column : table.columns) {
+        if (column.widthMode == sleekpr::core::TableColumnWidthMode::Flex) {
+            flexWeightTotal += designerColumnFlexWeight(column);
+        } else {
+            fixedTotal += std::max(0.0, column.widthMm);
+        }
+    }
+
+    const auto remainingWidth = std::max(0.0, table.width - fixedTotal);
+    for (const auto& column : table.columns) {
+        if (column.widthMode == sleekpr::core::TableColumnWidthMode::Flex && flexWeightTotal > 0.0) {
+            widths.append(std::max(column.minWidthMm, remainingWidth * designerColumnFlexWeight(column) / flexWeightTotal));
+        } else {
+            widths.append(std::max(column.minWidthMm, column.widthMm));
+        }
+    }
+    return widths;
 }
 
 JsonTextPosition jsonTextPositionAtOffset(const QString& text, qsizetype byteOffset)
@@ -560,6 +593,16 @@ void TemplateDesignerWindow::buildUi()
     });
     connect(m_previewLabel, &TemplatePreviewLabel::destroyed, this, [this] { m_previewLabel = nullptr; });
     m_previewLabel->setDragStartCallback([this](QPoint position) {
+        m_tableColumnResizeDrag.reset();
+        if (auto resizeDrag = tableColumnResizeDragAt(position); resizeDrag.has_value()) {
+            if (!canEditElement(resizeDrag->tableId)) {
+                return false;
+            }
+            selectElement(resizeDrag->tableId);
+            m_tableColumnResizeDrag = resizeDrag;
+            return true;
+        }
+
         const auto paperSize = currentPaperSizeMm();
         const auto hit = TemplateElementHitTester().hitTest(
             m_previewCommands,
@@ -572,7 +615,13 @@ void TemplateDesignerWindow::buildUi()
         selectElement(hit.value());
         return true;
     });
-    m_previewLabel->setDragDeltaCallback([this](QPoint delta) { moveSelectedElementByPixels(delta); });
+    m_previewLabel->setDragDeltaCallback([this](QPoint delta) {
+        if (m_tableColumnResizeDrag.has_value()) {
+            resizeTableColumnByPixels(delta);
+            return;
+        }
+        moveSelectedElementByPixels(delta);
+    });
     m_previewLabel->setKeyboardNudgeCallback([this](QPoint direction, Qt::KeyboardModifiers modifiers) {
         nudgeSelectedElement(direction, modifiers);
     });
@@ -2534,6 +2583,54 @@ void TemplateDesignerWindow::updateHistoryButtons()
     }
 }
 
+std::optional<TemplateDesignerWindow::TableColumnResizeDrag> TemplateDesignerWindow::tableColumnResizeDragAt(QPoint position) const
+{
+    if (m_previewLabel == nullptr) {
+        return std::nullopt;
+    }
+
+    const auto paperSize = currentPaperSizeMm();
+    const auto previewSize = m_previewLabel->printableImageSizePx();
+    if (paperSize.isEmpty() || previewSize.isEmpty()) {
+        return std::nullopt;
+    }
+
+    const auto imagePosition = m_previewLabel->mapToPrintableImagePx(position);
+    const auto millimetersPerPixelX = paperSize.width() / previewSize.width();
+    const auto millimetersPerPixelY = paperSize.height() / previewSize.height();
+    const QPointF positionMm(imagePosition.x() * millimetersPerPixelX, imagePosition.y() * millimetersPerPixelY);
+    const auto toleranceMm = std::max(0.5, kColumnResizeHandleTolerancePx * millimetersPerPixelX);
+
+    const auto& document = m_settings.templateDocuments.value(m_templateKey);
+    for (const auto& layer : document.layers) {
+        if (!layer.visible || layer.locked) {
+            continue;
+        }
+        for (const auto& table : layer.tables) {
+            if (!table.visible || table.locked || table.columns.size() < 2) {
+                continue;
+            }
+            if (positionMm.y() < table.y || positionMm.y() > table.y + table.height) {
+                continue;
+            }
+            if (positionMm.x() < table.x || positionMm.x() > table.x + table.width) {
+                continue;
+            }
+
+            const auto widths = resolvedDesignerColumnWidths(table);
+            double boundaryX = table.x;
+            for (int columnIndex = 0; columnIndex < widths.size() - 1; ++columnIndex) {
+                boundaryX += widths[columnIndex];
+                if (std::abs(positionMm.x() - boundaryX) <= toleranceMm) {
+                    return TableColumnResizeDrag{table.id, columnIndex};
+                }
+            }
+        }
+    }
+
+    return std::nullopt;
+}
+
 void TemplateDesignerWindow::moveSelectedElementByPixels(QPoint delta)
 {
     ensureCurrentTemplateDocument();
@@ -2576,6 +2673,70 @@ void TemplateDesignerWindow::moveSelectedElementByPixels(QPoint delta)
         scheduleSelectionPropertyRefresh(kPreviewRefreshDelayMs);
         schedulePreviewRefresh(kPreviewRefreshDelayMs);
         scheduleSettingsChanged(kSettingsChangedDelayMs);
+    }
+}
+
+void TemplateDesignerWindow::resizeTableColumnByPixels(QPoint delta)
+{
+    if (!m_tableColumnResizeDrag.has_value() || m_previewLabel == nullptr || delta.x() == 0) {
+        return;
+    }
+
+    ensureCurrentTemplateDocument();
+    if (currentElementId() != m_tableColumnResizeDrag->tableId) {
+        selectElement(m_tableColumnResizeDrag->tableId);
+    }
+
+    auto* table = currentTable();
+    if (table == nullptr || table->id != m_tableColumnResizeDrag->tableId) {
+        return;
+    }
+
+    const auto leftIndex = m_tableColumnResizeDrag->leftColumnIndex;
+    const auto rightIndex = leftIndex + 1;
+    if (leftIndex < 0 || rightIndex >= table->columns.size()) {
+        return;
+    }
+
+    const auto paperSize = currentPaperSizeMm();
+    const auto previewSize = m_previewLabel->printableImageSizePx();
+    if (paperSize.isEmpty() || previewSize.isEmpty()) {
+        return;
+    }
+
+    const auto widths = resolvedDesignerColumnWidths(*table);
+    if (widths.size() != table->columns.size()) {
+        return;
+    }
+
+    const auto deltaMm = delta.x() * paperSize.width() / previewSize.width();
+    const auto combinedWidth = widths[leftIndex] + widths[rightIndex];
+    const auto minLeft = std::max(kColumnResizeMinimumWidthMm, table->columns[leftIndex].minWidthMm);
+    const auto minRight = std::max(kColumnResizeMinimumWidthMm, table->columns[rightIndex].minWidthMm);
+    if (combinedWidth <= minLeft + minRight) {
+        return;
+    }
+
+    const auto nextLeftWidth = std::clamp(widths[leftIndex] + deltaMm, minLeft, combinedWidth - minRight);
+    const auto nextRightWidth = combinedWidth - nextLeftWidth;
+    if (std::abs(nextLeftWidth - table->columns[leftIndex].widthMm) < 0.001
+        && std::abs(nextRightWidth - table->columns[rightIndex].widthMm) < 0.001
+        && table->columns[leftIndex].widthMode == sleekpr::core::TableColumnWidthMode::Fixed
+        && table->columns[rightIndex].widthMode == sleekpr::core::TableColumnWidthMode::Fixed) {
+        return;
+    }
+
+    // 画布列宽拖拽表示用户要固定当前相邻两列的毫米宽度，避免弹性列继续覆盖拖拽结果。
+    table->columns[leftIndex].widthMode = sleekpr::core::TableColumnWidthMode::Fixed;
+    table->columns[rightIndex].widthMode = sleekpr::core::TableColumnWidthMode::Fixed;
+    table->columns[leftIndex].widthMm = nextLeftWidth;
+    table->columns[rightIndex].widthMm = nextRightWidth;
+
+    scheduleSelectionPropertyRefresh(kPreviewRefreshDelayMs);
+    schedulePreviewRefresh(kPreviewRefreshDelayMs);
+    scheduleSettingsChanged(kSettingsChangedDelayMs);
+    if (m_statusLabel != nullptr) {
+        m_statusLabel->setText(QString::fromUtf8("已调整表格列宽"));
     }
 }
 

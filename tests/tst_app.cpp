@@ -151,6 +151,7 @@ private slots:
     void templateDesignerWindowTableColumnEditorAffectsPreviewCommands();
     void templateDesignerWindowAppliesNumericPropertyPromptly();
     void templateDesignerWindowCoalescesDragPreviewRefresh();
+    void templateDesignerWindowDragsTableColumnWidthOnCanvas();
     void templateDesignerWindowSkipsNoopPropertyApply();
     void templateDesignerWindowAppliesPendingTextOnFocusOut();
     void templateDesignerWindowShowsSampleJsonErrorNearEditor();
@@ -2400,6 +2401,66 @@ void AppTests::templateDesignerWindowCoalescesDragPreviewRefresh()
     double afterX = 0.0;
     QVERIFY(elementX(changedSettings, elementId, &afterX));
     QVERIFY(afterX > beforeX);
+}
+
+void AppTests::templateDesignerWindowDragsTableColumnWidthOnCanvas()
+{
+    PrintClientSettings changedSettings;
+    TemplateDesignerWindow window(PrintClientSettings{}, [&changedSettings](const PrintClientSettings& nextSettings) {
+        changedSettings = nextSettings;
+    });
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* addTableButton = window.findChild<QPushButton*>(QStringLiteral("designerAddTableButton"));
+    auto* previewTimer = window.findChild<QTimer*>(QStringLiteral("designerPreviewRefreshTimer"));
+    TemplatePreviewLabel* previewLabel = nullptr;
+    for (auto* label : window.findChildren<QLabel*>(QStringLiteral("designerPreviewLabel"))) {
+        previewLabel = dynamic_cast<TemplatePreviewLabel*>(label);
+        if (previewLabel != nullptr) {
+            break;
+        }
+    }
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(addTableButton != nullptr);
+    QVERIFY(previewTimer != nullptr);
+    QVERIFY(previewLabel != nullptr);
+
+    addLayerButton->click();
+    addTableButton->click();
+    QVERIFY(!previewLabel->pixmap().isNull());
+
+    const auto tableAt = [](const PrintClientSettings& settings) -> TableElement {
+        const auto document = settings.templateDocuments.value(QStringLiteral("default"));
+        return document.layers.last().tables.first();
+    };
+    const auto beforeTable = tableAt(changedSettings);
+    QCOMPARE(beforeTable.columns.size(), 2);
+    const auto beforeX = beforeTable.x;
+    const auto beforeFirstWidth = beforeTable.columns[0].widthMm;
+    const auto beforeSecondWidth = beforeTable.columns[1].widthMm;
+
+    const auto pointAtMm = [previewLabel](double xMm, double yMm) {
+        const auto origin = previewLabel->printableImageOriginPx();
+        const auto imageSize = previewLabel->printableImageSizePx();
+        return QPoint(
+            origin.x() + static_cast<int>(std::round(xMm / 80.0 * imageSize.width())),
+            origin.y() + static_cast<int>(std::round(yMm / 30.0 * imageSize.height())));
+    };
+
+    const auto boundaryX = beforeTable.x + beforeFirstWidth;
+    const auto dragY = beforeTable.y + 2.0;
+    QTest::mousePress(previewLabel, Qt::LeftButton, Qt::NoModifier, pointAtMm(boundaryX, dragY));
+    QTest::mouseMove(previewLabel, pointAtMm(boundaryX + 8.0, dragY));
+    QVERIFY(previewTimer->isActive());
+    QTest::mouseRelease(previewLabel, Qt::LeftButton, Qt::NoModifier, pointAtMm(boundaryX + 8.0, dragY));
+
+    QTRY_VERIFY_WITH_TIMEOUT(tableAt(changedSettings).columns[0].widthMm > beforeFirstWidth + 6.0, 500);
+    const auto afterTable = tableAt(changedSettings);
+    QCOMPARE(afterTable.x, beforeX);
+    QVERIFY(afterTable.columns[1].widthMm < beforeSecondWidth - 6.0);
+    QCOMPARE(afterTable.columns[0].widthMode, TableColumnWidthMode::Fixed);
+    QCOMPARE(afterTable.columns[1].widthMode, TableColumnWidthMode::Fixed);
+    QCOMPARE(afterTable.columns[0].widthMm + afterTable.columns[1].widthMm, beforeFirstWidth + beforeSecondWidth);
 }
 
 void AppTests::templateDesignerWindowSkipsNoopPropertyApply()
