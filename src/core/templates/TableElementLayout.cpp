@@ -319,7 +319,13 @@ QString textForCell(const TableColumn& column,
             return valueToText(valueForTemplateField(rowObject, rootValues, cellTemplate->fieldKey));
         }
     }
-    return header ? column.title : valueToText(valueAtPath(*rowObject, column.fieldKey));
+    if (header) {
+        return column.title;
+    }
+    if (rowObject == nullptr) {
+        return QString();
+    }
+    return valueToText(valueAtPath(*rowObject, column.fieldKey));
 }
 
 TableLayoutCell makeCell(const TableElement& table,
@@ -433,6 +439,13 @@ QList<TableRowBand> headerBands(const TableElement& table)
             result.append(rowBand);
         }
     }
+    if (result.isEmpty()) {
+        TableRowBand rowBand;
+        rowBand.id = QStringLiteral("header");
+        rowBand.kind = TableRowBandKind::Header;
+        rowBand.heightMm = table.headerRowHeightMm;
+        result.append(rowBand);
+    }
     return result;
 }
 
@@ -450,6 +463,27 @@ QList<TableRowBand> detailBands(const TableElement& table)
 
     for (const auto& rowBand : table.rowBands) {
         if (rowBand.kind == TableRowBandKind::Detail) {
+            result.append(rowBand);
+        }
+    }
+    if (result.isEmpty()) {
+        TableRowBand rowBand;
+        rowBand.id = QStringLiteral("detail");
+        rowBand.kind = TableRowBandKind::Detail;
+        rowBand.heightMm = table.detailRowHeightMm;
+        result.append(rowBand);
+    }
+    return result;
+}
+
+QList<TableRowBand> staticTrailingBands(const TableElement& table)
+{
+    QList<TableRowBand> result;
+    for (const auto& rowBand : table.rowBands) {
+        if (rowBand.kind == TableRowBandKind::Summary
+            || rowBand.kind == TableRowBandKind::Subtotal
+            || rowBand.kind == TableRowBandKind::GroupFooter
+            || rowBand.kind == TableRowBandKind::Footer) {
             result.append(rowBand);
         }
     }
@@ -514,6 +548,14 @@ TableLayoutResult TableElementLayout::layout(const TableElement& table, const Te
             appendColumnCells(&page, table, rowBand.id, rowIndex, currentY, rowHeight, &row, context.values, rowKey, false);
             currentY += rowHeight;
         }
+    }
+
+    for (const auto& rowBand : staticTrailingBands(table)) {
+        const auto rowHeight = rowBand.heightMode == TableRowHeightMode::Auto
+            ? std::max(rowBand.minHeightMm, rowBand.heightMm)
+            : rowBand.heightMm;
+        appendColumnCells(&page, table, rowBand.id, -1, currentY, rowHeight, nullptr, context.values, rowBand.id, false);
+        currentY += rowHeight;
     }
 
     result.pages.append(page);

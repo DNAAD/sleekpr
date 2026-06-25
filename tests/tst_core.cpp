@@ -100,6 +100,7 @@ private slots:
     void tableElementLayoutRejectsInvalidMergeRegion();
     void tableElementLayoutUsesAutoRowHeightForWrappedText();
     void tableElementLayoutAppliesCellTemplatesAndMergeRegions();
+    void tableElementLayoutRendersSummaryAndFooterBands();
     void tableElementRendererBuildsSinglePageCommands();
     void tableElementRendererDistributesFlexibleColumnWidths();
     void tableElementRendererRejectsNonArrayData();
@@ -1773,6 +1774,68 @@ void CoreTests::tableElementLayoutAppliesCellTemplatesAndMergeRegions()
     QVERIFY(headerCell != result.pages.first().cells.cend());
     QCOMPARE(headerCell->text, QString::fromUtf8("商品信息"));
     QCOMPARE(headerCell->rect.width(), 60.0);
+}
+
+void CoreTests::tableElementLayoutRendersSummaryAndFooterBands()
+{
+    TableElement table;
+    table.id = QStringLiteral("summary-table");
+    table.dataPath = QStringLiteral("items");
+    table.width = 40.0;
+    table.height = 40.0;
+
+    TableColumn labelColumn;
+    labelColumn.id = QStringLiteral("label");
+    labelColumn.title = QString::fromUtf8("项目");
+    labelColumn.fieldKey = QStringLiteral("name");
+    labelColumn.widthMm = 20.0;
+    table.columns.append(labelColumn);
+
+    TableColumn amountColumn;
+    amountColumn.id = QStringLiteral("amount");
+    amountColumn.title = QString::fromUtf8("金额");
+    amountColumn.fieldKey = QStringLiteral("amount");
+    amountColumn.widthMm = 20.0;
+    table.columns.append(amountColumn);
+
+    TableRowBand summaryBand;
+    summaryBand.id = QStringLiteral("summary");
+    summaryBand.kind = TableRowBandKind::Summary;
+    summaryBand.heightMm = 5.0;
+    table.rowBands.append(summaryBand);
+
+    TableCellTemplate summaryLabel;
+    summaryLabel.id = QStringLiteral("summary-label");
+    summaryLabel.rowBandId = QStringLiteral("summary");
+    summaryLabel.columnId = QStringLiteral("label");
+    summaryLabel.textTemplate = QString::fromUtf8("合计");
+    table.cellTemplates.append(summaryLabel);
+
+    TableCellTemplate summaryAmount;
+    summaryAmount.id = QStringLiteral("summary-amount");
+    summaryAmount.rowBandId = QStringLiteral("summary");
+    summaryAmount.columnId = QStringLiteral("amount");
+    summaryAmount.textTemplate = QStringLiteral("${totalAmount}");
+    table.cellTemplates.append(summaryAmount);
+
+    TemplateRenderContext context;
+    context.values = QJsonObject{
+        {QStringLiteral("totalAmount"), QStringLiteral("1880.00")},
+        {QStringLiteral("items"),
+         QJsonArray{
+             QJsonObject{{QStringLiteral("name"), QString::fromUtf8("戒指")}, {QStringLiteral("amount"), 1880}},
+         }},
+    };
+
+    const auto result = TableElementLayout::layout(table, context);
+    QVERIFY2(result.success(), qPrintable(result.errorMessage));
+
+    const auto summaryCell = std::find_if(result.pages.first().cells.cbegin(), result.pages.first().cells.cend(), [](const TableLayoutCell& cell) {
+        return cell.rowBandId == QStringLiteral("summary") && cell.columnId == QStringLiteral("amount");
+    });
+    QVERIFY(summaryCell != result.pages.first().cells.cend());
+    QCOMPARE(summaryCell->text, QStringLiteral("1880.00"));
+    QVERIFY(summaryCell->rect.y() > table.headerRowHeightMm);
 }
 
 void CoreTests::tableElementRendererBuildsSinglePageCommands()
