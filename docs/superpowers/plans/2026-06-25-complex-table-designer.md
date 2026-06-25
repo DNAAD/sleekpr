@@ -65,7 +65,7 @@ Expected: no output.
 - Modify: `tests/CMakeLists.txt`
 - Test: `tests/tst_app.cpp`
 
-- [ ] **Step 1: Write failing codec and model tests**
+- [x] **Step 1: Write failing codec and model tests**
 
 Add test declarations in `tests/tst_app.cpp`:
 
@@ -176,7 +176,7 @@ void AppTests::tableDesignerCommandUsesStructuredColumnsWhenPresent()
 }
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run:
 
@@ -186,7 +186,7 @@ Run:
 
 Expected: build fails because `TableColumnTextCodec` and `DesignerTableColumnModel` do not exist.
 
-- [ ] **Step 3: Add `DesignerTableColumnModel`**
+- [x] **Step 3: Add `DesignerTableColumnModel`**
 
 Modify `include/sleekpr/app/TemplateDesignerPropertyModel.h`:
 
@@ -220,7 +220,7 @@ Add to `DesignerTablePropertyModel`:
 QList<DesignerTableColumnModel> columns;
 ```
 
-- [ ] **Step 4: Add codec files**
+- [x] **Step 4: Add codec files**
 
 Create `include/sleekpr/app/TableColumnTextCodec.h`:
 
@@ -304,7 +304,7 @@ QList<sleekpr::core::TableColumn> TableColumnTextCodec::parse(const QString& tex
 } // namespace sleekpr::app
 ```
 
-- [ ] **Step 5: Wire codec into command**
+- [x] **Step 5: Wire codec into command**
 
 Modify `TemplateDesignerCommand.cpp`:
 
@@ -365,7 +365,7 @@ if (nextColumns.isEmpty()) {
 updated.columns = nextColumns;
 ```
 
-- [ ] **Step 6: Add files to CMake**
+- [x] **Step 6: Add files to CMake**
 
 Modify `CMakeLists.txt` `add_executable(sleekpr ...)`:
 
@@ -381,13 +381,13 @@ Modify `tests/CMakeLists.txt` `add_executable(sleekpr_app_tests ...)`:
 ../include/sleekpr/app/TableColumnTextCodec.h
 ```
 
-- [ ] **Step 7: Run GREEN**
+- [x] **Step 7: Run GREEN**
 
 Run the same targeted command from Step 2.
 
 Expected: both tests pass.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```powershell
 git add include/sleekpr/app/TemplateDesignerPropertyModel.h include/sleekpr/app/TableColumnTextCodec.h src/app/TableColumnTextCodec.cpp include/sleekpr/app/TemplateDesignerCommand.h src/app/TemplateDesignerCommand.cpp CMakeLists.txt tests/CMakeLists.txt tests/tst_app.cpp
@@ -401,7 +401,7 @@ git commit -m "引入表格列结构化设计模型"
 - Modify: `src/app/TemplateDesignerPresenter.cpp`
 - Test: `tests/tst_app.cpp`
 
-- [ ] **Step 1: Write failing presenter test**
+- [x] **Step 1: Write failing presenter test**
 
 Add declaration:
 
@@ -453,7 +453,7 @@ void AppTests::templateDesignerPresenterMapsTableColumns()
 }
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -463,7 +463,7 @@ Run:
 
 Expected: build fails because `tableColumnsFromModels` does not exist.
 
-- [ ] **Step 3: Add presenter APIs**
+- [x] **Step 3: Add presenter APIs**
 
 In `TemplateDesignerPresenter.h`:
 
@@ -475,7 +475,7 @@ In `TemplateDesignerPresenter.h`:
 
 Include `QList` and `TableElement.h` if needed.
 
-- [ ] **Step 4: Implement conversion**
+- [x] **Step 4: Implement conversion**
 
 In `TemplateDesignerPresenter.cpp`:
 
@@ -531,13 +531,13 @@ for (const auto& column : table.columns) {
 }
 ```
 
-- [ ] **Step 5: Run GREEN**
+- [x] **Step 5: Run GREEN**
 
 Run the command from Step 2.
 
 Expected: test passes.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add include/sleekpr/app/TemplateDesignerPresenter.h src/app/TemplateDesignerPresenter.cpp tests/tst_app.cpp
@@ -553,7 +553,7 @@ git commit -m "完善表格列属性转换"
 - Modify: `tests/CMakeLists.txt`
 - Test: `tests/tst_app.cpp`
 
-- [ ] **Step 1: Write failing panel test**
+- [x] **Step 1: Write failing panel test**
 
 Add declaration:
 
@@ -605,7 +605,7 @@ void AppTests::tableColumnEditorPanelEditsAndReordersColumns()
 }
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -615,7 +615,7 @@ Run:
 
 Expected: build fails because `TableColumnEditorPanel` does not exist.
 
-- [ ] **Step 3: Add panel header**
+- [x] **Step 3: Add panel header**
 
 Create `include/sleekpr/app/TableColumnEditorPanel.h`:
 
@@ -675,7 +675,7 @@ private:
 } // namespace sleekpr::app
 ```
 
-- [ ] **Step 4: Implement minimal panel**
+- [x] **Step 4: Implement minimal panel**
 
 Create `src/app/TableColumnEditorPanel.cpp` with:
 
@@ -703,7 +703,7 @@ void TableColumnEditorPanel::emitEdited()
 }
 ```
 
-- [ ] **Step 5: Add files to CMake**
+- [x] **Step 5: Add files to CMake**
 
 Modify app and app-test targets:
 
@@ -719,13 +719,13 @@ For tests:
 ../include/sleekpr/app/TableColumnEditorPanel.h
 ```
 
-- [ ] **Step 6: Run GREEN**
+- [x] **Step 6: Run GREEN**
 
 Run the command from Step 2.
 
 Expected: test passes.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add include/sleekpr/app/TableColumnEditorPanel.h src/app/TableColumnEditorPanel.cpp CMakeLists.txt tests/CMakeLists.txt tests/tst_app.cpp
@@ -739,7 +739,7 @@ git commit -m "新增表格列编辑面板"
 - Modify: `src/app/TemplateInspectorPanel.cpp`
 - Test: `tests/tst_app.cpp`
 
-- [ ] **Step 1: Write failing inspector test**
+- [x] **Step 1: Write failing inspector test**
 
 Add declaration:
 
@@ -784,7 +784,7 @@ void AppTests::templateInspectorPanelExposesTableColumnEditor()
 }
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -794,7 +794,7 @@ Run:
 
 Expected: fails because inspector does not create the editor.
 
-- [ ] **Step 3: Add member and accessor**
+- [x] **Step 3: Add member and accessor**
 
 In `TemplateInspectorPanel.h`:
 
@@ -814,7 +814,7 @@ Add member:
 TableColumnEditorPanel* m_tableColumnEditor = nullptr;
 ```
 
-- [ ] **Step 4: Create and place editor**
+- [x] **Step 4: Create and place editor**
 
 In `TemplateInspectorPanel.cpp` include:
 
@@ -859,7 +859,7 @@ tableTabLayout->addWidget(m_tableColumnEditor);
 
 Keep `m_tableColumnsEdit` visible below as advanced text config.
 
-- [ ] **Step 5: Synchronize set/get**
+- [x] **Step 5: Synchronize set/get**
 
 In `setTableProperties`:
 
@@ -878,7 +878,7 @@ if (m_tableColumnEditor != nullptr) {
 }
 ```
 
-- [ ] **Step 6: Connect signals**
+- [x] **Step 6: Connect signals**
 
 In `connectPropertySignals()`:
 
@@ -895,13 +895,13 @@ connect(m_tableColumnEditor, &TableColumnEditorPanel::columnsEdited, this, [this
 });
 ```
 
-- [ ] **Step 7: Run GREEN**
+- [x] **Step 7: Run GREEN**
 
 Run the command from Step 2.
 
 Expected: test passes.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```powershell
 git add include/sleekpr/app/TemplateInspectorPanel.h src/app/TemplateInspectorPanel.cpp tests/tst_app.cpp
@@ -914,7 +914,7 @@ git commit -m "接入表格列编辑面板"
 - Modify: `src/app/TemplateDesignerWindow.cpp`
 - Modify: `tests/tst_app.cpp`
 
-- [ ] **Step 1: Write failing designer integration test**
+- [x] **Step 1: Write failing designer integration test**
 
 Add declaration:
 
@@ -962,7 +962,7 @@ void AppTests::templateDesignerWindowAutoAppliesTableColumnEditorChanges()
 }
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -972,7 +972,7 @@ Run:
 
 Expected: fails until inspector integration and command apply structured columns correctly.
 
-- [ ] **Step 3: Adjust lightweight table apply**
+- [x] **Step 3: Adjust lightweight table apply**
 
 In `TemplateDesignerWindow::applyCurrentTableProperties(bool lightweightRefresh)`, ensure it reads `m_inspectorPanel->tableProperties()` after the column editor has updated its model. Keep existing behavior:
 
@@ -988,13 +988,13 @@ notifySettingsChanged();
 
 No full `refreshAll()` should happen for column editor auto-apply.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 Run command from Step 2.
 
 Expected: test passes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/app/TemplateDesignerWindow.cpp tests/tst_app.cpp
@@ -1006,7 +1006,7 @@ git commit -m "联通表格列编辑自动应用"
 **Files:**
 - Modify: `tests/tst_app.cpp`
 
-- [ ] **Step 1: Write persistence/preview regression test**
+- [x] **Step 1: Write persistence/preview regression test**
 
 Add declaration:
 
@@ -1062,11 +1062,11 @@ void AppTests::templateDesignerWindowTableColumnEditorAffectsPreviewCommands()
 }
 ```
 
-- [ ] **Step 2: Run regression test**
+- [x] **Step 2: Run regression test**
 
 Run targeted test. This is a regression test for the completed integration path; it is acceptable for the first run to pass if Task 5 already implemented the behavior.
 
-- [ ] **Step 3: Diagnose any regression failure**
+- [x] **Step 3: Diagnose any regression failure**
 
 When the test fails on persisted column data, inspect `TemplateInspectorPanel::tableProperties()` and verify it assigns `model.columns = m_tableColumnEditor->columns();`.
 
@@ -1074,7 +1074,7 @@ When the test fails on preview update, inspect `TemplateInspectorPanel::connectP
 
 When the test fails on advanced text synchronization, update `m_tableColumnsEdit` with `TableColumnTextCodec::format(tableColumnsFromDesignerModels(m_tableColumnEditor->columns()))` under `QSignalBlocker`.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 Run:
 
@@ -1084,7 +1084,7 @@ Run:
 
 Expected: test passes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add tests/tst_app.cpp src/app/TemplateInspectorPanel.cpp src/app/TemplateDesignerPresenter.cpp src/app/TemplateDesignerCommand.cpp
@@ -1096,7 +1096,7 @@ git commit -m "补充表格列编辑预览回归"
 **Files:**
 - No source edits expected.
 
-- [ ] **Step 1: Run diff check**
+- [x] **Step 1: Run diff check**
 
 ```powershell
 git diff --check
@@ -1104,7 +1104,7 @@ git diff --check
 
 Expected: no whitespace errors. CRLF warnings are acceptable in this repository.
 
-- [ ] **Step 2: Build test targets and run CTest**
+- [x] **Step 2: Build test targets and run CTest**
 
 If `build\sleekpr.exe` is running, do not run full `cmake --build build`; link will fail with `LNK1168`. Build test targets directly:
 
@@ -1114,7 +1114,7 @@ If `build\sleekpr.exe` is running, do not run full `cmake --build build`; link w
 
 Expected: `100% tests passed, 0 tests failed out of 3`.
 
-- [ ] **Step 3: Inspect final status**
+- [x] **Step 3: Inspect final status**
 
 ```powershell
 git status --short
@@ -1123,7 +1123,7 @@ git log --oneline -5
 
 Expected: clean worktree after the final commit, with feature commits above the spec commit.
 
-- [ ] **Step 4: Report outcome**
+- [x] **Step 4: Report outcome**
 
 Summarize:
 
@@ -1131,3 +1131,10 @@ Summarize:
 - Structured column model and legacy text compatibility.
 - Tests run and result.
 - Any remaining known limitations: no canvas column drag, no auto row height, no summary rows.
+
+## Completion Notes
+
+- 已完成右侧表格列配置编辑器、结构化列模型、旧列文本兼容和预览回归验证。
+- 合并前补强已完成：最后一列删除保护、重置确认弹窗、复制和新增列的唯一 `columnId` 生成。
+- 验证命令：`git diff --check` 通过，仅有 CRLF 提示；`ctest --test-dir build --output-on-failure` 结果为 3/3 tests passed。
+- 当前阶段仍不包含：画布拖拽列宽、自动行高、多行单元格、汇总/分组/页脚行、合并单元格和单元格级样式覆盖。
