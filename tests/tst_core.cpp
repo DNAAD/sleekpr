@@ -101,6 +101,8 @@ private slots:
     void tableElementLayoutUsesAutoRowHeightForWrappedText();
     void tableElementLayoutAppliesCellTemplatesAndMergeRegions();
     void tableElementLayoutRendersSummaryAndFooterBands();
+    void tableElementLayoutPaginatesAndRepeatsHeader();
+    void tableElementLayoutAppliesMaxPagesOverflowPolicy();
     void tableElementRendererBuildsSinglePageCommands();
     void tableElementRendererUsesComplexLayoutCells();
     void tableElementRendererDistributesFlexibleColumnWidths();
@@ -1837,6 +1839,99 @@ void CoreTests::tableElementLayoutRendersSummaryAndFooterBands()
     QVERIFY(summaryCell != result.pages.first().cells.cend());
     QCOMPARE(summaryCell->text, QStringLiteral("1880.00"));
     QVERIFY(summaryCell->rect.y() > table.headerRowHeightMm);
+}
+
+void CoreTests::tableElementLayoutPaginatesAndRepeatsHeader()
+{
+    TableElement table;
+    table.id = QStringLiteral("paged-layout");
+    table.dataPath = QStringLiteral("items");
+    table.width = 30.0;
+    table.height = 12.0;
+    table.headerRowHeightMm = 4.0;
+    table.detailRowHeightMm = 4.0;
+    table.pagination.repeatHeaderOnPage = true;
+
+    TableColumn column;
+    column.id = QStringLiteral("name");
+    column.title = QString::fromUtf8("品名");
+    column.fieldKey = QStringLiteral("name");
+    column.widthMm = 30.0;
+    table.columns.append(column);
+
+    TemplateRenderContext context;
+    context.values = QJsonObject{
+        {QStringLiteral("items"),
+         QJsonArray{
+             QJsonObject{{QStringLiteral("name"), QString::fromUtf8("戒指")}},
+             QJsonObject{{QStringLiteral("name"), QString::fromUtf8("项链")}},
+             QJsonObject{{QStringLiteral("name"), QString::fromUtf8("手镯")}},
+         }},
+    };
+
+    const auto result = TableElementLayout::layout(table, context);
+    QVERIFY2(result.success(), qPrintable(result.errorMessage));
+    QCOMPARE(result.pages.size(), 2);
+    QCOMPARE(result.pages[0].firstRowIndex, 0);
+    QCOMPARE(result.pages[0].rowCount, 2);
+    QCOMPARE(result.pages[1].firstRowIndex, 2);
+    QCOMPARE(result.pages[1].rowCount, 1);
+    QCOMPARE(result.pages[1].cells.first().rowBandId, QStringLiteral("header"));
+    QCOMPARE(result.pages[1].cells.first().rect.y(), 0.0);
+
+    const auto secondPageDetail = std::find_if(result.pages[1].cells.cbegin(), result.pages[1].cells.cend(), [](const TableLayoutCell& cell) {
+        return cell.rowBandId == QStringLiteral("detail") && cell.sourceRowIndex == 2;
+    });
+    QVERIFY(secondPageDetail != result.pages[1].cells.cend());
+    QCOMPARE(secondPageDetail->rect.y(), 4.0);
+}
+
+void CoreTests::tableElementLayoutAppliesMaxPagesOverflowPolicy()
+{
+    TableElement table;
+    table.id = QStringLiteral("max-page-layout");
+    table.dataPath = QStringLiteral("items");
+    table.width = 30.0;
+    table.height = 12.0;
+    table.headerRowHeightMm = 4.0;
+    table.detailRowHeightMm = 4.0;
+    table.pagination.repeatHeaderOnPage = true;
+    table.pagination.maxPages = 1;
+
+    TableColumn column;
+    column.id = QStringLiteral("name");
+    column.title = QString::fromUtf8("品名");
+    column.fieldKey = QStringLiteral("name");
+    column.widthMm = 30.0;
+    table.columns.append(column);
+
+    TemplateRenderContext context;
+    context.values = QJsonObject{
+        {QStringLiteral("items"),
+         QJsonArray{
+             QJsonObject{{QStringLiteral("name"), QStringLiteral("A")}},
+             QJsonObject{{QStringLiteral("name"), QStringLiteral("B")}},
+             QJsonObject{{QStringLiteral("name"), QStringLiteral("C")}},
+         }},
+    };
+
+    table.pagination.overflowPolicy = TableTableOverflowPolicy::Error;
+    const auto errorResult = TableElementLayout::layout(table, context);
+    QVERIFY(!errorResult.success());
+    QVERIFY(errorResult.errorMessage.contains(QStringLiteral("max-page-layout")));
+    QVERIFY(errorResult.errorMessage.contains(QStringLiteral("1")));
+
+    table.pagination.overflowPolicy = TableTableOverflowPolicy::Clip;
+    const auto clipResult = TableElementLayout::layout(table, context);
+    QVERIFY2(clipResult.success(), qPrintable(clipResult.errorMessage));
+    QCOMPARE(clipResult.pages.size(), 1);
+    QCOMPARE(clipResult.pages.first().rowCount, 2);
+
+    table.pagination.overflowPolicy = TableTableOverflowPolicy::Continue;
+    const auto continueResult = TableElementLayout::layout(table, context);
+    QVERIFY2(continueResult.success(), qPrintable(continueResult.errorMessage));
+    QCOMPARE(continueResult.pages.size(), 2);
+    QCOMPARE(continueResult.pages.last().rowCount, 1);
 }
 
 void CoreTests::tableElementRendererBuildsSinglePageCommands()

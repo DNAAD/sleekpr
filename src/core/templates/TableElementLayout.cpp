@@ -490,6 +490,93 @@ QList<TableRowBand> staticTrailingBands(const TableElement& table)
     return result;
 }
 
+double staticRowBandHeight(const TableRowBand& rowBand)
+{
+    if (rowBand.heightMode == TableRowHeightMode::Auto) {
+        return std::max(rowBand.minHeightMm, rowBand.heightMm);
+    }
+    return rowBand.heightMm;
+}
+
+bool canStartPage(const TableElement& table, int pageNumber, QString* errorMessage)
+{
+    if (pageNumber <= std::max(1, table.pagination.maxPages)
+        || table.pagination.overflowPolicy == TableTableOverflowPolicy::Continue) {
+        return true;
+    }
+
+    if (table.pagination.overflowPolicy == TableTableOverflowPolicy::Clip) {
+        return false;
+    }
+
+    *errorMessage = QString::fromUtf8("表格 %1 超出最大页数限制：%2")
+                        .arg(table.id)
+                        .arg(std::max(1, table.pagination.maxPages));
+    return false;
+}
+
+bool shouldRepeatHeaderOnPage(const TableElement& table, int pageNumber)
+{
+    return pageNumber == 1 || table.pagination.repeatHeaderOnPage;
+}
+
+void appendHeaderBandsToPage(TableLayoutPage* page,
+                             const TableElement& table,
+                             const QList<TableRowBand>& headers,
+                             const QJsonObject& rootValues,
+                             int pageNumber,
+                             double* currentY)
+{
+    if (!shouldRepeatHeaderOnPage(table, pageNumber)) {
+        return;
+    }
+
+    for (const auto& rowBand : headers) {
+        const auto rowKey = pageNumber == 1
+            ? rowBand.id
+            : QStringLiteral("page%1.%2").arg(pageNumber).arg(rowBand.id);
+        appendColumnCells(page, table, rowBand.id, -1, *currentY, staticRowBandHeight(rowBand), nullptr, rootValues, rowKey, true);
+        *currentY += staticRowBandHeight(rowBand);
+    }
+}
+
+double detailRowHeight(const TableElement& table, const QList<TableRowBand>& details, const QJsonObject& row)
+{
+    double height = 0.0;
+    for (const auto& rowBand : details) {
+        height += resolvedRowHeight(table, rowBand, row);
+    }
+    return height;
+}
+
+void appendDetailRowToPage(TableLayoutPage* page,
+                           const TableElement& table,
+                           const QList<TableRowBand>& details,
+                           const QJsonObject& row,
+                           const QJsonObject& rootValues,
+                           int rowIndex,
+                           double* currentY)
+{
+    const auto rowKey = QStringLiteral("row%1").arg(rowIndex);
+    for (const auto& rowBand : details) {
+        const auto rowHeight = resolvedRowHeight(table, rowBand, row);
+        appendColumnCells(page, table, rowBand.id, rowIndex, *currentY, rowHeight, &row, rootValues, rowKey, false);
+        *currentY += rowHeight;
+    }
+    ++page->rowCount;
+}
+
+void appendStaticBandToPage(TableLayoutPage* page,
+                            const TableElement& table,
+                            const TableRowBand& rowBand,
+                            const QJsonObject& rootValues,
+                            double* currentY)
+{
+    const auto rowHeight = staticRowBandHeight(rowBand);
+    appendColumnCells(page, table, rowBand.id, -1, *currentY, rowHeight, nullptr, rootValues, rowBand.id, false);
+    *currentY += rowHeight;
+}
+
 } // namespace
 
 bool TableLayoutResult::success() const
@@ -524,41 +611,100 @@ TableLayoutResult TableElementLayout::layout(const TableElement& table, const Te
     }
 
     const auto rows = rowsValue.toArray();
+    const auto headers = headerBands(table);
+    const auto details = detailBands(table);
+    const auto trailingBands = staticTrailingBands(table);
+
+    int pageNumber = 1;
     TableLayoutPage page;
-    page.pageNumber = 1;
+    page.pageNumber = pageNumber;
     page.firstRowIndex = 0;
-    page.rowCount = rows.size();
 
     double currentY = 0.0;
-    for (const auto& rowBand : headerBands(table)) {
-        appendColumnCells(&page, table, rowBand.id, -1, currentY, rowBand.heightMm, nullptr, context.values, rowBand.id, true);
-        currentY += rowBand.heightMm;
-    }
+    appendHeaderBandsToPage(&page, table, headers, context.values, pageNumber, &currentY);
 
-    const auto details = detailBands(table);
+    auto finishCurrentPage = [&result, &page]() {
+        result.pages.append(page);
+    };
+
+    auto startNextPage = [&](int firstRowIndex) -> bool {
+        finishCurrentPage();
+        ++pageNumber;
+        QString pageLimitError;
+        if (!canStartPage(table, pageNumber, &pageLimitError)) {
+            result.errorMessage = pageLimitError;
+            return false;
+        }
+
+        page = TableLayoutPage{};
+        page.pageNumber = pageNumber;
+        page.firstRowIndex = firstRowIndex;
+        currentY = 0.0;
+        appendHeaderBandsToPage(&page, table, headers, context.values, pageNumber, &currentY);
+        return true;
+    };
     for (int rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
         if (!rows[rowIndex].isObject()) {
             result.errorMessage = QString::fromUtf8("表格数据 %1 的第 %2 行必须是对象").arg(dataPath).arg(rowIndex + 1);
             return result;
         }
         const auto row = rows[rowIndex].toObject();
-        for (const auto& rowBand : details) {
-            const auto rowKey = QStringLiteral("row%1").arg(rowIndex);
-            const auto rowHeight = resolvedRowHeight(table, rowBand, row);
-            appendColumnCells(&page, table, rowBand.id, rowIndex, currentY, rowHeight, &row, context.values, rowKey, false);
-            currentY += rowHeight;
+        const auto rowHeight = detailRowHeight(table, details, row);
+        if (currentY + rowHeight > table.height && page.rowCount > 0) {
+            if (!startNextPage(rowIndex)) {
+                if (result.errorMessage.isEmpty()) {
+                    return result;
+                }
+                result.pages.clear();
+                return result;
+            }
         }
+
+        if (currentY + rowHeight > table.height) {
+            if (table.pagination.overflowPolicy == TableTableOverflowPolicy::Clip) {
+                break;
+            }
+            if (table.pagination.overflowPolicy == TableTableOverflowPolicy::Error) {
+                result.pages.clear();
+                result.errorMessage = QString::fromUtf8("表格 %1 当前页无法容纳第 %2 行明细")
+                                          .arg(tableId)
+                                          .arg(rowIndex + 1);
+                return result;
+            }
+        }
+
+        appendDetailRowToPage(&page, table, details, row, context.values, rowIndex, &currentY);
     }
 
-    for (const auto& rowBand : staticTrailingBands(table)) {
-        const auto rowHeight = rowBand.heightMode == TableRowHeightMode::Auto
-            ? std::max(rowBand.minHeightMm, rowBand.heightMm)
-            : rowBand.heightMm;
-        appendColumnCells(&page, table, rowBand.id, -1, currentY, rowHeight, nullptr, context.values, rowBand.id, false);
-        currentY += rowHeight;
+    for (const auto& rowBand : trailingBands) {
+        const auto rowHeight = staticRowBandHeight(rowBand);
+        if (currentY + rowHeight > table.height && (!page.cells.isEmpty() || !result.pages.isEmpty())) {
+            if (!startNextPage(rows.size())) {
+                if (result.errorMessage.isEmpty()) {
+                    return result;
+                }
+                result.pages.clear();
+                return result;
+            }
+        }
+
+        if (currentY + rowHeight > table.height) {
+            if (table.pagination.overflowPolicy == TableTableOverflowPolicy::Clip) {
+                break;
+            }
+            if (table.pagination.overflowPolicy == TableTableOverflowPolicy::Error) {
+                result.pages.clear();
+                result.errorMessage = QString::fromUtf8("表格 %1 当前页无法容纳尾部行：%2").arg(tableId, rowBand.id);
+                return result;
+            }
+        }
+
+        appendStaticBandToPage(&page, table, rowBand, context.values, &currentY);
     }
 
-    result.pages.append(page);
+    if (!page.cells.isEmpty() || result.pages.isEmpty()) {
+        result.pages.append(page);
+    }
     return result;
 }
 
