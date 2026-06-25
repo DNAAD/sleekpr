@@ -41,6 +41,7 @@
 #include "sleekpr/core/templates/TemplateDocumentValidator.h"
 #include "sleekpr/core/templates/TemplateRenderContextBuilder.h"
 #include "sleekpr/core/templates/TableElementJson.h"
+#include "sleekpr/core/templates/TableElementLayout.h"
 #include "sleekpr/core/templates/TableElementRenderer.h"
 #include "sleekpr/infrastructure/preview/LabelPreviewImageRenderer.h"
 #include "sleekpr/infrastructure/preview/LabelPreviewService.h"
@@ -95,6 +96,8 @@ private slots:
     void tableElementJsonPersistsComplexTableModel();
     void tableElementJsonKeepsLegacyColumnsCompatible();
     void tableElementJsonRejectsInvalidTable();
+    void tableElementLayoutDerivesLegacyHeaderAndDetailCells();
+    void tableElementLayoutRejectsInvalidMergeRegion();
     void tableElementRendererBuildsSinglePageCommands();
     void tableElementRendererDistributesFlexibleColumnWidths();
     void tableElementRendererRejectsNonArrayData();
@@ -1569,6 +1572,106 @@ void CoreTests::tableElementJsonRejectsInvalidTable()
 
     QVERIFY(!TableElementJson::validate(invalidTable, QStringLiteral("main"), &errorMessage));
     QVERIFY(errorMessage.contains(QString::fromUtf8("列宽")));
+}
+
+void CoreTests::tableElementLayoutDerivesLegacyHeaderAndDetailCells()
+{
+    TableElement table;
+    table.id = QStringLiteral("legacy-table");
+    table.dataPath = QStringLiteral("items");
+    table.width = 50.0;
+    table.height = 20.0;
+    table.headerRowHeightMm = 5.0;
+    table.detailRowHeightMm = 5.0;
+
+    TableColumn nameColumn;
+    nameColumn.id = QStringLiteral("name");
+    nameColumn.title = QString::fromUtf8("品名");
+    nameColumn.fieldKey = QStringLiteral("productName");
+    nameColumn.widthMm = 25.0;
+    table.columns.append(nameColumn);
+
+    TableColumn amountColumn;
+    amountColumn.id = QStringLiteral("amount");
+    amountColumn.title = QString::fromUtf8("金额");
+    amountColumn.fieldKey = QStringLiteral("amount");
+    amountColumn.widthMm = 25.0;
+    amountColumn.alignment = TableCellAlignment::Right;
+    table.columns.append(amountColumn);
+
+    TemplateRenderContext context;
+    context.values = QJsonObject{
+        {QStringLiteral("items"),
+         QJsonArray{
+             QJsonObject{{QStringLiteral("productName"), QString::fromUtf8("戒指")}, {QStringLiteral("amount"), QStringLiteral("1880")}},
+             QJsonObject{{QStringLiteral("productName"), QString::fromUtf8("项链")}, {QStringLiteral("amount"), QStringLiteral("2999")}},
+         }},
+    };
+
+    const auto result = TableElementLayout::layout(table, context);
+    QVERIFY2(result.success(), qPrintable(result.errorMessage));
+    QCOMPARE(result.pages.size(), 1);
+    QCOMPARE(result.pages.first().firstRowIndex, 0);
+    QCOMPARE(result.pages.first().rowCount, 2);
+    QCOMPARE(result.pages.first().cells.size(), 6);
+
+    const auto headerName = result.pages.first().cells.first();
+    QCOMPARE(headerName.rowBandId, QStringLiteral("header"));
+    QCOMPARE(headerName.columnId, QStringLiteral("name"));
+    QCOMPARE(headerName.text, QString::fromUtf8("品名"));
+    QCOMPARE(headerName.rect.x(), 0.0);
+    QCOMPARE(headerName.rect.y(), 0.0);
+    QCOMPARE(headerName.rect.width(), 25.0);
+    QCOMPARE(headerName.rect.height(), 5.0);
+
+    const auto firstDetailName = result.pages.first().cells[2];
+    QCOMPARE(firstDetailName.rowBandId, QStringLiteral("detail"));
+    QCOMPARE(firstDetailName.columnId, QStringLiteral("name"));
+    QCOMPARE(firstDetailName.text, QString::fromUtf8("戒指"));
+    QCOMPARE(firstDetailName.rect.y(), 5.0);
+
+    const auto secondDetailAmount = result.pages.first().cells[5];
+    QCOMPARE(secondDetailAmount.rowBandId, QStringLiteral("detail"));
+    QCOMPARE(secondDetailAmount.columnId, QStringLiteral("amount"));
+    QCOMPARE(secondDetailAmount.text, QStringLiteral("2999"));
+    QCOMPARE(secondDetailAmount.style.alignment, TableCellAlignment::Right);
+}
+
+void CoreTests::tableElementLayoutRejectsInvalidMergeRegion()
+{
+    TableElement table;
+    table.id = QStringLiteral("invalid-merge-table");
+    table.dataPath = QStringLiteral("items");
+    table.width = 40.0;
+    table.height = 20.0;
+
+    TableColumn column;
+    column.id = QStringLiteral("name");
+    column.title = QString::fromUtf8("品名");
+    column.fieldKey = QStringLiteral("productName");
+    column.widthMm = 40.0;
+    table.columns.append(column);
+
+    TableRowBand headerBand;
+    headerBand.id = QStringLiteral("header");
+    headerBand.kind = TableRowBandKind::Header;
+    table.rowBands.append(headerBand);
+
+    TableMergeRegion merge;
+    merge.id = QStringLiteral("bad-merge");
+    merge.rowBandId = QStringLiteral("header");
+    merge.startColumnId = QStringLiteral("missing-column");
+    merge.colSpan = 2;
+    table.mergeRegions.append(merge);
+
+    TemplateRenderContext context;
+    context.values = QJsonObject{{QStringLiteral("items"), QJsonArray{}}};
+
+    const auto result = TableElementLayout::layout(table, context);
+    QVERIFY(!result.success());
+    QVERIFY(result.errorMessage.contains(QStringLiteral("invalid-merge-table")));
+    QVERIFY(result.errorMessage.contains(QStringLiteral("bad-merge")));
+    QVERIFY(result.errorMessage.contains(QStringLiteral("missing-column")));
 }
 
 void CoreTests::tableElementRendererBuildsSinglePageCommands()
