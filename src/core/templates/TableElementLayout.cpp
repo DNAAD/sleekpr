@@ -115,6 +115,17 @@ TableCellStyle styleForColumn(const TableElement& table, const TableColumn& colu
     return style;
 }
 
+const TableCellStyle* findStyle(const TableElement& table, const QString& styleId)
+{
+    if (styleId.trimmed().isEmpty()) {
+        return nullptr;
+    }
+    const auto style = std::find_if(table.cellStyles.cbegin(), table.cellStyles.cend(), [&styleId](const TableCellStyle& candidate) {
+        return candidate.id == styleId;
+    });
+    return style == table.cellStyles.cend() ? nullptr : &(*style);
+}
+
 TableCellOverflowPolicy overflowPolicyFor(const TableCellStyle& style)
 {
     if (style.wrapText) {
@@ -183,6 +194,42 @@ QSet<QString> knownRowBandIds(const TableElement& table)
     return result;
 }
 
+const TableCellTemplate* findCellTemplate(const TableElement& table, const QString& rowBandId, const QString& columnId)
+{
+    const auto cellTemplate = std::find_if(
+        table.cellTemplates.cbegin(),
+        table.cellTemplates.cend(),
+        [&rowBandId, &columnId](const TableCellTemplate& candidate) {
+            return candidate.rowBandId == rowBandId && candidate.columnId == columnId;
+        });
+    return cellTemplate == table.cellTemplates.cend() ? nullptr : &(*cellTemplate);
+}
+
+const TableMergeRegion* findMergeStartingAt(const TableElement& table, const QString& rowBandId, const QString& columnId)
+{
+    const auto merge = std::find_if(
+        table.mergeRegions.cbegin(),
+        table.mergeRegions.cend(),
+        [&rowBandId, &columnId](const TableMergeRegion& candidate) {
+            return candidate.rowBandId == rowBandId && candidate.startColumnId == columnId && candidate.startRowOffset == 0;
+        });
+    return merge == table.mergeRegions.cend() ? nullptr : &(*merge);
+}
+
+bool isCoveredByMerge(const TableElement& table, const QString& rowBandId, int columnIndex, const QHash<QString, int>& columns)
+{
+    for (const auto& merge : table.mergeRegions) {
+        if (merge.rowBandId != rowBandId || merge.startRowOffset != 0) {
+            continue;
+        }
+        const auto startIndex = columns.value(merge.startColumnId, -1);
+        if (startIndex >= 0 && columnIndex > startIndex && columnIndex < startIndex + merge.colSpan) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool validateMergeRegions(const TableElement& table, QString* errorMessage)
 {
     const auto columns = columnIndexById(table);
@@ -203,6 +250,10 @@ bool validateMergeRegions(const TableElement& table, QString* errorMessage)
             *errorMessage = QString::fromUtf8("表格 %1 的合并区域 %2 跨度必须大于 0").arg(table.id, merge.id);
             return false;
         }
+        if (merge.rowSpan > 1) {
+            *errorMessage = QString::fromUtf8("表格 %1 的合并区域 %2 暂不支持跨行合并").arg(table.id, merge.id);
+            return false;
+        }
 
         const auto startColumnIndex = columns.value(merge.startColumnId);
         if (startColumnIndex + merge.colSpan > table.columns.size()) {
@@ -213,6 +264,62 @@ bool validateMergeRegions(const TableElement& table, QString* errorMessage)
     }
 
     return true;
+}
+
+QJsonValue valueForTemplateField(const QJsonObject* rowObject, const QJsonObject& rootValues, const QString& fieldKey)
+{
+    if (rowObject != nullptr) {
+        const auto rowValue = valueAtPath(*rowObject, fieldKey);
+        if (!rowValue.isUndefined()) {
+            return rowValue;
+        }
+    }
+    return valueAtPath(rootValues, fieldKey);
+}
+
+QString interpolateTemplateText(const QString& text, const QJsonObject* rowObject, const QJsonObject& rootValues)
+{
+    QString result;
+    result.reserve(text.size());
+
+    int cursor = 0;
+    while (cursor < text.size()) {
+        const auto placeholderStart = text.indexOf(QStringLiteral("${"), cursor);
+        if (placeholderStart < 0) {
+            result.append(text.mid(cursor));
+            break;
+        }
+
+        result.append(text.mid(cursor, placeholderStart - cursor));
+        const auto placeholderEnd = text.indexOf(QLatin1Char('}'), placeholderStart + 2);
+        if (placeholderEnd < 0) {
+            result.append(text.mid(placeholderStart));
+            break;
+        }
+
+        const auto fieldKey = text.mid(placeholderStart + 2, placeholderEnd - placeholderStart - 2).trimmed();
+        result.append(valueToText(valueForTemplateField(rowObject, rootValues, fieldKey)));
+        cursor = placeholderEnd + 1;
+    }
+
+    return result;
+}
+
+QString textForCell(const TableColumn& column,
+                    const TableCellTemplate* cellTemplate,
+                    const QJsonObject* rowObject,
+                    const QJsonObject& rootValues,
+                    bool header)
+{
+    if (cellTemplate != nullptr) {
+        if (!cellTemplate->textTemplate.isEmpty()) {
+            return interpolateTemplateText(cellTemplate->textTemplate, rowObject, rootValues);
+        }
+        if (!cellTemplate->fieldKey.trimmed().isEmpty()) {
+            return valueToText(valueForTemplateField(rowObject, rootValues, cellTemplate->fieldKey));
+        }
+    }
+    return header ? column.title : valueToText(valueAtPath(*rowObject, column.fieldKey));
 }
 
 TableLayoutCell makeCell(const TableElement& table,
@@ -263,24 +370,49 @@ void appendColumnCells(TableLayoutPage* page,
                        double rowY,
                        double rowHeight,
                        const QJsonObject* rowObject,
+                       const QJsonObject& rootValues,
                        const QString& rowKey,
                        bool header)
 {
     const auto widths = resolvedColumnWidths(table);
+    const auto columns = columnIndexById(table);
     double currentX = 0.0;
     for (int columnIndex = 0; columnIndex < table.columns.size(); ++columnIndex) {
         const auto& column = table.columns[columnIndex];
-        const auto width = widths[columnIndex];
-        const auto text = header ? column.title : valueToText(valueAtPath(*rowObject, column.fieldKey));
-        page->cells.append(makeCell(
+        const auto cellTemplate = findCellTemplate(table, rowBandId, column.id);
+        const auto merge = findMergeStartingAt(table, rowBandId, column.id);
+        const auto coveredByMerge = isCoveredByMerge(table, rowBandId, columnIndex, columns);
+        auto width = widths[columnIndex];
+        if (merge != nullptr) {
+            width = 0.0;
+            for (int spanIndex = 0; spanIndex < merge->colSpan && columnIndex + spanIndex < widths.size(); ++spanIndex) {
+                width += widths[columnIndex + spanIndex];
+            }
+        }
+
+        if (cellTemplate != nullptr && !cellTemplate->visible) {
+            currentX += widths[columnIndex];
+            continue;
+        }
+
+        auto cell = makeCell(
             table,
             column,
             rowBandId,
             sourceRowIndex,
             QRectF(currentX, rowY, width, rowHeight),
-            text,
-            rowKey));
-        currentX += width;
+            coveredByMerge ? QString() : textForCell(column, cellTemplate, rowObject, rootValues, header),
+            rowKey);
+        cell.coveredByMerge = coveredByMerge;
+        if (cellTemplate != nullptr) {
+            if (const auto* style = findStyle(table, cellTemplate->styleId)) {
+                cell.style = *style;
+            }
+            cell.overflowPolicy = cellTemplate->overflowPolicy;
+            cell.maxLines = cellTemplate->maxLines;
+        }
+        page->cells.append(cell);
+        currentX += widths[columnIndex];
     }
 }
 
@@ -365,7 +497,7 @@ TableLayoutResult TableElementLayout::layout(const TableElement& table, const Te
 
     double currentY = 0.0;
     for (const auto& rowBand : headerBands(table)) {
-        appendColumnCells(&page, table, rowBand.id, -1, currentY, rowBand.heightMm, nullptr, rowBand.id, true);
+        appendColumnCells(&page, table, rowBand.id, -1, currentY, rowBand.heightMm, nullptr, context.values, rowBand.id, true);
         currentY += rowBand.heightMm;
     }
 
@@ -379,7 +511,7 @@ TableLayoutResult TableElementLayout::layout(const TableElement& table, const Te
         for (const auto& rowBand : details) {
             const auto rowKey = QStringLiteral("row%1").arg(rowIndex);
             const auto rowHeight = resolvedRowHeight(table, rowBand, row);
-            appendColumnCells(&page, table, rowBand.id, rowIndex, currentY, rowHeight, &row, rowKey, false);
+            appendColumnCells(&page, table, rowBand.id, rowIndex, currentY, rowHeight, &row, context.values, rowKey, false);
             currentY += rowHeight;
         }
     }

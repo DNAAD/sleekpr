@@ -99,6 +99,7 @@ private slots:
     void tableElementLayoutDerivesLegacyHeaderAndDetailCells();
     void tableElementLayoutRejectsInvalidMergeRegion();
     void tableElementLayoutUsesAutoRowHeightForWrappedText();
+    void tableElementLayoutAppliesCellTemplatesAndMergeRegions();
     void tableElementRendererBuildsSinglePageCommands();
     void tableElementRendererDistributesFlexibleColumnWidths();
     void tableElementRendererRejectsNonArrayData();
@@ -1716,6 +1717,62 @@ void CoreTests::tableElementLayoutUsesAutoRowHeightForWrappedText()
     QVERIFY(detailCell != result.pages.first().cells.cend());
     QVERIFY(detailCell->rect.height() > table.detailRowHeightMm);
     QCOMPARE(detailCell->overflowPolicy, TableCellOverflowPolicy::Wrap);
+}
+
+void CoreTests::tableElementLayoutAppliesCellTemplatesAndMergeRegions()
+{
+    TableElement table;
+    table.id = QStringLiteral("merge-layout");
+    table.dataPath = QStringLiteral("items");
+    table.width = 60.0;
+    table.height = 30.0;
+
+    TableColumn nameColumn;
+    nameColumn.id = QStringLiteral("name");
+    nameColumn.title = QString::fromUtf8("品名");
+    nameColumn.fieldKey = QStringLiteral("productName");
+    nameColumn.widthMm = 30.0;
+    table.columns.append(nameColumn);
+
+    TableColumn specColumn;
+    specColumn.id = QStringLiteral("spec");
+    specColumn.title = QString::fromUtf8("规格");
+    specColumn.fieldKey = QStringLiteral("spec");
+    specColumn.widthMm = 30.0;
+    table.columns.append(specColumn);
+
+    TableCellTemplate mergedHeader;
+    mergedHeader.id = QStringLiteral("merged-header");
+    mergedHeader.rowBandId = QStringLiteral("header");
+    mergedHeader.columnId = QStringLiteral("name");
+    mergedHeader.textTemplate = QString::fromUtf8("商品信息");
+    mergedHeader.colSpan = 2;
+    table.cellTemplates.append(mergedHeader);
+
+    TableMergeRegion merge;
+    merge.id = QStringLiteral("header-merge");
+    merge.rowBandId = QStringLiteral("header");
+    merge.startColumnId = QStringLiteral("name");
+    merge.colSpan = 2;
+    table.mergeRegions.append(merge);
+
+    TemplateRenderContext context;
+    context.values = QJsonObject{
+        {QStringLiteral("items"),
+         QJsonArray{
+             QJsonObject{{QStringLiteral("productName"), QString::fromUtf8("戒指")}, {QStringLiteral("spec"), QStringLiteral("16#")}},
+         }},
+    };
+
+    const auto result = TableElementLayout::layout(table, context);
+    QVERIFY2(result.success(), qPrintable(result.errorMessage));
+
+    const auto headerCell = std::find_if(result.pages.first().cells.cbegin(), result.pages.first().cells.cend(), [](const TableLayoutCell& cell) {
+        return cell.rowBandId == QStringLiteral("header") && !cell.coveredByMerge;
+    });
+    QVERIFY(headerCell != result.pages.first().cells.cend());
+    QCOMPARE(headerCell->text, QString::fromUtf8("商品信息"));
+    QCOMPARE(headerCell->rect.width(), 60.0);
 }
 
 void CoreTests::tableElementRendererBuildsSinglePageCommands()
