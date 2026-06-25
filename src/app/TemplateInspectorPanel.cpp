@@ -1,5 +1,6 @@
 #include "sleekpr/app/TemplateInspectorPanel.h"
 
+#include "sleekpr/app/TableAdvancedEditorPanel.h"
 #include "sleekpr/app/TableColumnEditorPanel.h"
 #include "sleekpr/app/TableColumnTextCodec.h"
 
@@ -191,6 +192,7 @@ TemplateInspectorPanel::TemplateInspectorPanel(QWidget* parent)
     m_tableColumnsEdit->setPlaceholderText(QString::fromUtf8("品名=productName:45,重量=weight:25"));
     m_tableColumnEditor = new TableColumnEditorPanel(elementPanel);
     m_tableColumnEditor->setObjectName(QStringLiteral("tableColumnEditorPanel"));
+    m_tableAdvancedEditor = new TableAdvancedEditorPanel(elementPanel);
     m_applyTablePropertiesButton = createInspectorButton(
         QString::fromUtf8("应用表格属性"),
         QStringLiteral("applyTablePropertiesButton"),
@@ -386,6 +388,7 @@ TemplateInspectorPanel::TemplateInspectorPanel(QWidget* parent)
     tableTabLayout->addWidget(tablePropertyTitleLabel);
     tableTabLayout->addLayout(tablePropertyGrid);
     tableTabLayout->addWidget(m_tableColumnEditor);
+    tableTabLayout->addWidget(m_tableAdvancedEditor);
     tableTabLayout->addWidget(m_applyTablePropertiesButton);
     tableTabLayout->addStretch(1);
 
@@ -636,6 +639,10 @@ void TemplateInspectorPanel::setTableProperties(const DesignerTablePropertyModel
         m_tableColumnEditor->setEditable(canEdit);
         m_tableColumnEditor->setColumns(model.visible ? model.columns : QList<DesignerTableColumnModel>{});
     }
+    if (m_tableAdvancedEditor != nullptr) {
+        m_tableAdvancedEditor->setEditable(canEdit);
+        m_tableAdvancedEditor->setProperties(model.visible ? model : DesignerTablePropertyModel{});
+    }
     if (m_applyTablePropertiesButton != nullptr) {
         m_applyTablePropertiesButton->setEnabled(canEdit);
     }
@@ -680,6 +687,13 @@ DesignerTablePropertyModel TemplateInspectorPanel::tableProperties() const
     if (m_tableColumnEditor != nullptr) {
         model.columns = m_tableColumnEditor->columns();
         model.preferStructuredColumns = !m_tableColumnsTextEdited && !model.columns.isEmpty();
+    }
+    if (m_tableAdvancedEditor != nullptr) {
+        const auto advancedModel = m_tableAdvancedEditor->tableProperties();
+        model.rowBands = advancedModel.rowBands;
+        model.cellStyles = advancedModel.cellStyles;
+        model.cellTemplates = advancedModel.cellTemplates;
+        model.mergeRegions = advancedModel.mergeRegions;
     }
     return model;
 }
@@ -729,10 +743,11 @@ bool TemplateInspectorPanel::isTablePropertyEditor(QObject* watched) const
         m_tableHeightSpin,
         m_tableHeaderHeightSpin,
         m_tableDetailHeightSpin,
-        m_tableRepeatHeaderCheck,
-        m_tableDrawBordersCheck,
-        m_tableColumnsEdit,
-        m_tableColumnEditor,
+              m_tableRepeatHeaderCheck,
+              m_tableDrawBordersCheck,
+              m_tableColumnsEdit,
+              m_tableColumnEditor,
+              m_tableAdvancedEditor,
     };
     return std::any_of(editors.cbegin(), editors.cend(), [watchedWidget](const auto* editor) {
         return ownsEditor(editor, watchedWidget);
@@ -769,10 +784,11 @@ void TemplateInspectorPanel::installPropertyEditorEventFilter(QObject* filterTar
              m_tableHeaderHeightSpin,
              m_tableDetailHeightSpin,
              m_tableRepeatHeaderCheck,
-             m_tableDrawBordersCheck,
-             m_tableColumnsEdit,
-             m_tableColumnEditor,
-         }) {
+              m_tableDrawBordersCheck,
+              m_tableColumnsEdit,
+              m_tableColumnEditor,
+              m_tableAdvancedEditor,
+          }) {
         installEditorFilter(filterTarget, editor);
     }
 }
@@ -852,6 +868,11 @@ void TemplateInspectorPanel::connectPropertySignals()
         }
         emit tablePropertiesEdited(ControlAutoApplyDelayMs);
     });
+    connect(m_tableAdvancedEditor, &TableAdvancedEditorPanel::advancedPropertiesEdited, this, [this] {
+        if (!m_settingTableProperties) {
+            emit tablePropertiesEdited(ControlAutoApplyDelayMs);
+        }
+    });
     connect(m_tableDisplayNameEdit, &QLineEdit::editingFinished, this, [this] { emit tablePropertiesEditingFinished(); });
     connect(m_tableDataPathEdit, &QLineEdit::editingFinished, this, [this] { emit tablePropertiesEditingFinished(); });
     connect(m_tableColumnsEdit, &QLineEdit::editingFinished, this, [this] { emit tablePropertiesEditingFinished(); });
@@ -923,6 +944,7 @@ QCheckBox* TemplateInspectorPanel::tableRepeatHeaderCheck() const { return m_tab
 QCheckBox* TemplateInspectorPanel::tableDrawBordersCheck() const { return m_tableDrawBordersCheck; }
 QLineEdit* TemplateInspectorPanel::tableColumnsEdit() const { return m_tableColumnsEdit; }
 TableColumnEditorPanel* TemplateInspectorPanel::tableColumnEditor() const { return m_tableColumnEditor; }
+TableAdvancedEditorPanel* TemplateInspectorPanel::tableAdvancedEditor() const { return m_tableAdvancedEditor; }
 QPushButton* TemplateInspectorPanel::applyTablePropertiesButton() const { return m_applyTablePropertiesButton; }
 
 QLineEdit* TemplateInspectorPanel::deviceProfilePrinterEdit() const { return m_deviceProfilePrinterEdit; }

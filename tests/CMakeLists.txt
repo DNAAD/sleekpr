@@ -28,6 +28,8 @@ configure_qt_test_runtime(sleekpr_core_tests)
 add_executable(sleekpr_app_tests
     tst_app.cpp
     ../src/app/AppTheme.cpp
+    ../src/app/TableAdvancedEditorPanel.cpp
+    ../include/sleekpr/app/TableAdvancedEditorPanel.h
     ../src/app/TableColumnEditorPanel.cpp
     ../include/sleekpr/app/TableColumnEditorPanel.h
     ../src/app/TableColumnTextCodec.cpp

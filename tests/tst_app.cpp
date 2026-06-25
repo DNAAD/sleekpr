@@ -32,6 +32,7 @@
 #include "sleekpr/app/TemplateDesignerCommand.h"
 #include "sleekpr/app/TemplateDesignerFactory.h"
 #include "sleekpr/app/TemplateDesignerPresenter.h"
+#include "sleekpr/app/TableAdvancedEditorPanel.h"
 #include "sleekpr/app/TableColumnEditorPanel.h"
 #include "sleekpr/app/TableColumnTextCodec.h"
 #include "sleekpr/app/TemplateInspectorPanel.h"
@@ -187,8 +188,10 @@ private slots:
     void tableColumnTextCodecFormatsAndParsesLegacyColumns();
     void tableDesignerCommandUsesStructuredColumnsWhenPresent();
     void templateDesignerPresenterMapsTableColumns();
+    void templateDesignerPresenterMapsComplexTableModels();
     void tableColumnEditorPanelEditsAndReordersColumns();
     void tableColumnEditorPanelGuardsDestructiveColumnActions();
+    void tableAdvancedEditorPanelEditsComplexTableSections();
     void templateInspectorPanelExposesTableColumnEditor();
     void templateDesignerPresenterRejectsInvalidTableColumns();
     void paperSpecManagerWindowSavesAndDeletesSpecs();
@@ -2955,6 +2958,102 @@ void AppTests::templateDesignerPresenterMapsTableColumns()
     QCOMPARE(roundTrip.first().flexWeight, 3.0);
 }
 
+void AppTests::templateDesignerPresenterMapsComplexTableModels()
+{
+    TableColumn nameColumn;
+    nameColumn.id = QStringLiteral("name");
+    nameColumn.title = QString::fromUtf8("品名");
+    nameColumn.fieldKey = QStringLiteral("productName");
+    nameColumn.widthMm = 30.0;
+
+    TableColumn weightColumn;
+    weightColumn.id = QStringLiteral("weight");
+    weightColumn.title = QString::fromUtf8("重量");
+    weightColumn.fieldKey = QStringLiteral("weight");
+    weightColumn.widthMm = 18.0;
+
+    TableRowBand detailBand;
+    detailBand.id = QStringLiteral("detail");
+    detailBand.kind = TableRowBandKind::Detail;
+    detailBand.title = QString::fromUtf8("明细行");
+    detailBand.dataPath = QStringLiteral("items");
+    detailBand.heightMode = TableRowHeightMode::Auto;
+    detailBand.heightMm = 5.0;
+    detailBand.minHeightMm = 3.5;
+
+    TableCellStyle moneyStyle;
+    moneyStyle.id = QStringLiteral("money");
+    moneyStyle.fontSizePt = 9.5;
+    moneyStyle.bold = true;
+    moneyStyle.alignment = TableCellAlignment::Right;
+    moneyStyle.verticalAlignment = TableVerticalAlignment::Middle;
+    moneyStyle.wrapText = true;
+    moneyStyle.ellipsis = true;
+    moneyStyle.backgroundColor = QStringLiteral("#eeeeee");
+    moneyStyle.textColor = QStringLiteral("#111111");
+
+    TableCellTemplate cellTemplate;
+    cellTemplate.id = QStringLiteral("detail-weight");
+    cellTemplate.rowBandId = detailBand.id;
+    cellTemplate.columnId = weightColumn.id;
+    cellTemplate.textTemplate = QStringLiteral("${weight}g");
+    cellTemplate.fieldKey = QStringLiteral("weight");
+    cellTemplate.styleId = moneyStyle.id;
+    cellTemplate.overflowPolicy = TableCellOverflowPolicy::Wrap;
+    cellTemplate.maxLines = 3;
+    cellTemplate.rowSpan = 2;
+
+    TableMergeRegion merge;
+    merge.id = QStringLiteral("merge-name");
+    merge.rowBandId = detailBand.id;
+    merge.startRowOffset = 0;
+    merge.startColumnId = nameColumn.id;
+    merge.rowSpan = 2;
+    merge.colSpan = 2;
+
+    TableElement table;
+    table.id = QStringLiteral("items");
+    table.layerId = QStringLiteral("base");
+    table.columns = {nameColumn, weightColumn};
+    table.rowBands = {detailBand};
+    table.cellStyles = {moneyStyle};
+    table.cellTemplates = {cellTemplate};
+    table.mergeRegions = {merge};
+
+    TemplateDesignerPresenter presenter;
+    auto model = presenter.tablePropertyModel(table, true);
+    QCOMPARE(model.rowBands.size(), 1);
+    QCOMPARE(model.rowBands.first().rowBandId, detailBand.id);
+    QCOMPARE(model.rowBands.first().heightMode, TableRowHeightMode::Auto);
+    QCOMPARE(model.cellStyles.size(), 1);
+    QCOMPARE(model.cellStyles.first().styleId, moneyStyle.id);
+    QVERIFY(model.cellStyles.first().wrapText);
+    QCOMPARE(model.cellTemplates.size(), 1);
+    QCOMPARE(model.cellTemplates.first().textTemplate, QStringLiteral("${weight}g"));
+    QCOMPARE(model.cellTemplates.first().rowSpan, 2);
+    QCOMPARE(model.mergeRegions.size(), 1);
+    QCOMPARE(model.mergeRegions.first().rowSpan, 2);
+    QCOMPARE(model.mergeRegions.first().colSpan, 2);
+
+    TemplateLayer layer;
+    layer.id = QStringLiteral("base");
+    layer.tables = {table};
+    TemplateDocument document;
+    document.layers = {layer};
+
+    model.rowBands.first().title = QString::fromUtf8("自动明细");
+    model.cellStyles.first().bold = false;
+    model.mergeRegions.first().rowSpan = 3;
+    const auto result = presenter.applyTableProperties(document, table.id, model);
+
+    QVERIFY2(result.errorMessage.isEmpty(), qPrintable(result.errorMessage));
+    QVERIFY(result.changed);
+    const auto actual = document.layers.first().tables.first();
+    QCOMPARE(actual.rowBands.first().title, QString::fromUtf8("自动明细"));
+    QVERIFY(!actual.cellStyles.first().bold);
+    QCOMPARE(actual.mergeRegions.first().rowSpan, 3);
+}
+
 void AppTests::tableColumnEditorPanelEditsAndReordersColumns()
 {
     TableColumnEditorPanel panel;
@@ -3040,6 +3139,79 @@ void AppTests::tableColumnEditorPanelGuardsDestructiveColumnActions()
     }
 }
 
+void AppTests::tableAdvancedEditorPanelEditsComplexTableSections()
+{
+    DesignerTableColumnModel nameColumn;
+    nameColumn.columnId = QStringLiteral("name");
+    nameColumn.title = QString::fromUtf8("品名");
+    nameColumn.fieldKey = QStringLiteral("productName");
+
+    DesignerTableRowBandModel detailBand;
+    detailBand.rowBandId = QStringLiteral("detail");
+    detailBand.kind = TableRowBandKind::Detail;
+    detailBand.title = QString::fromUtf8("明细行");
+    detailBand.dataPath = QStringLiteral("items");
+    detailBand.heightMode = TableRowHeightMode::Auto;
+
+    DesignerTableCellStyleModel baseStyle;
+    baseStyle.styleId = QStringLiteral("base-style");
+    baseStyle.fontSizePt = 8.5;
+    baseStyle.wrapText = true;
+
+    DesignerTableCellTemplateModel cell;
+    cell.templateId = QStringLiteral("detail-name");
+    cell.rowBandId = detailBand.rowBandId;
+    cell.columnId = nameColumn.columnId;
+    cell.textTemplate = QStringLiteral("${productName}");
+    cell.fieldKey = QStringLiteral("productName");
+    cell.styleId = baseStyle.styleId;
+
+    DesignerTablePropertyModel model;
+    model.visible = true;
+    model.canEdit = true;
+    model.columns = {nameColumn};
+    model.rowBands = {detailBand};
+    model.cellStyles = {baseStyle};
+    model.cellTemplates = {cell};
+
+    TableAdvancedEditorPanel panel;
+    panel.setProperties(model);
+
+    auto* rowBandGrid = panel.findChild<QTableWidget*>(QStringLiteral("tableRowBandEditorGrid"));
+    auto* styleGrid = panel.findChild<QTableWidget*>(QStringLiteral("tableCellStyleEditorGrid"));
+    auto* cellGrid = panel.findChild<QTableWidget*>(QStringLiteral("tableCellTemplateEditorGrid"));
+    auto* mergeGrid = panel.findChild<QTableWidget*>(QStringLiteral("tableMergeRegionEditorGrid"));
+    QVERIFY(rowBandGrid != nullptr);
+    QVERIFY(styleGrid != nullptr);
+    QVERIFY(cellGrid != nullptr);
+    QVERIFY(mergeGrid != nullptr);
+    QCOMPARE(rowBandGrid->rowCount(), 1);
+    QCOMPARE(styleGrid->rowCount(), 1);
+    QCOMPARE(cellGrid->rowCount(), 1);
+
+    QSignalSpy editedSpy(&panel, &TableAdvancedEditorPanel::advancedPropertiesEdited);
+    rowBandGrid->item(0, 2)->setText(QString::fromUtf8("自动明细"));
+    QTRY_COMPARE(editedSpy.count(), 1);
+    QCOMPARE(panel.tableProperties().rowBands.first().title, QString::fromUtf8("自动明细"));
+
+    cellGrid->item(0, 3)->setText(QStringLiteral("${productName}\n${weight}"));
+    QTRY_VERIFY(editedSpy.count() >= 2);
+    QCOMPARE(panel.tableProperties().cellTemplates.first().textTemplate, QStringLiteral("${productName}\n${weight}"));
+
+    auto* mergeButton = panel.findChild<QPushButton*>(QStringLiteral("tableMergeCellButton"));
+    auto* splitButton = panel.findChild<QPushButton*>(QStringLiteral("tableSplitCellButton"));
+    QVERIFY(mergeButton != nullptr);
+    QVERIFY(splitButton != nullptr);
+    mergeButton->click();
+    QTRY_VERIFY(panel.tableProperties().mergeRegions.size() == 1);
+    QCOMPARE(panel.tableProperties().mergeRegions.first().rowBandId, detailBand.rowBandId);
+    QCOMPARE(panel.tableProperties().mergeRegions.first().startColumnId, nameColumn.columnId);
+
+    mergeGrid->selectRow(0);
+    splitButton->click();
+    QTRY_VERIFY(panel.tableProperties().mergeRegions.isEmpty());
+}
+
 void AppTests::templateInspectorPanelExposesTableColumnEditor()
 {
     TemplateInspectorPanel panel;
@@ -3048,11 +3220,17 @@ void AppTests::templateInspectorPanelExposesTableColumnEditor()
     column.title = QString::fromUtf8("品名");
     column.fieldKey = QStringLiteral("productName");
 
+    DesignerTableRowBandModel detailBand;
+    detailBand.rowBandId = QStringLiteral("detail");
+    detailBand.kind = TableRowBandKind::Detail;
+    detailBand.title = QString::fromUtf8("明细行");
+
     DesignerTablePropertyModel model;
     model.tableId = QStringLiteral("table");
     model.visible = true;
     model.canEdit = true;
     model.columns = {column};
+    model.rowBands = {detailBand};
     model.columnsText = QString::fromUtf8("品名=productName:20.00");
 
     QSignalSpy editedSpy(&panel, &TemplateInspectorPanel::tablePropertiesEdited);
@@ -3067,6 +3245,17 @@ void AppTests::templateInspectorPanelExposesTableColumnEditor()
     addButton->click();
     QTRY_VERIFY(editedSpy.count() > 0);
     QCOMPARE(panel.tableProperties().columns.size(), 2);
+
+    auto* advancedEditor = panel.findChild<TableAdvancedEditorPanel*>(QStringLiteral("tableAdvancedEditorPanel"));
+    QVERIFY(advancedEditor != nullptr);
+    auto* rowBandGrid = panel.findChild<QTableWidget*>(QStringLiteral("tableRowBandEditorGrid"));
+    auto* mergeButton = panel.findChild<QPushButton*>(QStringLiteral("tableMergeCellButton"));
+    QVERIFY(rowBandGrid != nullptr);
+    QVERIFY(mergeButton != nullptr);
+    QCOMPARE(rowBandGrid->rowCount(), 1);
+
+    mergeButton->click();
+    QTRY_VERIFY(panel.tableProperties().mergeRegions.size() == 1);
 }
 
 void AppTests::templateDesignerPresenterRejectsInvalidTableColumns()

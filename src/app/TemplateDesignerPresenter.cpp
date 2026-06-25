@@ -7,6 +7,75 @@
 
 namespace sleekpr::app {
 
+namespace {
+
+DesignerTableRowBandModel rowBandModel(const sleekpr::core::TableRowBand& rowBand)
+{
+    DesignerTableRowBandModel model;
+    model.rowBandId = rowBand.id;
+    model.kind = rowBand.kind;
+    model.title = rowBand.title;
+    model.dataPath = rowBand.dataPath;
+    model.heightMode = rowBand.heightMode;
+    model.heightMm = rowBand.heightMm;
+    model.minHeightMm = rowBand.minHeightMm;
+    model.repeatOnPage = rowBand.repeatOnPage;
+    model.printOn = rowBand.printOn;
+    return model;
+}
+
+DesignerTableCellStyleModel cellStyleModel(const sleekpr::core::TableCellStyle& style)
+{
+    DesignerTableCellStyleModel model;
+    model.styleId = style.id;
+    model.fontSizePt = style.fontSizePt;
+    model.bold = style.bold;
+    model.alignment = style.alignment;
+    model.verticalAlignment = style.verticalAlignment;
+    model.paddingLeftMm = style.paddingLeftMm;
+    model.paddingTopMm = style.paddingTopMm;
+    model.paddingRightMm = style.paddingRightMm;
+    model.paddingBottomMm = style.paddingBottomMm;
+    model.drawBorder = style.drawBorder;
+    model.borderWidthMm = style.borderWidthMm;
+    model.backgroundColor = style.backgroundColor;
+    model.textColor = style.textColor;
+    model.wrapText = style.wrapText;
+    model.ellipsis = style.ellipsis;
+    return model;
+}
+
+DesignerTableCellTemplateModel cellTemplateModel(const sleekpr::core::TableCellTemplate& cell)
+{
+    DesignerTableCellTemplateModel model;
+    model.templateId = cell.id;
+    model.rowBandId = cell.rowBandId;
+    model.columnId = cell.columnId;
+    model.textTemplate = cell.textTemplate;
+    model.fieldKey = cell.fieldKey;
+    model.styleId = cell.styleId;
+    model.overflowPolicy = cell.overflowPolicy;
+    model.maxLines = cell.maxLines;
+    model.colSpan = cell.colSpan;
+    model.rowSpan = cell.rowSpan;
+    model.visible = cell.visible;
+    return model;
+}
+
+DesignerTableMergeRegionModel mergeRegionModel(const sleekpr::core::TableMergeRegion& merge)
+{
+    DesignerTableMergeRegionModel model;
+    model.mergeId = merge.id;
+    model.rowBandId = merge.rowBandId;
+    model.startRowOffset = merge.startRowOffset;
+    model.startColumnId = merge.startColumnId;
+    model.rowSpan = merge.rowSpan;
+    model.colSpan = merge.colSpan;
+    return model;
+}
+
+} // 匿名命名空间
+
 DesignerElementPropertyModel TemplateDesignerPresenter::elementPropertyModel(
     const sleekpr::core::TemplateElement& element,
     bool canEdit) const
@@ -89,6 +158,18 @@ DesignerTablePropertyModel TemplateDesignerPresenter::tablePropertyModel(
     model.columnsText = TablePropertiesCommand::formatColumns(table.columns);
     for (const auto& column : table.columns) {
         model.columns.append(tableColumnModel(column));
+    }
+    for (const auto& rowBand : table.rowBands) {
+        model.rowBands.append(rowBandModel(rowBand));
+    }
+    for (const auto& style : table.cellStyles) {
+        model.cellStyles.append(cellStyleModel(style));
+    }
+    for (const auto& cell : table.cellTemplates) {
+        model.cellTemplates.append(cellTemplateModel(cell));
+    }
+    for (const auto& merge : table.mergeRegions) {
+        model.mergeRegions.append(mergeRegionModel(merge));
     }
     return model;
 }

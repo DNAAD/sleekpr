@@ -18,6 +18,7 @@ class QWidget;
 namespace sleekpr::app {
 
 class TableColumnEditorPanel;
+class TableAdvancedEditorPanel;
 
 class TemplateInspectorPanel final : public QScrollArea
 {
@@ -94,6 +95,7 @@ public:
     QCheckBox* tableDrawBordersCheck() const;
     QLineEdit* tableColumnsEdit() const;
     TableColumnEditorPanel* tableColumnEditor() const;
+    TableAdvancedEditorPanel* tableAdvancedEditor() const;
     QPushButton* applyTablePropertiesButton() const;
 
     QLineEdit* deviceProfilePrinterEdit() const;
@@ -175,6 +177,7 @@ private:
     QCheckBox* m_tableDrawBordersCheck = nullptr;
     QLineEdit* m_tableColumnsEdit = nullptr;
     TableColumnEditorPanel* m_tableColumnEditor = nullptr;
+    TableAdvancedEditorPanel* m_tableAdvancedEditor = nullptr;
     QPushButton* m_applyTablePropertiesButton = nullptr;
 
     QLineEdit* m_deviceProfilePrinterEdit = nullptr;

@@ -45,6 +45,115 @@ bool sameTableColumns(const QList<sleekpr::core::TableColumn>& left, const QList
     return true;
 }
 
+bool sameTableCellStyle(const sleekpr::core::TableCellStyle& left, const sleekpr::core::TableCellStyle& right)
+{
+    return left.id == right.id
+        && sameDouble(left.fontSizePt, right.fontSizePt)
+        && left.bold == right.bold
+        && left.alignment == right.alignment
+        && left.verticalAlignment == right.verticalAlignment
+        && sameDouble(left.paddingLeftMm, right.paddingLeftMm)
+        && sameDouble(left.paddingTopMm, right.paddingTopMm)
+        && sameDouble(left.paddingRightMm, right.paddingRightMm)
+        && sameDouble(left.paddingBottomMm, right.paddingBottomMm)
+        && left.drawBorder == right.drawBorder
+        && sameDouble(left.borderWidthMm, right.borderWidthMm)
+        && left.backgroundColor == right.backgroundColor
+        && left.textColor == right.textColor
+        && left.wrapText == right.wrapText
+        && left.ellipsis == right.ellipsis;
+}
+
+bool sameTableCellStyles(const QList<sleekpr::core::TableCellStyle>& left, const QList<sleekpr::core::TableCellStyle>& right)
+{
+    if (left.size() != right.size()) {
+        return false;
+    }
+    for (qsizetype index = 0; index < left.size(); ++index) {
+        if (!sameTableCellStyle(left[index], right[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool sameTableRowBand(const sleekpr::core::TableRowBand& left, const sleekpr::core::TableRowBand& right)
+{
+    return left.id == right.id
+        && left.kind == right.kind
+        && left.title == right.title
+        && left.dataPath == right.dataPath
+        && left.heightMode == right.heightMode
+        && sameDouble(left.heightMm, right.heightMm)
+        && sameDouble(left.minHeightMm, right.minHeightMm)
+        && left.repeatOnPage == right.repeatOnPage
+        && left.printOn == right.printOn;
+}
+
+bool sameTableRowBands(const QList<sleekpr::core::TableRowBand>& left, const QList<sleekpr::core::TableRowBand>& right)
+{
+    if (left.size() != right.size()) {
+        return false;
+    }
+    for (qsizetype index = 0; index < left.size(); ++index) {
+        if (!sameTableRowBand(left[index], right[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool sameTableCellTemplate(const sleekpr::core::TableCellTemplate& left, const sleekpr::core::TableCellTemplate& right)
+{
+    return left.id == right.id
+        && left.rowBandId == right.rowBandId
+        && left.columnId == right.columnId
+        && left.textTemplate == right.textTemplate
+        && left.fieldKey == right.fieldKey
+        && left.styleId == right.styleId
+        && left.overflowPolicy == right.overflowPolicy
+        && left.maxLines == right.maxLines
+        && left.colSpan == right.colSpan
+        && left.rowSpan == right.rowSpan
+        && left.visible == right.visible;
+}
+
+bool sameTableCellTemplates(const QList<sleekpr::core::TableCellTemplate>& left, const QList<sleekpr::core::TableCellTemplate>& right)
+{
+    if (left.size() != right.size()) {
+        return false;
+    }
+    for (qsizetype index = 0; index < left.size(); ++index) {
+        if (!sameTableCellTemplate(left[index], right[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool sameTableMergeRegion(const sleekpr::core::TableMergeRegion& left, const sleekpr::core::TableMergeRegion& right)
+{
+    return left.id == right.id
+        && left.rowBandId == right.rowBandId
+        && left.startRowOffset == right.startRowOffset
+        && left.startColumnId == right.startColumnId
+        && left.rowSpan == right.rowSpan
+        && left.colSpan == right.colSpan;
+}
+
+bool sameTableMergeRegions(const QList<sleekpr::core::TableMergeRegion>& left, const QList<sleekpr::core::TableMergeRegion>& right)
+{
+    if (left.size() != right.size()) {
+        return false;
+    }
+    for (qsizetype index = 0; index < left.size(); ++index) {
+        if (!sameTableMergeRegion(left[index], right[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool sameTemplateElement(const sleekpr::core::TemplateElement& left, const sleekpr::core::TemplateElement& right)
 {
     return left.id == right.id
@@ -95,7 +204,11 @@ bool sameTableElement(const sleekpr::core::TableElement& left, const sleekpr::co
         && sameDouble(left.detailRowHeightMm, right.detailRowHeightMm)
         && left.drawBorders == right.drawBorders
         && left.repeatHeaderOnPage == right.repeatHeaderOnPage
-        && sameTableColumns(left.columns, right.columns);
+        && sameTableColumns(left.columns, right.columns)
+        && sameTableCellStyles(left.cellStyles, right.cellStyles)
+        && sameTableRowBands(left.rowBands, right.rowBands)
+        && sameTableCellTemplates(left.cellTemplates, right.cellTemplates)
+        && sameTableMergeRegions(left.mergeRegions, right.mergeRegions);
 }
 
 sleekpr::core::TableElement* findTable(sleekpr::core::TemplateDocument& document, const QString& tableId)
@@ -126,6 +239,101 @@ static sleekpr::core::TableColumn columnFromModel(const DesignerTableColumnModel
     column.bold = model.bold;
     column.ellipsis = model.ellipsis;
     return column;
+}
+
+static QString normalizedId(const QString& value, const QString& prefix, int index)
+{
+    const auto trimmed = value.trimmed();
+    return trimmed.isEmpty() ? QStringLiteral("%1%2").arg(prefix).arg(index + 1) : trimmed;
+}
+
+static QList<sleekpr::core::TableCellStyle> cellStylesFromModels(const QList<DesignerTableCellStyleModel>& models)
+{
+    QList<sleekpr::core::TableCellStyle> styles;
+    styles.reserve(models.size());
+    for (int index = 0; index < models.size(); ++index) {
+        const auto& model = models[index];
+        sleekpr::core::TableCellStyle style;
+        style.id = normalizedId(model.styleId, QStringLiteral("style"), index);
+        style.fontSizePt = std::max(1.0, model.fontSizePt);
+        style.bold = model.bold;
+        style.alignment = model.alignment;
+        style.verticalAlignment = model.verticalAlignment;
+        style.paddingLeftMm = std::max(0.0, model.paddingLeftMm);
+        style.paddingTopMm = std::max(0.0, model.paddingTopMm);
+        style.paddingRightMm = std::max(0.0, model.paddingRightMm);
+        style.paddingBottomMm = std::max(0.0, model.paddingBottomMm);
+        style.drawBorder = model.drawBorder;
+        style.borderWidthMm = std::max(0.0, model.borderWidthMm);
+        style.backgroundColor = model.backgroundColor.trimmed();
+        style.textColor = model.textColor.trimmed();
+        style.wrapText = model.wrapText;
+        style.ellipsis = model.ellipsis;
+        styles.append(style);
+    }
+    return styles;
+}
+
+static QList<sleekpr::core::TableRowBand> rowBandsFromModels(const QList<DesignerTableRowBandModel>& models)
+{
+    QList<sleekpr::core::TableRowBand> rowBands;
+    rowBands.reserve(models.size());
+    for (int index = 0; index < models.size(); ++index) {
+        const auto& model = models[index];
+        sleekpr::core::TableRowBand rowBand;
+        rowBand.id = normalizedId(model.rowBandId, QStringLiteral("band"), index);
+        rowBand.kind = model.kind;
+        rowBand.title = model.title.trimmed();
+        rowBand.dataPath = model.dataPath.trimmed();
+        rowBand.heightMode = model.heightMode;
+        rowBand.heightMm = std::max(0.1, model.heightMm);
+        rowBand.minHeightMm = std::max(0.1, model.minHeightMm);
+        rowBand.repeatOnPage = model.repeatOnPage;
+        rowBand.printOn = model.printOn;
+        rowBands.append(rowBand);
+    }
+    return rowBands;
+}
+
+static QList<sleekpr::core::TableCellTemplate> cellTemplatesFromModels(const QList<DesignerTableCellTemplateModel>& models)
+{
+    QList<sleekpr::core::TableCellTemplate> cells;
+    cells.reserve(models.size());
+    for (int index = 0; index < models.size(); ++index) {
+        const auto& model = models[index];
+        sleekpr::core::TableCellTemplate cell;
+        cell.id = normalizedId(model.templateId, QStringLiteral("cell"), index);
+        cell.rowBandId = model.rowBandId.trimmed();
+        cell.columnId = model.columnId.trimmed();
+        cell.textTemplate = model.textTemplate;
+        cell.fieldKey = model.fieldKey.trimmed();
+        cell.styleId = model.styleId.trimmed();
+        cell.overflowPolicy = model.overflowPolicy;
+        cell.maxLines = std::max(1, model.maxLines);
+        cell.colSpan = std::max(1, model.colSpan);
+        cell.rowSpan = std::max(1, model.rowSpan);
+        cell.visible = model.visible;
+        cells.append(cell);
+    }
+    return cells;
+}
+
+static QList<sleekpr::core::TableMergeRegion> mergeRegionsFromModels(const QList<DesignerTableMergeRegionModel>& models)
+{
+    QList<sleekpr::core::TableMergeRegion> merges;
+    merges.reserve(models.size());
+    for (int index = 0; index < models.size(); ++index) {
+        const auto& model = models[index];
+        sleekpr::core::TableMergeRegion merge;
+        merge.id = normalizedId(model.mergeId, QStringLiteral("merge"), index);
+        merge.rowBandId = model.rowBandId.trimmed();
+        merge.startRowOffset = std::max(0, model.startRowOffset);
+        merge.startColumnId = model.startColumnId.trimmed();
+        merge.rowSpan = std::max(1, model.rowSpan);
+        merge.colSpan = std::max(1, model.colSpan);
+        merges.append(merge);
+    }
+    return merges;
 }
 
 ElementPropertiesCommand::ElementPropertiesCommand(DesignerElementPropertyModel model)
@@ -235,6 +443,10 @@ TemplateDesignerCommandResult TablePropertiesCommand::apply(sleekpr::core::Templ
         return result;
     }
     updated.columns = nextColumns;
+    updated.cellStyles = cellStylesFromModels(m_model.cellStyles);
+    updated.rowBands = rowBandsFromModels(m_model.rowBands);
+    updated.cellTemplates = cellTemplatesFromModels(m_model.cellTemplates);
+    updated.mergeRegions = mergeRegionsFromModels(m_model.mergeRegions);
 
     if (sameTableElement(*table, updated)) {
         return result;
