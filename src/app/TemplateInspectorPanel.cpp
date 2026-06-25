@@ -1,5 +1,8 @@
 #include "sleekpr/app/TemplateInspectorPanel.h"
 
+#include "sleekpr/app/TableColumnEditorPanel.h"
+#include "sleekpr/app/TableColumnTextCodec.h"
+
 #include <QAbstractItemView>
 #include <QAction>
 #include <QCheckBox>
@@ -89,6 +92,28 @@ void installEditorFilter(QObject* filterTarget, QWidget* editor)
     }
 }
 
+QList<sleekpr::core::TableColumn> tableColumnsFromDesignerModels(const QList<DesignerTableColumnModel>& models)
+{
+    QList<sleekpr::core::TableColumn> columns;
+    columns.reserve(models.size());
+    // 高级文本框仍用于兼容旧格式，这里把结构化列临时转回核心模型供 codec 格式化。
+    for (const auto& model : models) {
+        sleekpr::core::TableColumn column;
+        column.id = model.columnId.trimmed().isEmpty() ? model.fieldKey.trimmed() : model.columnId.trimmed();
+        column.title = model.title;
+        column.fieldKey = model.fieldKey.trimmed();
+        column.widthMode = model.widthMode;
+        column.widthMm = std::max(0.1, model.widthMm);
+        column.flexWeight = std::max(0.1, model.flexWeight);
+        column.alignment = model.alignment;
+        column.fontSizePt = std::max(1.0, model.fontSizePt);
+        column.bold = model.bold;
+        column.ellipsis = model.ellipsis;
+        columns.append(column);
+    }
+    return columns;
+}
+
 } // 命名空间
 
 TemplateInspectorPanel::TemplateInspectorPanel(QWidget* parent)
@@ -164,6 +189,8 @@ TemplateInspectorPanel::TemplateInspectorPanel(QWidget* parent)
     m_tableColumnsEdit = new QLineEdit(elementPanel);
     m_tableColumnsEdit->setObjectName(QStringLiteral("tableColumnsEdit"));
     m_tableColumnsEdit->setPlaceholderText(QString::fromUtf8("品名=productName:45,重量=weight:25"));
+    m_tableColumnEditor = new TableColumnEditorPanel(elementPanel);
+    m_tableColumnEditor->setObjectName(QStringLiteral("tableColumnEditorPanel"));
     m_applyTablePropertiesButton = createInspectorButton(
         QString::fromUtf8("应用表格属性"),
         QStringLiteral("applyTablePropertiesButton"),
@@ -358,6 +385,7 @@ TemplateInspectorPanel::TemplateInspectorPanel(QWidget* parent)
     tableTabLayout->setSpacing(8);
     tableTabLayout->addWidget(tablePropertyTitleLabel);
     tableTabLayout->addLayout(tablePropertyGrid);
+    tableTabLayout->addWidget(m_tableColumnEditor);
     tableTabLayout->addWidget(m_applyTablePropertiesButton);
     tableTabLayout->addStretch(1);
 
@@ -603,6 +631,10 @@ void TemplateInspectorPanel::setTableProperties(const DesignerTablePropertyModel
         m_tableColumnsEdit->setText(model.visible ? model.columnsText : QString());
         m_tableColumnsEdit->setEnabled(canEdit);
     }
+    if (m_tableColumnEditor != nullptr) {
+        m_tableColumnEditor->setEditable(canEdit);
+        m_tableColumnEditor->setColumns(model.visible ? model.columns : QList<DesignerTableColumnModel>{});
+    }
     if (m_applyTablePropertiesButton != nullptr) {
         m_applyTablePropertiesButton->setEnabled(canEdit);
     }
@@ -643,6 +675,9 @@ DesignerTablePropertyModel TemplateInspectorPanel::tableProperties() const
     }
     if (m_tableColumnsEdit != nullptr) {
         model.columnsText = m_tableColumnsEdit->text();
+    }
+    if (m_tableColumnEditor != nullptr) {
+        model.columns = m_tableColumnEditor->columns();
     }
     return model;
 }
@@ -695,6 +730,7 @@ bool TemplateInspectorPanel::isTablePropertyEditor(QObject* watched) const
         m_tableRepeatHeaderCheck,
         m_tableDrawBordersCheck,
         m_tableColumnsEdit,
+        m_tableColumnEditor,
     };
     return std::any_of(editors.cbegin(), editors.cend(), [watchedWidget](const auto* editor) {
         return ownsEditor(editor, watchedWidget);
@@ -733,6 +769,7 @@ void TemplateInspectorPanel::installPropertyEditorEventFilter(QObject* filterTar
              m_tableRepeatHeaderCheck,
              m_tableDrawBordersCheck,
              m_tableColumnsEdit,
+             m_tableColumnEditor,
          }) {
         installEditorFilter(filterTarget, editor);
     }
@@ -797,6 +834,16 @@ void TemplateInspectorPanel::connectPropertySignals()
     connect(m_tableRepeatHeaderCheck, &QCheckBox::toggled, this, emitTableControlEdited);
     connect(m_tableDrawBordersCheck, &QCheckBox::toggled, this, emitTableControlEdited);
     connect(m_tableColumnsEdit, &QLineEdit::textChanged, this, emitTableTextEdited);
+    connect(m_tableColumnEditor, &TableColumnEditorPanel::columnsEdited, this, [this] {
+        if (m_settingTableProperties) {
+            return;
+        }
+        if (m_tableColumnsEdit != nullptr && m_tableColumnEditor != nullptr) {
+            const QSignalBlocker blocker(m_tableColumnsEdit);
+            m_tableColumnsEdit->setText(TableColumnTextCodec::format(tableColumnsFromDesignerModels(m_tableColumnEditor->columns())));
+        }
+        emit tablePropertiesEdited(ControlAutoApplyDelayMs);
+    });
     connect(m_tableDisplayNameEdit, &QLineEdit::editingFinished, this, [this] { emit tablePropertiesEditingFinished(); });
     connect(m_tableDataPathEdit, &QLineEdit::editingFinished, this, [this] { emit tablePropertiesEditingFinished(); });
     connect(m_tableColumnsEdit, &QLineEdit::editingFinished, this, [this] { emit tablePropertiesEditingFinished(); });
@@ -867,6 +914,7 @@ QDoubleSpinBox* TemplateInspectorPanel::tableDetailHeightSpin() const { return m
 QCheckBox* TemplateInspectorPanel::tableRepeatHeaderCheck() const { return m_tableRepeatHeaderCheck; }
 QCheckBox* TemplateInspectorPanel::tableDrawBordersCheck() const { return m_tableDrawBordersCheck; }
 QLineEdit* TemplateInspectorPanel::tableColumnsEdit() const { return m_tableColumnsEdit; }
+TableColumnEditorPanel* TemplateInspectorPanel::tableColumnEditor() const { return m_tableColumnEditor; }
 QPushButton* TemplateInspectorPanel::applyTablePropertiesButton() const { return m_applyTablePropertiesButton; }
 
 QLineEdit* TemplateInspectorPanel::deviceProfilePrinterEdit() const { return m_deviceProfilePrinterEdit; }

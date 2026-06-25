@@ -158,6 +158,7 @@ private slots:
     void tableDesignerCommandUsesStructuredColumnsWhenPresent();
     void templateDesignerPresenterMapsTableColumns();
     void tableColumnEditorPanelEditsAndReordersColumns();
+    void templateInspectorPanelExposesTableColumnEditor();
     void templateDesignerPresenterRejectsInvalidTableColumns();
     void paperSpecManagerWindowSavesAndDeletesSpecs();
     void fieldPresetManagerWindowSavesAndDeletesPresets();
@@ -2688,6 +2689,35 @@ void AppTests::tableColumnEditorPanelEditsAndReordersColumns()
     moveUp->click();
     QTRY_COMPARE(movedSpy.count(), 1);
     QCOMPARE(panel.columns().first().columnId, QStringLiteral("weight"));
+}
+
+void AppTests::templateInspectorPanelExposesTableColumnEditor()
+{
+    TemplateInspectorPanel panel;
+    DesignerTableColumnModel column;
+    column.columnId = QStringLiteral("name");
+    column.title = QString::fromUtf8("品名");
+    column.fieldKey = QStringLiteral("productName");
+
+    DesignerTablePropertyModel model;
+    model.tableId = QStringLiteral("table");
+    model.visible = true;
+    model.canEdit = true;
+    model.columns = {column};
+    model.columnsText = QString::fromUtf8("品名=productName:20.00");
+
+    QSignalSpy editedSpy(&panel, &TemplateInspectorPanel::tablePropertiesEdited);
+    panel.setTableProperties(model);
+
+    auto* editor = panel.findChild<TableColumnEditorPanel*>(QStringLiteral("tableColumnEditorPanel"));
+    QVERIFY(editor != nullptr);
+    QCOMPARE(editor->columns().size(), 1);
+
+    auto* addButton = panel.findChild<QPushButton*>(QStringLiteral("tableColumnAddButton"));
+    QVERIFY(addButton != nullptr);
+    addButton->click();
+    QTRY_VERIFY(editedSpy.count() > 0);
+    QCOMPARE(panel.tableProperties().columns.size(), 2);
 }
 
 void AppTests::templateDesignerPresenterRejectsInvalidTableColumns()
