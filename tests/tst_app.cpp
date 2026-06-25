@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QByteArray>
 #include <QCheckBox>
+#include <QColor>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFile>
@@ -86,6 +87,28 @@ QByteArray imageBytes(const QPixmap& pixmap)
     return QByteArray(reinterpret_cast<const char*>(image.constBits()), image.sizeInBytes());
 }
 
+int darkPixelCountInMmRect(const QPixmap& pixmap, QRectF rectMm, QSizeF paperSizeMm)
+{
+    const auto image = pixmap.toImage().convertToFormat(QImage::Format_ARGB32);
+    const QRect rectPx(
+        static_cast<int>(std::floor(rectMm.x() / paperSizeMm.width() * image.width())),
+        static_cast<int>(std::floor(rectMm.y() / paperSizeMm.height() * image.height())),
+        static_cast<int>(std::ceil(rectMm.width() / paperSizeMm.width() * image.width())),
+        static_cast<int>(std::ceil(rectMm.height() / paperSizeMm.height() * image.height())));
+    const auto clipped = rectPx.intersected(image.rect());
+
+    int count = 0;
+    for (int y = clipped.top(); y <= clipped.bottom(); ++y) {
+        for (int x = clipped.left(); x <= clipped.right(); ++x) {
+            const auto color = image.pixelColor(x, y);
+            if (color.red() < 96 && color.green() < 96 && color.blue() < 96) {
+                ++count;
+            }
+        }
+    }
+    return count;
+}
+
 } // 匿名命名空间
 
 class AppTests final : public QObject
@@ -152,6 +175,8 @@ private slots:
     void templateDesignerWindowAppliesNumericPropertyPromptly();
     void templateDesignerWindowCoalescesDragPreviewRefresh();
     void templateDesignerWindowDragsTableColumnWidthOnCanvas();
+    void templateDesignerWindowDragsCurrentTableWhenAnotherElementOverlaps();
+    void templateDesignerWindowDraggingTableClearsPreviousRenderedPosition();
     void templateDesignerWindowSkipsNoopPropertyApply();
     void templateDesignerWindowAppliesPendingTextOnFocusOut();
     void templateDesignerWindowShowsSampleJsonErrorNearEditor();
@@ -2461,6 +2486,142 @@ void AppTests::templateDesignerWindowDragsTableColumnWidthOnCanvas()
     QCOMPARE(afterTable.columns[0].widthMode, TableColumnWidthMode::Fixed);
     QCOMPARE(afterTable.columns[1].widthMode, TableColumnWidthMode::Fixed);
     QCOMPARE(afterTable.columns[0].widthMm + afterTable.columns[1].widthMm, beforeFirstWidth + beforeSecondWidth);
+}
+
+void AppTests::templateDesignerWindowDragsCurrentTableWhenAnotherElementOverlaps()
+{
+    auto document = TemplateDesignerFactory::createBlankDocument(
+        QStringLiteral("overlap-table-test"),
+        QString::fromUtf8("重叠拖拽测试"),
+        QStringLiteral("default"),
+        QStringLiteral("label-80x30"),
+        {});
+    auto overlapElement = TemplateDesignerFactory::createElement(TemplateElementType::BoundField);
+    overlapElement.id = QStringLiteral("overlap-field");
+    overlapElement.layerId = document.layers.first().id;
+    overlapElement.x = 8.0;
+    overlapElement.y = 11.0;
+    overlapElement.width = 8.0;
+    overlapElement.height = 3.0;
+    overlapElement.zIndex = 0;
+    document.layers.first().elements.append(overlapElement);
+
+    PrintClientSettings initialSettings;
+    initialSettings.templateDocuments.insert(QStringLiteral("default"), document);
+
+    PrintClientSettings changedSettings;
+    TemplateDesignerWindow window(initialSettings, [&changedSettings](const PrintClientSettings& nextSettings) {
+        changedSettings = nextSettings;
+    });
+
+    auto* addTableButton = window.findChild<QPushButton*>(QStringLiteral("designerAddTableButton"));
+    auto* elementList = window.findChild<QListWidget*>(QStringLiteral("templateElementList"));
+    TemplatePreviewLabel* previewLabel = nullptr;
+    for (auto* label : window.findChildren<QLabel*>(QStringLiteral("designerPreviewLabel"))) {
+        previewLabel = dynamic_cast<TemplatePreviewLabel*>(label);
+        if (previewLabel != nullptr) {
+            break;
+        }
+    }
+    QVERIFY(addTableButton != nullptr);
+    QVERIFY(elementList != nullptr);
+    QVERIFY(previewLabel != nullptr);
+
+    addTableButton->click();
+    QVERIFY(elementList->currentItem() != nullptr);
+    QCOMPARE(elementList->currentItem()->data(Qt::UserRole + 1).toString(), QStringLiteral("table"));
+    const auto tableBefore = changedSettings.templateDocuments.value(QStringLiteral("default")).layers.first().tables.first();
+
+    const auto pointAtMm = [previewLabel](double xMm, double yMm) {
+        const auto origin = previewLabel->printableImageOriginPx();
+        const auto imageSize = previewLabel->printableImageSizePx();
+        return QPoint(
+            origin.x() + static_cast<int>(std::round(xMm / 80.0 * imageSize.width())),
+            origin.y() + static_cast<int>(std::round(yMm / 30.0 * imageSize.height())));
+    };
+
+    QTest::mousePress(previewLabel, Qt::LeftButton, Qt::NoModifier, pointAtMm(10.0, 12.0));
+    QCOMPARE(elementList->currentItem()->data(Qt::UserRole + 1).toString(), QStringLiteral("table"));
+    QTest::mouseMove(previewLabel, pointAtMm(10.0, 4.0));
+    QTest::mouseRelease(previewLabel, Qt::LeftButton, Qt::NoModifier, pointAtMm(10.0, 4.0));
+
+    QTRY_VERIFY_WITH_TIMEOUT(
+        changedSettings.templateDocuments.value(QStringLiteral("default")).layers.first().tables.first().y < tableBefore.y - 0.1,
+        500);
+}
+
+void AppTests::templateDesignerWindowDraggingTableClearsPreviousRenderedPosition()
+{
+    PrintClientSettings initialSettings;
+    initialSettings.templateDocuments.insert(
+        QStringLiteral("default"),
+        TemplateDesignerFactory::createBlankDocument(
+            QStringLiteral("drag-table-test"),
+            QString::fromUtf8("拖拽表格测试"),
+            QStringLiteral("default"),
+            QStringLiteral("label-80x30"),
+            {}));
+
+    PrintClientSettings changedSettings;
+    TemplateDesignerWindow window(initialSettings, [&changedSettings](const PrintClientSettings& nextSettings) {
+        changedSettings = nextSettings;
+    });
+
+    auto* addTableButton = window.findChild<QPushButton*>(QStringLiteral("designerAddTableButton"));
+    auto* addColumnButton = window.findChild<QPushButton*>(QStringLiteral("tableColumnAddButton"));
+    auto* elementList = window.findChild<QListWidget*>(QStringLiteral("templateElementList"));
+    auto* previewTimer = window.findChild<QTimer*>(QStringLiteral("designerPreviewRefreshTimer"));
+    TemplatePreviewLabel* previewLabel = nullptr;
+    for (auto* label : window.findChildren<QLabel*>(QStringLiteral("designerPreviewLabel"))) {
+        previewLabel = dynamic_cast<TemplatePreviewLabel*>(label);
+        if (previewLabel != nullptr) {
+            break;
+        }
+    }
+    QVERIFY(addTableButton != nullptr);
+    QVERIFY(addColumnButton != nullptr);
+    QVERIFY(elementList != nullptr);
+    QVERIFY(previewTimer != nullptr);
+    QVERIFY(previewLabel != nullptr);
+
+    addTableButton->click();
+    QVERIFY(!previewLabel->pixmap().isNull());
+
+    addColumnButton->click();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        changedSettings.templateDocuments.value(QStringLiteral("default")).layers.last().tables.first().columns.size(),
+        3,
+        500);
+
+    const auto tableBefore = changedSettings.templateDocuments.value(QStringLiteral("default")).layers.last().tables.first();
+    const QSizeF paperSizeMm(80.0, 30.0);
+    const QRectF oldBottomAreaMm(tableBefore.x + 0.5, tableBefore.y + 8.0, tableBefore.width - 1.0, 6.0);
+    const auto oldBottomDarkPixels = darkPixelCountInMmRect(previewLabel->pixmap(), oldBottomAreaMm, paperSizeMm);
+    QVERIFY(oldBottomDarkPixels > 100);
+
+    const auto pointAtMm = [previewLabel](double xMm, double yMm) {
+        const auto origin = previewLabel->printableImageOriginPx();
+        const auto imageSize = previewLabel->printableImageSizePx();
+        return QPoint(
+            origin.x() + static_cast<int>(std::round(xMm / 80.0 * imageSize.width())),
+            origin.y() + static_cast<int>(std::round(yMm / 30.0 * imageSize.height())));
+    };
+
+    QTest::mousePress(previewLabel, Qt::LeftButton, Qt::NoModifier, pointAtMm(tableBefore.x + 5.0, tableBefore.y + 2.0));
+    QVERIFY(elementList->currentItem() != nullptr);
+    QCOMPARE(elementList->currentItem()->data(Qt::UserRole + 1).toString(), QStringLiteral("table"));
+    QTest::mouseMove(previewLabel, pointAtMm(tableBefore.x + 5.0, 2.0));
+    QVERIFY(previewTimer->isActive());
+    QTest::mouseRelease(previewLabel, Qt::LeftButton, Qt::NoModifier, pointAtMm(tableBefore.x + 5.0, 2.0));
+
+    QTRY_VERIFY_WITH_TIMEOUT(
+        changedSettings.templateDocuments.value(QStringLiteral("default")).layers.last().tables.first().y < tableBefore.y - 0.1,
+        500);
+    const auto documentAfter = changedSettings.templateDocuments.value(QStringLiteral("default"));
+    QCOMPARE(documentAfter.layers.last().tables.size(), 1);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        darkPixelCountInMmRect(previewLabel->pixmap(), oldBottomAreaMm, paperSizeMm) < oldBottomDarkPixels / 4,
+        500);
 }
 
 void AppTests::templateDesignerWindowSkipsNoopPropertyApply()

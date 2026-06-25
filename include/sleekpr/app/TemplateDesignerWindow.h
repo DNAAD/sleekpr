@@ -176,6 +176,7 @@ private:
     void resizeTableColumnByPixels(QPoint delta);
     void nudgeSelectedElement(QPoint direction, Qt::KeyboardModifiers modifiers);
     std::optional<TableColumnResizeDrag> tableColumnResizeDragAt(QPoint position) const;
+    bool currentSelectionContainsCanvasPosition(QPoint position) const;
 
     sleekpr::core::PrintClientSettings m_settings;
     SettingsChangedCallback m_onSettingsChanged;

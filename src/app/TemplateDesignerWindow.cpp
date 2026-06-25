@@ -47,6 +47,7 @@
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRectF>
 #include <QSaveFile>
 #include <QSignalBlocker>
 #include <QSplitter>
@@ -600,6 +601,11 @@ void TemplateDesignerWindow::buildUi()
             }
             selectElement(resizeDrag->tableId);
             m_tableColumnResizeDrag = resizeDrag;
+            return true;
+        }
+
+        // 已选元素内部的拖拽优先作用在当前选中项，避免重叠元素抢占命中导致用户误以为拖出了副本。
+        if (currentSelectionContainsCanvasPosition(position)) {
             return true;
         }
 
@@ -2629,6 +2635,49 @@ std::optional<TemplateDesignerWindow::TableColumnResizeDrag> TemplateDesignerWin
     }
 
     return std::nullopt;
+}
+
+bool TemplateDesignerWindow::currentSelectionContainsCanvasPosition(QPoint position) const
+{
+    if (m_previewLabel == nullptr) {
+        return false;
+    }
+
+    const auto selectedId = currentElementId();
+    if (selectedId.trimmed().isEmpty() || !canEditElement(selectedId)) {
+        return false;
+    }
+
+    const auto paperSize = currentPaperSizeMm();
+    const auto previewSize = m_previewLabel->printableImageSizePx();
+    if (paperSize.isEmpty() || previewSize.isEmpty()) {
+        return false;
+    }
+
+    const auto imagePosition = m_previewLabel->mapToPrintableImagePx(position);
+    const QPointF positionMm(
+        imagePosition.x() * paperSize.width() / previewSize.width(),
+        imagePosition.y() * paperSize.height() / previewSize.height());
+
+    const auto containsPosition = [&positionMm](double x, double y, double width, double height) {
+        return QRectF(x, y, width, height).adjusted(-0.2, -0.2, 0.2, 0.2).contains(positionMm);
+    };
+
+    const auto& document = m_settings.templateDocuments.value(m_templateKey);
+    for (const auto& layer : document.layers) {
+        for (const auto& element : layer.elements) {
+            if (element.id == selectedId) {
+                return containsPosition(element.x, element.y, element.width, element.height);
+            }
+        }
+        for (const auto& table : layer.tables) {
+            if (table.id == selectedId) {
+                return containsPosition(table.x, table.y, table.width, table.height);
+            }
+        }
+    }
+
+    return false;
 }
 
 void TemplateDesignerWindow::moveSelectedElementByPixels(QPoint delta)
