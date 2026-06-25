@@ -98,6 +98,7 @@ private slots:
     void tableElementJsonRejectsInvalidTable();
     void tableElementLayoutDerivesLegacyHeaderAndDetailCells();
     void tableElementLayoutRejectsInvalidMergeRegion();
+    void tableElementLayoutUsesAutoRowHeightForWrappedText();
     void tableElementRendererBuildsSinglePageCommands();
     void tableElementRendererDistributesFlexibleColumnWidths();
     void tableElementRendererRejectsNonArrayData();
@@ -1672,6 +1673,49 @@ void CoreTests::tableElementLayoutRejectsInvalidMergeRegion()
     QVERIFY(result.errorMessage.contains(QStringLiteral("invalid-merge-table")));
     QVERIFY(result.errorMessage.contains(QStringLiteral("bad-merge")));
     QVERIFY(result.errorMessage.contains(QStringLiteral("missing-column")));
+}
+
+void CoreTests::tableElementLayoutUsesAutoRowHeightForWrappedText()
+{
+    TableElement table;
+    table.id = QStringLiteral("auto-row-height");
+    table.dataPath = QStringLiteral("items");
+    table.width = 20.0;
+    table.height = 40.0;
+    table.detailRowHeightMm = 5.0;
+
+    TableColumn column;
+    column.id = QStringLiteral("name");
+    column.title = QString::fromUtf8("品名");
+    column.fieldKey = QStringLiteral("productName");
+    column.widthMm = 20.0;
+    column.wrapText = true;
+    table.columns.append(column);
+
+    TableRowBand detailBand;
+    detailBand.id = QStringLiteral("detail");
+    detailBand.kind = TableRowBandKind::Detail;
+    detailBand.heightMode = TableRowHeightMode::Auto;
+    detailBand.minHeightMm = 4.0;
+    table.rowBands.append(detailBand);
+
+    TemplateRenderContext context;
+    context.values = QJsonObject{
+        {QStringLiteral("items"),
+         QJsonArray{
+             QJsonObject{{QStringLiteral("productName"), QString::fromUtf8("很长很长的商品名称需要自动换行显示")}},
+         }},
+    };
+
+    const auto result = TableElementLayout::layout(table, context);
+    QVERIFY2(result.success(), qPrintable(result.errorMessage));
+
+    const auto detailCell = std::find_if(result.pages.first().cells.cbegin(), result.pages.first().cells.cend(), [](const TableLayoutCell& cell) {
+        return cell.rowBandId == QStringLiteral("detail");
+    });
+    QVERIFY(detailCell != result.pages.first().cells.cend());
+    QVERIFY(detailCell->rect.height() > table.detailRowHeightMm);
+    QCOMPARE(detailCell->overflowPolicy, TableCellOverflowPolicy::Wrap);
 }
 
 void CoreTests::tableElementRendererBuildsSinglePageCommands()

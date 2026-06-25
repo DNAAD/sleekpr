@@ -8,6 +8,7 @@
 #include <QSet>
 
 #include <algorithm>
+#include <cmath>
 
 namespace sleekpr::core {
 
@@ -125,6 +126,39 @@ TableCellOverflowPolicy overflowPolicyFor(const TableCellStyle& style)
     return TableCellOverflowPolicy::Clip;
 }
 
+double estimatedLineHeightMm(double fontSizePt)
+{
+    return std::max(1.0, fontSizePt * 0.352778 * 1.25);
+}
+
+int estimatedLineCount(const QString& text, double widthMm, const TableCellStyle& style, int maxLines)
+{
+    const auto normalizedText = text.isEmpty() ? QStringLiteral(" ") : text;
+    if (!style.wrapText && !normalizedText.contains(QLatin1Char('\n'))) {
+        return 1;
+    }
+
+    const auto contentWidth = std::max(1.0, widthMm - style.paddingLeftMm - style.paddingRightMm);
+    const auto averageCharWidth = std::max(0.6, style.fontSizePt * 0.352778 * 0.55);
+    const auto charsPerLine = std::max(1, static_cast<int>(std::floor(contentWidth / averageCharWidth)));
+
+    int estimated = 0;
+    for (const auto& line : normalizedText.split(QLatin1Char('\n'))) {
+        estimated += std::max(1, static_cast<int>(std::ceil(static_cast<double>(line.size()) / charsPerLine)));
+    }
+    if (maxLines > 0) {
+        estimated = std::min(estimated, maxLines);
+    }
+    return std::max(1, estimated);
+}
+
+double estimatedCellHeightMm(const QString& text, double widthMm, const TableCellStyle& style, int maxLines)
+{
+    return style.paddingTopMm
+        + style.paddingBottomMm
+        + estimatedLineCount(text, widthMm, style, maxLines) * estimatedLineHeightMm(style.fontSizePt);
+}
+
 QHash<QString, int> columnIndexById(const TableElement& table)
 {
     QHash<QString, int> result;
@@ -200,8 +234,26 @@ TableLayoutCell makeCell(const TableElement& table,
     cell.text = text;
     cell.style = style;
     cell.overflowPolicy = overflowPolicyFor(style);
-    cell.maxLines = 1;
+    cell.maxLines = style.wrapText ? 0 : 1;
     return cell;
+}
+
+double resolvedRowHeight(const TableElement& table, const TableRowBand& rowBand, const QJsonObject& rowObject)
+{
+    if (rowBand.heightMode != TableRowHeightMode::Auto) {
+        return rowBand.heightMm;
+    }
+
+    auto rowHeight = std::max(rowBand.minHeightMm, 0.1);
+    const auto widths = resolvedColumnWidths(table);
+    for (int columnIndex = 0; columnIndex < table.columns.size(); ++columnIndex) {
+        const auto& column = table.columns[columnIndex];
+        const auto style = styleForColumn(table, column);
+        const auto maxLines = style.wrapText ? 0 : 1;
+        const auto text = valueToText(valueAtPath(rowObject, column.fieldKey));
+        rowHeight = std::max(rowHeight, estimatedCellHeightMm(text, widths[columnIndex], style, maxLines));
+    }
+    return rowHeight;
 }
 
 void appendColumnCells(TableLayoutPage* page,
@@ -326,8 +378,9 @@ TableLayoutResult TableElementLayout::layout(const TableElement& table, const Te
         const auto row = rows[rowIndex].toObject();
         for (const auto& rowBand : details) {
             const auto rowKey = QStringLiteral("row%1").arg(rowIndex);
-            appendColumnCells(&page, table, rowBand.id, rowIndex, currentY, rowBand.heightMm, &row, rowKey, false);
-            currentY += rowBand.heightMm;
+            const auto rowHeight = resolvedRowHeight(table, rowBand, row);
+            appendColumnCells(&page, table, rowBand.id, rowIndex, currentY, rowHeight, &row, rowKey, false);
+            currentY += rowHeight;
         }
     }
 
