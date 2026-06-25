@@ -20,6 +20,11 @@ public:
         const sleekpr::core::TableElement& table,
         bool canEdit) const;
 
+    // 表格列编辑器只处理 app 层模型，Presenter 统一负责和核心模板结构互转。
+    DesignerTableColumnModel tableColumnModel(const sleekpr::core::TableColumn& column) const;
+    sleekpr::core::TableColumn tableColumnFromModel(const DesignerTableColumnModel& model) const;
+    QList<sleekpr::core::TableColumn> tableColumnsFromModels(const QList<DesignerTableColumnModel>& models) const;
+
     TemplateDesignerCommandResult applyElementProperties(
         sleekpr::core::TemplateElement& element,
         const DesignerElementPropertyModel& model) const;

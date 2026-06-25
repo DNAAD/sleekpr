@@ -3,6 +3,8 @@
 #include "sleekpr/core/settings/TemplateElement.h"
 #include "sleekpr/core/templates/TableElement.h"
 
+#include <algorithm>
+
 namespace sleekpr::app {
 
 DesignerElementPropertyModel TemplateDesignerPresenter::elementPropertyModel(
@@ -85,7 +87,53 @@ DesignerTablePropertyModel TemplateDesignerPresenter::tablePropertyModel(
     model.repeatHeaderOnPage = table.repeatHeaderOnPage;
     model.drawBorders = table.drawBorders;
     model.columnsText = TablePropertiesCommand::formatColumns(table.columns);
+    for (const auto& column : table.columns) {
+        model.columns.append(tableColumnModel(column));
+    }
     return model;
+}
+
+DesignerTableColumnModel TemplateDesignerPresenter::tableColumnModel(const sleekpr::core::TableColumn& column) const
+{
+    DesignerTableColumnModel model;
+    model.columnId = column.id;
+    model.title = column.title;
+    model.fieldKey = column.fieldKey;
+    model.widthMode = column.widthMode;
+    model.widthMm = column.widthMm;
+    model.flexWeight = column.flexWeight;
+    model.alignment = column.alignment;
+    model.fontSizePt = column.fontSizePt;
+    model.bold = column.bold;
+    model.ellipsis = column.ellipsis;
+    return model;
+}
+
+sleekpr::core::TableColumn TemplateDesignerPresenter::tableColumnFromModel(const DesignerTableColumnModel& model) const
+{
+    sleekpr::core::TableColumn column;
+    column.id = model.columnId.trimmed().isEmpty() ? model.fieldKey.trimmed() : model.columnId.trimmed();
+    column.title = model.title;
+    column.fieldKey = model.fieldKey.trimmed();
+    column.widthMode = model.widthMode;
+    column.widthMm = std::max(0.1, model.widthMm);
+    column.flexWeight = std::max(0.1, model.flexWeight);
+    column.alignment = model.alignment;
+    column.fontSizePt = std::max(1.0, model.fontSizePt);
+    column.bold = model.bold;
+    column.ellipsis = model.ellipsis;
+    return column;
+}
+
+QList<sleekpr::core::TableColumn> TemplateDesignerPresenter::tableColumnsFromModels(
+    const QList<DesignerTableColumnModel>& models) const
+{
+    QList<sleekpr::core::TableColumn> columns;
+    columns.reserve(models.size());
+    for (const auto& model : models) {
+        columns.append(tableColumnFromModel(model));
+    }
+    return columns;
 }
 
 TemplateDesignerCommandResult TemplateDesignerPresenter::applyElementProperties(

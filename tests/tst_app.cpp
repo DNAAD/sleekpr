@@ -154,6 +154,7 @@ private slots:
     void templateDesignerPresenterAppliesElementPropertyCommand();
     void tableColumnTextCodecFormatsAndParsesLegacyColumns();
     void tableDesignerCommandUsesStructuredColumnsWhenPresent();
+    void templateDesignerPresenterMapsTableColumns();
     void templateDesignerPresenterRejectsInvalidTableColumns();
     void paperSpecManagerWindowSavesAndDeletesSpecs();
     void fieldPresetManagerWindowSavesAndDeletesPresets();
@@ -2615,6 +2616,40 @@ void AppTests::tableDesignerCommandUsesStructuredColumnsWhenPresent()
     QCOMPARE(actual.alignment, TableCellAlignment::Right);
     QVERIFY(actual.bold);
     QVERIFY(actual.ellipsis);
+}
+
+void AppTests::templateDesignerPresenterMapsTableColumns()
+{
+    TableColumn column;
+    column.id = QStringLiteral("price");
+    column.title = QString::fromUtf8("单价");
+    column.fieldKey = QStringLiteral("price");
+    column.widthMode = TableColumnWidthMode::Flex;
+    column.widthMm = 18.0;
+    column.flexWeight = 3.0;
+    column.alignment = TableCellAlignment::Right;
+    column.fontSizePt = 7.0;
+    column.bold = true;
+    column.ellipsis = true;
+
+    TableElement table;
+    table.id = QStringLiteral("items");
+    table.columns.append(column);
+
+    TemplateDesignerPresenter presenter;
+    const auto model = presenter.tablePropertyModel(table, true);
+    QCOMPARE(model.columns.size(), 1);
+    QCOMPARE(model.columns.first().columnId, QStringLiteral("price"));
+    QCOMPARE(model.columns.first().fieldKey, QStringLiteral("price"));
+    QCOMPARE(model.columns.first().widthMode, TableColumnWidthMode::Flex);
+    QCOMPARE(model.columns.first().alignment, TableCellAlignment::Right);
+    QVERIFY(model.columns.first().bold);
+    QVERIFY(model.columns.first().ellipsis);
+
+    const auto roundTrip = presenter.tableColumnsFromModels(model.columns);
+    QCOMPARE(roundTrip.size(), 1);
+    QCOMPARE(roundTrip.first().id, QStringLiteral("price"));
+    QCOMPARE(roundTrip.first().flexWeight, 3.0);
 }
 
 void AppTests::templateDesignerPresenterRejectsInvalidTableColumns()
