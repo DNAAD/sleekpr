@@ -18,6 +18,7 @@
 #include <QSplitter>
 #include <QSpinBox>
 #include <QTabWidget>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTimer>
 
@@ -28,6 +29,7 @@
 #include "sleekpr/app/TemplateDesignerCommand.h"
 #include "sleekpr/app/TemplateDesignerFactory.h"
 #include "sleekpr/app/TemplateDesignerPresenter.h"
+#include "sleekpr/app/TableColumnEditorPanel.h"
 #include "sleekpr/app/TableColumnTextCodec.h"
 #include "sleekpr/app/TemplateInspectorPanel.h"
 #include "sleekpr/app/TemplateElementHitTester.h"
@@ -155,6 +157,7 @@ private slots:
     void tableColumnTextCodecFormatsAndParsesLegacyColumns();
     void tableDesignerCommandUsesStructuredColumnsWhenPresent();
     void templateDesignerPresenterMapsTableColumns();
+    void tableColumnEditorPanelEditsAndReordersColumns();
     void templateDesignerPresenterRejectsInvalidTableColumns();
     void paperSpecManagerWindowSavesAndDeletesSpecs();
     void fieldPresetManagerWindowSavesAndDeletesPresets();
@@ -2650,6 +2653,41 @@ void AppTests::templateDesignerPresenterMapsTableColumns()
     QCOMPARE(roundTrip.size(), 1);
     QCOMPARE(roundTrip.first().id, QStringLiteral("price"));
     QCOMPARE(roundTrip.first().flexWeight, 3.0);
+}
+
+void AppTests::tableColumnEditorPanelEditsAndReordersColumns()
+{
+    TableColumnEditorPanel panel;
+    DesignerTableColumnModel first;
+    first.columnId = QStringLiteral("name");
+    first.title = QString::fromUtf8("品名");
+    first.fieldKey = QStringLiteral("productName");
+    first.widthMode = TableColumnWidthMode::Fixed;
+    first.widthMm = 30.0;
+
+    DesignerTableColumnModel second;
+    second.columnId = QStringLiteral("weight");
+    second.title = QString::fromUtf8("重量");
+    second.fieldKey = QStringLiteral("weight");
+    second.alignment = TableCellAlignment::Right;
+    panel.setColumns({first, second});
+
+    auto* table = panel.findChild<QTableWidget*>(QStringLiteral("tableColumnEditorGrid"));
+    QVERIFY(table != nullptr);
+    QCOMPARE(table->rowCount(), 2);
+
+    QSignalSpy editedSpy(&panel, &TableColumnEditorPanel::columnsEdited);
+    table->item(0, 1)->setText(QStringLiteral("sku"));
+    QTRY_COMPARE(editedSpy.count(), 1);
+    QCOMPARE(panel.columns().first().fieldKey, QStringLiteral("sku"));
+
+    panel.selectColumn(1);
+    QSignalSpy movedSpy(&panel, &TableColumnEditorPanel::columnsEdited);
+    auto* moveUp = panel.findChild<QPushButton*>(QStringLiteral("tableColumnMoveUpButton"));
+    QVERIFY(moveUp != nullptr);
+    moveUp->click();
+    QTRY_COMPARE(movedSpy.count(), 1);
+    QCOMPARE(panel.columns().first().columnId, QStringLiteral("weight"));
 }
 
 void AppTests::templateDesignerPresenterRejectsInvalidTableColumns()
