@@ -92,6 +92,8 @@ private slots:
     void templateRenderContextBuilderKeepsSchemaFreeRequestValues();
     void templateRenderContextBuilderReportsMissingRequiredFields();
     void tableElementJsonPersistsColumnsAndLayout();
+    void tableElementJsonPersistsComplexTableModel();
+    void tableElementJsonKeepsLegacyColumnsCompatible();
     void tableElementJsonRejectsInvalidTable();
     void tableElementRendererBuildsSinglePageCommands();
     void tableElementRendererDistributesFlexibleColumnWidths();
@@ -1421,6 +1423,128 @@ void CoreTests::tableElementJsonPersistsColumnsAndLayout()
     QCOMPARE(actual.columns[1].alignment, TableCellAlignment::Right);
     QCOMPARE(actual.columns[1].widthMode, TableColumnWidthMode::Flex);
     QCOMPARE(actual.columns[1].flexWeight, 2.0);
+}
+
+void CoreTests::tableElementJsonPersistsComplexTableModel()
+{
+    TableElement table;
+    table.id = QStringLiteral("complex-table");
+    table.layerId = QStringLiteral("main");
+    table.displayName = QString::fromUtf8("复杂表格");
+    table.dataPath = QStringLiteral("items");
+
+    TableColumn nameColumn;
+    nameColumn.id = QStringLiteral("name");
+    nameColumn.title = QString::fromUtf8("品名");
+    nameColumn.fieldKey = QStringLiteral("productName");
+    nameColumn.widthMm = 24.0;
+    nameColumn.wrapText = true;
+    nameColumn.minWidthMm = 12.0;
+    nameColumn.defaultCellStyleId = QStringLiteral("body");
+    table.columns.append(nameColumn);
+
+    TableColumn amountColumn;
+    amountColumn.id = QStringLiteral("amount");
+    amountColumn.title = QString::fromUtf8("金额");
+    amountColumn.fieldKey = QStringLiteral("amount");
+    amountColumn.alignment = TableCellAlignment::Right;
+    table.columns.append(amountColumn);
+
+    TableCellStyle bodyStyle;
+    bodyStyle.id = QStringLiteral("body");
+    bodyStyle.fontSizePt = 7.5;
+    bodyStyle.wrapText = true;
+    bodyStyle.paddingLeftMm = 0.8;
+    bodyStyle.paddingRightMm = 0.8;
+    bodyStyle.backgroundColor = QStringLiteral("#FFFFFF");
+    bodyStyle.textColor = QStringLiteral("#111111");
+    table.cellStyles.append(bodyStyle);
+
+    TableRowBand headerBand;
+    headerBand.id = QStringLiteral("header");
+    headerBand.kind = TableRowBandKind::Header;
+    headerBand.heightMode = TableRowHeightMode::Fixed;
+    headerBand.heightMm = 5.0;
+    headerBand.repeatOnPage = true;
+    table.rowBands.append(headerBand);
+
+    TableRowBand detailBand;
+    detailBand.id = QStringLiteral("detail");
+    detailBand.kind = TableRowBandKind::Detail;
+    detailBand.heightMode = TableRowHeightMode::Auto;
+    detailBand.minHeightMm = 4.0;
+    table.rowBands.append(detailBand);
+
+    TableCellTemplate detailName;
+    detailName.id = QStringLiteral("detail-name");
+    detailName.rowBandId = QStringLiteral("detail");
+    detailName.columnId = QStringLiteral("name");
+    detailName.textTemplate = QStringLiteral("${productName}\n${spec}");
+    detailName.styleId = QStringLiteral("body");
+    detailName.overflowPolicy = TableCellOverflowPolicy::Wrap;
+    detailName.maxLines = 3;
+    table.cellTemplates.append(detailName);
+
+    TableMergeRegion merge;
+    merge.id = QStringLiteral("header-title");
+    merge.rowBandId = QStringLiteral("header");
+    merge.startRowOffset = 0;
+    merge.startColumnId = QStringLiteral("name");
+    merge.rowSpan = 1;
+    merge.colSpan = 2;
+    table.mergeRegions.append(merge);
+
+    table.pagination.repeatHeaderOnPage = true;
+    table.pagination.maxPages = 5;
+    table.pagination.overflowPolicy = TableTableOverflowPolicy::Error;
+
+    const auto json = TableElementJson::toJson(table);
+
+    QVERIFY(json.contains(QStringLiteral("rowBands")));
+    QVERIFY(json.contains(QStringLiteral("cellTemplates")));
+    QVERIFY(json.contains(QStringLiteral("cellStyles")));
+    QVERIFY(json.contains(QStringLiteral("mergeRegions")));
+    QVERIFY(json.contains(QStringLiteral("pagination")));
+
+    QString errorMessage;
+    QVERIFY2(TableElementJson::validate(json, QStringLiteral("main"), &errorMessage), qPrintable(errorMessage));
+
+    const auto actual = TableElementJson::fromJson(json, QStringLiteral("main"));
+    QCOMPARE(actual.columns.first().wrapText, true);
+    QCOMPARE(actual.columns.first().minWidthMm, 12.0);
+    QCOMPARE(actual.columns.first().defaultCellStyleId, QStringLiteral("body"));
+    QCOMPARE(actual.cellStyles.size(), 1);
+    QCOMPARE(actual.cellStyles.first().textColor, QStringLiteral("#111111"));
+    QCOMPARE(actual.rowBands.size(), 2);
+    QCOMPARE(actual.rowBands[1].heightMode, TableRowHeightMode::Auto);
+    QCOMPARE(actual.cellTemplates.size(), 1);
+    QCOMPARE(actual.cellTemplates.first().overflowPolicy, TableCellOverflowPolicy::Wrap);
+    QCOMPARE(actual.mergeRegions.size(), 1);
+    QCOMPARE(actual.pagination.maxPages, 5);
+}
+
+void CoreTests::tableElementJsonKeepsLegacyColumnsCompatible()
+{
+    TableElement table;
+    table.id = QStringLiteral("legacy-table");
+    table.layerId = QStringLiteral("main");
+    table.dataPath = QStringLiteral("items");
+
+    TableColumn column;
+    column.id = QStringLiteral("name");
+    column.title = QString::fromUtf8("品名");
+    column.fieldKey = QStringLiteral("productName");
+    table.columns.append(column);
+
+    const auto json = TableElementJson::toJson(table);
+    QVERIFY(json.contains(QStringLiteral("columns")));
+    QVERIFY(!json.contains(QStringLiteral("rowBands")));
+    QVERIFY(!json.contains(QStringLiteral("cellTemplates")));
+
+    const auto actual = TableElementJson::fromJson(json, QStringLiteral("main"));
+    QCOMPARE(actual.columns.size(), 1);
+    QVERIFY(actual.rowBands.isEmpty());
+    QVERIFY(actual.cellTemplates.isEmpty());
 }
 
 void CoreTests::tableElementJsonRejectsInvalidTable()
