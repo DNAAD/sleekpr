@@ -142,9 +142,11 @@ private slots:
     void templateDesignerWindowSwitchesInspectorTabWhenCanvasElementSelected();
     void templateDesignerWindowElementListSupportsRenameMenuAndDragSort();
     void templateDesignerWindowAutoAppliesElementAndTableProperties();
+    void templateDesignerWindowAutoAppliesTableColumnEditorChanges();
     void templateDesignerWindowAutoAppliesTextAutoFitFontProperties();
     void templateDesignerWindowAutoApplyKeepsElementListStable();
     void templateDesignerWindowCoalescesAutoApplyPreviewRefresh();
+    void templateDesignerWindowTableColumnEditorAffectsPreviewCommands();
     void templateDesignerWindowAppliesNumericPropertyPromptly();
     void templateDesignerWindowCoalescesDragPreviewRefresh();
     void templateDesignerWindowSkipsNoopPropertyApply();
@@ -2097,6 +2099,39 @@ void AppTests::templateDesignerWindowAutoAppliesElementAndTableProperties()
         QString::fromUtf8("自动应用表格"));
 }
 
+void AppTests::templateDesignerWindowAutoAppliesTableColumnEditorChanges()
+{
+    PrintClientSettings changedSettings;
+    int changedCount = 0;
+    TemplateDesignerWindow window(PrintClientSettings{}, [&changedSettings, &changedCount](const PrintClientSettings& nextSettings) {
+        changedSettings = nextSettings;
+        ++changedCount;
+    });
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* addTableButton = window.findChild<QPushButton*>(QStringLiteral("designerAddTableButton"));
+    auto* columnEditor = window.findChild<TableColumnEditorPanel*>(QStringLiteral("tableColumnEditorPanel"));
+    auto* columnGrid = window.findChild<QTableWidget*>(QStringLiteral("tableColumnEditorGrid"));
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(addTableButton != nullptr);
+    QVERIFY(columnEditor != nullptr);
+    QVERIFY(columnGrid != nullptr);
+
+    addLayerButton->click();
+    addTableButton->click();
+    QCOMPARE(columnEditor->columns().size(), 2);
+    QCOMPARE(columnGrid->rowCount(), 2);
+
+    const auto beforeChangedCount = changedCount;
+    columnGrid->item(0, 0)->setText(QString::fromUtf8("货品名称"));
+
+    QTRY_VERIFY_WITH_TIMEOUT(changedCount > beforeChangedCount, 500);
+    const auto table = changedSettings.templateDocuments.value(QStringLiteral("default")).layers.last().tables.first();
+    QCOMPARE(table.columns.size(), 2);
+    QCOMPARE(table.columns.first().title, QString::fromUtf8("货品名称"));
+    QCOMPARE(table.columns.first().fieldKey, QStringLiteral("productName"));
+}
+
 void AppTests::templateDesignerWindowAutoAppliesTextAutoFitFontProperties()
 {
     PrintClientSettings changedSettings;
@@ -2200,6 +2235,44 @@ void AppTests::templateDesignerWindowCoalescesAutoApplyPreviewRefresh()
         QString::fromUtf8("自动应用预览合并刷新"),
         1500);
 
+    QTRY_VERIFY_WITH_TIMEOUT(imageBytes(previewLabel->pixmap()) != beforePreview, 500);
+}
+
+void AppTests::templateDesignerWindowTableColumnEditorAffectsPreviewCommands()
+{
+    PrintClientSettings changedSettings;
+    TemplateDesignerWindow window(PrintClientSettings{}, [&changedSettings](const PrintClientSettings& nextSettings) {
+        changedSettings = nextSettings;
+    });
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* addTableButton = window.findChild<QPushButton*>(QStringLiteral("designerAddTableButton"));
+    auto* addColumnButton = window.findChild<QPushButton*>(QStringLiteral("tableColumnAddButton"));
+    TemplatePreviewLabel* previewLabel = nullptr;
+    for (auto* label : window.findChildren<QLabel*>(QStringLiteral("designerPreviewLabel"))) {
+        previewLabel = dynamic_cast<TemplatePreviewLabel*>(label);
+        if (previewLabel != nullptr) {
+            break;
+        }
+    }
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(addTableButton != nullptr);
+    QVERIFY(addColumnButton != nullptr);
+    QVERIFY(previewLabel != nullptr);
+
+    addLayerButton->click();
+    addTableButton->click();
+    QVERIFY(!previewLabel->pixmap().isNull());
+    const auto beforePreview = imageBytes(previewLabel->pixmap());
+    const auto beforeCommandCount = previewLabel->designAidCommandCount();
+
+    addColumnButton->click();
+
+    QTRY_COMPARE_WITH_TIMEOUT(
+        changedSettings.templateDocuments.value(QStringLiteral("default")).layers.last().tables.first().columns.size(),
+        3,
+        500);
+    QTRY_VERIFY_WITH_TIMEOUT(previewLabel->designAidCommandCount() > beforeCommandCount, 500);
     QTRY_VERIFY_WITH_TIMEOUT(imageBytes(previewLabel->pixmap()) != beforePreview, 500);
 }
 
