@@ -100,6 +100,7 @@ private slots:
     void tableElementLayoutRejectsInvalidMergeRegion();
     void tableElementLayoutUsesAutoRowHeightForWrappedText();
     void tableElementLayoutAppliesCellTemplatesAndMergeRegions();
+    void tableElementLayoutSupportsRowSpanMergeRegions();
     void tableElementLayoutRendersSummaryAndFooterBands();
     void tableElementLayoutPaginatesAndRepeatsHeader();
     void tableElementLayoutAppliesMaxPagesOverflowPolicy();
@@ -1777,6 +1778,70 @@ void CoreTests::tableElementLayoutAppliesCellTemplatesAndMergeRegions()
     QVERIFY(headerCell != result.pages.first().cells.cend());
     QCOMPARE(headerCell->text, QString::fromUtf8("商品信息"));
     QCOMPARE(headerCell->rect.width(), 60.0);
+}
+
+void CoreTests::tableElementLayoutSupportsRowSpanMergeRegions()
+{
+    TableElement table;
+    table.id = QStringLiteral("rowspan-layout");
+    table.dataPath = QStringLiteral("items");
+    table.width = 60.0;
+    table.height = 30.0;
+    table.headerRowHeightMm = 5.0;
+    table.detailRowHeightMm = 5.0;
+
+    TableColumn nameColumn;
+    nameColumn.id = QStringLiteral("name");
+    nameColumn.title = QString::fromUtf8("品名");
+    nameColumn.fieldKey = QStringLiteral("productName");
+    nameColumn.widthMm = 30.0;
+    table.columns.append(nameColumn);
+
+    TableColumn weightColumn;
+    weightColumn.id = QStringLiteral("weight");
+    weightColumn.title = QString::fromUtf8("重量");
+    weightColumn.fieldKey = QStringLiteral("weight");
+    weightColumn.widthMm = 30.0;
+    table.columns.append(weightColumn);
+
+    TableMergeRegion merge;
+    merge.id = QStringLiteral("name-rowspan");
+    merge.rowBandId = QStringLiteral("detail");
+    merge.startColumnId = QStringLiteral("name");
+    merge.startRowOffset = 0;
+    merge.rowSpan = 2;
+    merge.colSpan = 1;
+    table.mergeRegions.append(merge);
+
+    TemplateRenderContext context;
+    context.values = QJsonObject{
+        {QStringLiteral("items"),
+         QJsonArray{
+             QJsonObject{{QStringLiteral("productName"), QString::fromUtf8("戒指")}, {QStringLiteral("weight"), QStringLiteral("3.21g")}},
+             QJsonObject{{QStringLiteral("productName"), QString::fromUtf8("戒指")}, {QStringLiteral("weight"), QStringLiteral("3.20g")}},
+         }},
+    };
+
+    const auto result = TableElementLayout::layout(table, context);
+    QVERIFY2(result.success(), qPrintable(result.errorMessage));
+
+    const auto firstName = std::find_if(result.pages.first().cells.cbegin(), result.pages.first().cells.cend(), [](const TableLayoutCell& cell) {
+        return cell.rowBandId == QStringLiteral("detail")
+            && cell.columnId == QStringLiteral("name")
+            && cell.sourceRowIndex == 0;
+    });
+    QVERIFY(firstName != result.pages.first().cells.cend());
+    QVERIFY(!firstName->coveredByMerge);
+    QCOMPARE(firstName->rect.y(), 5.0);
+    QCOMPARE(firstName->rect.height(), 10.0);
+
+    const auto secondName = std::find_if(result.pages.first().cells.cbegin(), result.pages.first().cells.cend(), [](const TableLayoutCell& cell) {
+        return cell.rowBandId == QStringLiteral("detail")
+            && cell.columnId == QStringLiteral("name")
+            && cell.sourceRowIndex == 1;
+    });
+    QVERIFY(secondName != result.pages.first().cells.cend());
+    QVERIFY(secondName->coveredByMerge);
 }
 
 void CoreTests::tableElementLayoutRendersSummaryAndFooterBands()

@@ -194,6 +194,18 @@ QSet<QString> knownRowBandIds(const TableElement& table)
     return result;
 }
 
+bool isDetailRowBand(const TableElement& table, const QString& rowBandId)
+{
+    if (table.rowBands.isEmpty()) {
+        return rowBandId == QStringLiteral("detail");
+    }
+
+    const auto rowBand = std::find_if(table.rowBands.cbegin(), table.rowBands.cend(), [&rowBandId](const TableRowBand& candidate) {
+        return candidate.id == rowBandId;
+    });
+    return rowBand != table.rowBands.cend() && rowBand->kind == TableRowBandKind::Detail;
+}
+
 const TableCellTemplate* findCellTemplate(const TableElement& table, const QString& rowBandId, const QString& columnId)
 {
     const auto cellTemplate = std::find_if(
@@ -205,25 +217,40 @@ const TableCellTemplate* findCellTemplate(const TableElement& table, const QStri
     return cellTemplate == table.cellTemplates.cend() ? nullptr : &(*cellTemplate);
 }
 
-const TableMergeRegion* findMergeStartingAt(const TableElement& table, const QString& rowBandId, const QString& columnId)
+const TableMergeRegion* findMergeStartingAt(
+    const TableElement& table,
+    const QString& rowBandId,
+    const QString& columnId,
+    int rowOffset)
 {
     const auto merge = std::find_if(
         table.mergeRegions.cbegin(),
         table.mergeRegions.cend(),
-        [&rowBandId, &columnId](const TableMergeRegion& candidate) {
-            return candidate.rowBandId == rowBandId && candidate.startColumnId == columnId && candidate.startRowOffset == 0;
+        [&rowBandId, &columnId, rowOffset](const TableMergeRegion& candidate) {
+            return candidate.rowBandId == rowBandId && candidate.startColumnId == columnId && candidate.startRowOffset == rowOffset;
         });
     return merge == table.mergeRegions.cend() ? nullptr : &(*merge);
 }
 
-bool isCoveredByMerge(const TableElement& table, const QString& rowBandId, int columnIndex, const QHash<QString, int>& columns)
+bool isCoveredByMerge(
+    const TableElement& table,
+    const QString& rowBandId,
+    int rowOffset,
+    int columnIndex,
+    const QHash<QString, int>& columns)
 {
     for (const auto& merge : table.mergeRegions) {
-        if (merge.rowBandId != rowBandId || merge.startRowOffset != 0) {
+        if (merge.rowBandId != rowBandId) {
             continue;
         }
         const auto startIndex = columns.value(merge.startColumnId, -1);
-        if (startIndex >= 0 && columnIndex > startIndex && columnIndex < startIndex + merge.colSpan) {
+        if (startIndex < 0) {
+            continue;
+        }
+        const auto rowCovered = rowOffset >= merge.startRowOffset && rowOffset < merge.startRowOffset + merge.rowSpan;
+        const auto columnCovered = columnIndex >= startIndex && columnIndex < startIndex + merge.colSpan;
+        const auto isStartCell = rowOffset == merge.startRowOffset && columnIndex == startIndex;
+        if (rowCovered && columnCovered && !isStartCell) {
             return true;
         }
     }
@@ -250,11 +277,10 @@ bool validateMergeRegions(const TableElement& table, QString* errorMessage)
             *errorMessage = QString::fromUtf8("表格 %1 的合并区域 %2 跨度必须大于 0").arg(table.id, merge.id);
             return false;
         }
-        if (merge.rowSpan > 1) {
-            *errorMessage = QString::fromUtf8("表格 %1 的合并区域 %2 暂不支持跨行合并").arg(table.id, merge.id);
+        if (merge.rowSpan > 1 && !isDetailRowBand(table, merge.rowBandId)) {
+            *errorMessage = QString::fromUtf8("表格 %1 的合并区域 %2 跨行合并仅支持明细行").arg(table.id, merge.id);
             return false;
         }
-
         const auto startColumnIndex = columns.value(merge.startColumnId);
         if (startColumnIndex + merge.colSpan > table.columns.size()) {
             *errorMessage = QString::fromUtf8("表格 %1 的合并区域 %2 超出列范围：%3")
@@ -369,6 +395,27 @@ double resolvedRowHeight(const TableElement& table, const TableRowBand& rowBand,
     return rowHeight;
 }
 
+double mergedCellHeight(
+    double rowHeight,
+    const TableMergeRegion* merge,
+    int sourceRowIndex,
+    const QHash<int, double>* detailRowHeightsByIndex)
+{
+    if (merge == nullptr || merge->rowSpan <= 1 || sourceRowIndex < 0 || detailRowHeightsByIndex == nullptr) {
+        return rowHeight;
+    }
+
+    double height = 0.0;
+    for (int offset = 0; offset < merge->rowSpan; ++offset) {
+        const auto rowIndex = sourceRowIndex + offset;
+        if (!detailRowHeightsByIndex->contains(rowIndex)) {
+            break;
+        }
+        height += detailRowHeightsByIndex->value(rowIndex);
+    }
+    return std::max(rowHeight, height);
+}
+
 void appendColumnCells(TableLayoutPage* page,
                        const TableElement& table,
                        const QString& rowBandId,
@@ -378,16 +425,18 @@ void appendColumnCells(TableLayoutPage* page,
                        const QJsonObject* rowObject,
                        const QJsonObject& rootValues,
                        const QString& rowKey,
-                       bool header)
+                       bool header,
+                       const QHash<int, double>* detailRowHeightsByIndex = nullptr)
 {
     const auto widths = resolvedColumnWidths(table);
     const auto columns = columnIndexById(table);
+    const auto rowOffset = sourceRowIndex < 0 ? 0 : sourceRowIndex;
     double currentX = 0.0;
     for (int columnIndex = 0; columnIndex < table.columns.size(); ++columnIndex) {
         const auto& column = table.columns[columnIndex];
         const auto cellTemplate = findCellTemplate(table, rowBandId, column.id);
-        const auto merge = findMergeStartingAt(table, rowBandId, column.id);
-        const auto coveredByMerge = isCoveredByMerge(table, rowBandId, columnIndex, columns);
+        const auto merge = findMergeStartingAt(table, rowBandId, column.id, rowOffset);
+        const auto coveredByMerge = isCoveredByMerge(table, rowBandId, rowOffset, columnIndex, columns);
         auto width = widths[columnIndex];
         if (merge != nullptr) {
             width = 0.0;
@@ -395,6 +444,7 @@ void appendColumnCells(TableLayoutPage* page,
                 width += widths[columnIndex + spanIndex];
             }
         }
+        const auto height = mergedCellHeight(rowHeight, merge, sourceRowIndex, detailRowHeightsByIndex);
 
         if (cellTemplate != nullptr && !cellTemplate->visible) {
             currentX += widths[columnIndex];
@@ -406,7 +456,7 @@ void appendColumnCells(TableLayoutPage* page,
             column,
             rowBandId,
             sourceRowIndex,
-            QRectF(currentX, rowY, width, rowHeight),
+            QRectF(currentX, rowY, width, height),
             coveredByMerge ? QString() : textForCell(column, cellTemplate, rowObject, rootValues, header),
             rowKey);
         cell.coveredByMerge = coveredByMerge;
@@ -549,18 +599,55 @@ double detailRowHeight(const TableElement& table, const QList<TableRowBand>& det
     return height;
 }
 
+QHash<int, double> detailRowHeightsByIndex(const TableElement& table, const QList<TableRowBand>& details, const QJsonArray& rows)
+{
+    QHash<int, double> result;
+    for (int rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+        if (rows[rowIndex].isObject()) {
+            result.insert(rowIndex, detailRowHeight(table, details, rows[rowIndex].toObject()));
+        }
+    }
+    return result;
+}
+
+double detailMergeGroupHeight(
+    const TableElement& table,
+    int rowIndex,
+    double fallbackRowHeight,
+    const QHash<int, double>& detailHeightsByIndex)
+{
+    auto requiredHeight = fallbackRowHeight;
+    for (const auto& merge : table.mergeRegions) {
+        if (merge.startRowOffset != rowIndex || merge.rowSpan <= 1 || !isDetailRowBand(table, merge.rowBandId)) {
+            continue;
+        }
+
+        double mergedHeight = 0.0;
+        for (int offset = 0; offset < merge.rowSpan; ++offset) {
+            const auto currentRowIndex = rowIndex + offset;
+            if (!detailHeightsByIndex.contains(currentRowIndex)) {
+                break;
+            }
+            mergedHeight += detailHeightsByIndex.value(currentRowIndex);
+        }
+        requiredHeight = std::max(requiredHeight, mergedHeight);
+    }
+    return requiredHeight;
+}
+
 void appendDetailRowToPage(TableLayoutPage* page,
                            const TableElement& table,
                            const QList<TableRowBand>& details,
                            const QJsonObject& row,
                            const QJsonObject& rootValues,
                            int rowIndex,
+                           const QHash<int, double>& detailHeightsByIndex,
                            double* currentY)
 {
     const auto rowKey = QStringLiteral("row%1").arg(rowIndex);
     for (const auto& rowBand : details) {
         const auto rowHeight = resolvedRowHeight(table, rowBand, row);
-        appendColumnCells(page, table, rowBand.id, rowIndex, *currentY, rowHeight, &row, rootValues, rowKey, false);
+        appendColumnCells(page, table, rowBand.id, rowIndex, *currentY, rowHeight, &row, rootValues, rowKey, false, &detailHeightsByIndex);
         *currentY += rowHeight;
     }
     ++page->rowCount;
@@ -614,6 +701,7 @@ TableLayoutResult TableElementLayout::layout(const TableElement& table, const Te
     const auto headers = headerBands(table);
     const auto details = detailBands(table);
     const auto trailingBands = staticTrailingBands(table);
+    const auto detailHeightsByIndex = detailRowHeightsByIndex(table, details, rows);
 
     int pageNumber = 1;
     TableLayoutPage page;
@@ -650,7 +738,8 @@ TableLayoutResult TableElementLayout::layout(const TableElement& table, const Te
         }
         const auto row = rows[rowIndex].toObject();
         const auto rowHeight = detailRowHeight(table, details, row);
-        if (currentY + rowHeight > table.height && page.rowCount > 0) {
+        const auto requiredRowHeight = detailMergeGroupHeight(table, rowIndex, rowHeight, detailHeightsByIndex);
+        if (currentY + requiredRowHeight > table.height && page.rowCount > 0) {
             if (!startNextPage(rowIndex)) {
                 if (result.errorMessage.isEmpty()) {
                     return result;
@@ -660,7 +749,7 @@ TableLayoutResult TableElementLayout::layout(const TableElement& table, const Te
             }
         }
 
-        if (currentY + rowHeight > table.height) {
+        if (currentY + requiredRowHeight > table.height) {
             if (table.pagination.overflowPolicy == TableTableOverflowPolicy::Clip) {
                 break;
             }
@@ -673,7 +762,7 @@ TableLayoutResult TableElementLayout::layout(const TableElement& table, const Te
             }
         }
 
-        appendDetailRowToPage(&page, table, details, row, context.values, rowIndex, &currentY);
+        appendDetailRowToPage(&page, table, details, row, context.values, rowIndex, detailHeightsByIndex, &currentY);
     }
 
     for (const auto& rowBand : trailingBands) {
