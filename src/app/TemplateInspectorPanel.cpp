@@ -694,6 +694,12 @@ DesignerTablePropertyModel TemplateInspectorPanel::tableProperties() const
         model.cellStyles = advancedModel.cellStyles;
         model.cellTemplates = advancedModel.cellTemplates;
         model.mergeRegions = advancedModel.mergeRegions;
+        model.keepGroupTogether = advancedModel.keepGroupTogether;
+        model.allowRowSplit = advancedModel.allowRowSplit;
+        model.maxPages = advancedModel.maxPages;
+        model.orphanDetailRows = advancedModel.orphanDetailRows;
+        model.groupKeyField = advancedModel.groupKeyField;
+        model.tableOverflowPolicy = advancedModel.tableOverflowPolicy;
     }
     return model;
 }
@@ -870,6 +876,10 @@ void TemplateInspectorPanel::connectPropertySignals()
     });
     connect(m_tableAdvancedEditor, &TableAdvancedEditorPanel::advancedPropertiesEdited, this, [this] {
         if (!m_settingTableProperties) {
+            if (m_tableRepeatHeaderCheck != nullptr && m_tableAdvancedEditor != nullptr) {
+                const QSignalBlocker blocker(m_tableRepeatHeaderCheck);
+                m_tableRepeatHeaderCheck->setChecked(m_tableAdvancedEditor->tableProperties().repeatHeaderOnPage);
+            }
             emit tablePropertiesEdited(ControlAutoApplyDelayMs);
         }
     });

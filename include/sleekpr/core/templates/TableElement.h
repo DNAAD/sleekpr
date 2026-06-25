@@ -148,7 +148,9 @@ struct TablePaginationPolicy
     bool allowRowSplit = false;
     int maxPages = 100;
     TableTableOverflowPolicy overflowPolicy = TableTableOverflowPolicy::Error;
-    int orphanDetailRows = 1;
+    int orphanDetailRows = 0;
+    // 分组字段用于“同组明细尽量不拆页”，为空时仅按普通明细行分页。
+    QString groupKeyField;
 };
 
 struct TableElement

@@ -5,7 +5,11 @@
 #include <QSet>
 #include <QWidget>
 
+class QCheckBox;
+class QComboBox;
+class QLineEdit;
 class QPushButton;
+class QSpinBox;
 class QTabWidget;
 class QTableWidget;
 
@@ -31,6 +35,7 @@ private:
     void rebuildCellStyleTable();
     void rebuildCellTemplateTable();
     void rebuildMergeRegionTable();
+    void rebuildPaginationControls();
     void updateButtonState();
     void emitEdited();
 
@@ -38,6 +43,7 @@ private:
     QList<DesignerTableCellStyleModel> cellStylesFromTable() const;
     QList<DesignerTableCellTemplateModel> cellTemplatesFromTable() const;
     QList<DesignerTableMergeRegionModel> mergeRegionsFromTable() const;
+    void applyPaginationControls(DesignerTablePropertyModel* model) const;
 
     DesignerTableRowBandModel createDefaultRowBand() const;
     DesignerTableCellStyleModel createDefaultCellStyle() const;
@@ -50,6 +56,14 @@ private:
     QTableWidget* m_cellStyleTable = nullptr;
     QTableWidget* m_cellTemplateTable = nullptr;
     QTableWidget* m_mergeRegionTable = nullptr;
+    QTableWidget* m_paginationPreviewTable = nullptr;
+    QCheckBox* m_paginationRepeatHeaderCheck = nullptr;
+    QCheckBox* m_paginationKeepGroupTogetherCheck = nullptr;
+    QCheckBox* m_paginationAllowRowSplitCheck = nullptr;
+    QSpinBox* m_paginationMaxPagesSpin = nullptr;
+    QSpinBox* m_paginationOrphanRowsSpin = nullptr;
+    QLineEdit* m_paginationGroupKeyEdit = nullptr;
+    QComboBox* m_paginationOverflowCombo = nullptr;
     QPushButton* m_addRowBandButton = nullptr;
     QPushButton* m_deleteRowBandButton = nullptr;
     QPushButton* m_moveRowBandUpButton = nullptr;

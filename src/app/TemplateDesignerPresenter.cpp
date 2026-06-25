@@ -153,7 +153,13 @@ DesignerTablePropertyModel TemplateDesignerPresenter::tablePropertyModel(
     model.height = table.height;
     model.headerRowHeightMm = table.headerRowHeightMm;
     model.detailRowHeightMm = table.detailRowHeightMm;
-    model.repeatHeaderOnPage = table.repeatHeaderOnPage;
+    model.repeatHeaderOnPage = table.pagination.repeatHeaderOnPage;
+    model.keepGroupTogether = table.pagination.keepGroupTogether;
+    model.allowRowSplit = table.pagination.allowRowSplit;
+    model.maxPages = table.pagination.maxPages;
+    model.orphanDetailRows = table.pagination.orphanDetailRows;
+    model.groupKeyField = table.pagination.groupKeyField;
+    model.tableOverflowPolicy = table.pagination.overflowPolicy;
     model.drawBorders = table.drawBorders;
     model.columnsText = TablePropertiesCommand::formatColumns(table.columns);
     for (const auto& column : table.columns) {

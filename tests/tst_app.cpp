@@ -192,6 +192,7 @@ private slots:
     void tableColumnEditorPanelEditsAndReordersColumns();
     void tableColumnEditorPanelGuardsDestructiveColumnActions();
     void tableAdvancedEditorPanelEditsComplexTableSections();
+    void tableAdvancedEditorPanelEditsPaginationPolicyAndPreview();
     void templateInspectorPanelExposesTableColumnEditor();
     void templateDesignerPresenterRejectsInvalidTableColumns();
     void paperSpecManagerWindowSavesAndDeletesSpecs();
@@ -3019,6 +3020,13 @@ void AppTests::templateDesignerPresenterMapsComplexTableModels()
     table.cellStyles = {moneyStyle};
     table.cellTemplates = {cellTemplate};
     table.mergeRegions = {merge};
+    table.pagination.repeatHeaderOnPage = true;
+    table.pagination.keepGroupTogether = true;
+    table.pagination.allowRowSplit = false;
+    table.pagination.maxPages = 8;
+    table.pagination.orphanDetailRows = 2;
+    table.pagination.groupKeyField = QStringLiteral("group");
+    table.pagination.overflowPolicy = TableTableOverflowPolicy::Clip;
 
     TemplateDesignerPresenter presenter;
     auto model = presenter.tablePropertyModel(table, true);
@@ -3034,6 +3042,11 @@ void AppTests::templateDesignerPresenterMapsComplexTableModels()
     QCOMPARE(model.mergeRegions.size(), 1);
     QCOMPARE(model.mergeRegions.first().rowSpan, 2);
     QCOMPARE(model.mergeRegions.first().colSpan, 2);
+    QVERIFY(model.keepGroupTogether);
+    QCOMPARE(model.maxPages, 8);
+    QCOMPARE(model.orphanDetailRows, 2);
+    QCOMPARE(model.groupKeyField, QStringLiteral("group"));
+    QCOMPARE(model.tableOverflowPolicy, TableTableOverflowPolicy::Clip);
 
     TemplateLayer layer;
     layer.id = QStringLiteral("base");
@@ -3044,6 +3057,11 @@ void AppTests::templateDesignerPresenterMapsComplexTableModels()
     model.rowBands.first().title = QString::fromUtf8("自动明细");
     model.cellStyles.first().bold = false;
     model.mergeRegions.first().rowSpan = 3;
+    model.keepGroupTogether = false;
+    model.maxPages = 3;
+    model.orphanDetailRows = 1;
+    model.groupKeyField = QStringLiteral("category");
+    model.tableOverflowPolicy = TableTableOverflowPolicy::Error;
     const auto result = presenter.applyTableProperties(document, table.id, model);
 
     QVERIFY2(result.errorMessage.isEmpty(), qPrintable(result.errorMessage));
@@ -3052,6 +3070,11 @@ void AppTests::templateDesignerPresenterMapsComplexTableModels()
     QCOMPARE(actual.rowBands.first().title, QString::fromUtf8("自动明细"));
     QVERIFY(!actual.cellStyles.first().bold);
     QCOMPARE(actual.mergeRegions.first().rowSpan, 3);
+    QVERIFY(!actual.pagination.keepGroupTogether);
+    QCOMPARE(actual.pagination.maxPages, 3);
+    QCOMPARE(actual.pagination.orphanDetailRows, 1);
+    QCOMPARE(actual.pagination.groupKeyField, QStringLiteral("category"));
+    QCOMPARE(actual.pagination.overflowPolicy, TableTableOverflowPolicy::Error);
 }
 
 void AppTests::tableColumnEditorPanelEditsAndReordersColumns()
@@ -3210,6 +3233,74 @@ void AppTests::tableAdvancedEditorPanelEditsComplexTableSections()
     mergeGrid->selectRow(0);
     splitButton->click();
     QTRY_VERIFY(panel.tableProperties().mergeRegions.isEmpty());
+}
+
+void AppTests::tableAdvancedEditorPanelEditsPaginationPolicyAndPreview()
+{
+    DesignerTableColumnModel column;
+    column.columnId = QStringLiteral("name");
+    column.title = QString::fromUtf8("品名");
+    column.fieldKey = QStringLiteral("name");
+
+    DesignerTablePagePreviewModel firstPage;
+    firstPage.pageNumber = 1;
+    firstPage.firstRowIndex = 0;
+    firstPage.rowCount = 3;
+    firstPage.note = QString::fromUtf8("表头重复");
+
+    DesignerTablePagePreviewModel secondPage;
+    secondPage.pageNumber = 2;
+    secondPage.firstRowIndex = 3;
+    secondPage.rowCount = 2;
+    secondPage.note = QString::fromUtf8("孤行保护");
+
+    DesignerTablePropertyModel model;
+    model.visible = true;
+    model.canEdit = true;
+    model.columns = {column};
+    model.repeatHeaderOnPage = true;
+    model.keepGroupTogether = false;
+    model.allowRowSplit = false;
+    model.maxPages = 5;
+    model.orphanDetailRows = 1;
+    model.groupKeyField = QStringLiteral("group");
+    model.tableOverflowPolicy = TableTableOverflowPolicy::Error;
+    model.pagePreviews = {firstPage, secondPage};
+
+    TableAdvancedEditorPanel panel;
+    panel.setProperties(model);
+
+    auto* repeatHeader = panel.findChild<QCheckBox*>(QStringLiteral("tablePaginationRepeatHeaderCheck"));
+    auto* keepGroup = panel.findChild<QCheckBox*>(QStringLiteral("tablePaginationKeepGroupTogetherCheck"));
+    auto* maxPages = panel.findChild<QSpinBox*>(QStringLiteral("tablePaginationMaxPagesSpin"));
+    auto* orphanRows = panel.findChild<QSpinBox*>(QStringLiteral("tablePaginationOrphanRowsSpin"));
+    auto* groupKey = panel.findChild<QLineEdit*>(QStringLiteral("tablePaginationGroupKeyEdit"));
+    auto* overflow = panel.findChild<QComboBox*>(QStringLiteral("tablePaginationOverflowCombo"));
+    auto* previewGrid = panel.findChild<QTableWidget*>(QStringLiteral("tablePaginationPreviewGrid"));
+    QVERIFY(repeatHeader != nullptr);
+    QVERIFY(keepGroup != nullptr);
+    QVERIFY(maxPages != nullptr);
+    QVERIFY(orphanRows != nullptr);
+    QVERIFY(groupKey != nullptr);
+    QVERIFY(overflow != nullptr);
+    QVERIFY(previewGrid != nullptr);
+    QCOMPARE(previewGrid->rowCount(), 2);
+    QCOMPARE(previewGrid->item(1, 3)->text(), QString::fromUtf8("孤行保护"));
+
+    QSignalSpy editedSpy(&panel, &TableAdvancedEditorPanel::advancedPropertiesEdited);
+    keepGroup->setChecked(true);
+    maxPages->setValue(3);
+    orphanRows->setValue(2);
+    groupKey->setText(QStringLiteral("category"));
+    overflow->setCurrentIndex(overflow->findData(static_cast<int>(TableTableOverflowPolicy::Clip)));
+    QTRY_VERIFY(editedSpy.count() >= 4);
+
+    const auto actual = panel.tableProperties();
+    QVERIFY(actual.keepGroupTogether);
+    QCOMPARE(actual.maxPages, 3);
+    QCOMPARE(actual.orphanDetailRows, 2);
+    QCOMPARE(actual.groupKeyField, QStringLiteral("category"));
+    QCOMPARE(actual.tableOverflowPolicy, TableTableOverflowPolicy::Clip);
 }
 
 void AppTests::templateInspectorPanelExposesTableColumnEditor()

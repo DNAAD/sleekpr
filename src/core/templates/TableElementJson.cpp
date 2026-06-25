@@ -579,6 +579,7 @@ QJsonObject paginationToJson(const TablePaginationPolicy& pagination)
     setJsonValue(json, "maxPages", pagination.maxPages);
     setJsonValue(json, "overflowPolicy", tableOverflowPolicyToString(pagination.overflowPolicy));
     setJsonValue(json, "orphanDetailRows", pagination.orphanDetailRows);
+    setJsonValue(json, "groupKeyField", pagination.groupKeyField.trimmed());
     return json;
 }
 
@@ -597,6 +598,7 @@ TablePaginationPolicy paginationFromJson(const QJsonObject& json, bool legacyRep
     pagination.overflowPolicy = tableOverflowPolicyFromString(
         jsonValue(json, "overflowPolicy").toString(tableOverflowPolicyToString(pagination.overflowPolicy)));
     pagination.orphanDetailRows = jsonValue(json, "orphanDetailRows").toInt(pagination.orphanDetailRows);
+    pagination.groupKeyField = jsonValue(json, "groupKeyField").toString(pagination.groupKeyField).trimmed();
     return pagination;
 }
 
@@ -608,7 +610,8 @@ bool hasNonDefaultPagination(const TablePaginationPolicy& pagination, bool legac
         || pagination.allowRowSplit != defaults.allowRowSplit
         || pagination.maxPages != defaults.maxPages
         || pagination.overflowPolicy != defaults.overflowPolicy
-        || pagination.orphanDetailRows != defaults.orphanDetailRows;
+        || pagination.orphanDetailRows != defaults.orphanDetailRows
+        || pagination.groupKeyField.trimmed() != defaults.groupKeyField;
 }
 
 bool validateColumn(const QJsonObject& column, QSet<QString>& columnIds, QString* errorMessage)
@@ -938,9 +941,16 @@ bool TableElementJson::validate(const QJsonObject& json, const QString& parentLa
             setError(errorMessage, QStringLiteral("表格分页最大页数必须大于 0：%1").arg(tableId));
             return false;
         }
-        if (jsonValue(pagination, "orphanDetailRows").toInt(1) < 0) {
+        if (jsonValue(pagination, "orphanDetailRows").toInt(0) < 0) {
             setError(errorMessage, QStringLiteral("表格分页孤行保护不能小于 0：%1").arg(tableId));
             return false;
+        }
+        if (jsonContains(pagination, "groupKeyField")) {
+            const auto groupKeyField = jsonValue(pagination, "groupKeyField").toString();
+            if (groupKeyField != groupKeyField.trimmed()) {
+                setError(errorMessage, QString::fromUtf8("表格分页分组字段不能包含首尾空白：%1").arg(tableId));
+                return false;
+            }
         }
         const auto overflowPolicy = jsonValue(pagination, "overflowPolicy").toString(QStringLiteral("error"));
         if (!isKnownTableOverflowPolicy(overflowPolicy)) {

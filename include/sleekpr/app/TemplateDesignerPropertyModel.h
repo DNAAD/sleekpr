@@ -116,6 +116,15 @@ struct DesignerTableMergeRegionModel
     int colSpan = 1;
 };
 
+struct DesignerTablePagePreviewModel
+{
+    // 分页预览只展示布局结果摘要，真实渲染仍由 Qt 原生链路完成。
+    int pageNumber = 1;
+    int firstRowIndex = 0;
+    int rowCount = 0;
+    QString note;
+};
+
 struct DesignerTablePropertyModel
 {
     QString tableId;
@@ -130,6 +139,12 @@ struct DesignerTablePropertyModel
     double headerRowHeightMm = 6.0;
     double detailRowHeightMm = 5.0;
     bool repeatHeaderOnPage = true;
+    bool keepGroupTogether = false;
+    bool allowRowSplit = false;
+    int maxPages = 100;
+    int orphanDetailRows = 0;
+    QString groupKeyField;
+    sleekpr::core::TableTableOverflowPolicy tableOverflowPolicy = sleekpr::core::TableTableOverflowPolicy::Error;
     bool drawBorders = true;
     QString columnsText;
     QList<DesignerTableColumnModel> columns;
@@ -137,6 +152,7 @@ struct DesignerTablePropertyModel
     QList<DesignerTableCellStyleModel> cellStyles;
     QList<DesignerTableCellTemplateModel> cellTemplates;
     QList<DesignerTableMergeRegionModel> mergeRegions;
+    QList<DesignerTablePagePreviewModel> pagePreviews;
     // 结构化列编辑器发出的模型才优先使用 columns；高级文本框编辑仍走旧文本解析。
     bool preferStructuredColumns = false;
 };

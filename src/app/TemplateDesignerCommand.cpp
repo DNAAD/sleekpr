@@ -154,6 +154,17 @@ bool sameTableMergeRegions(const QList<sleekpr::core::TableMergeRegion>& left, c
     return true;
 }
 
+bool sameTablePagination(const sleekpr::core::TablePaginationPolicy& left, const sleekpr::core::TablePaginationPolicy& right)
+{
+    return left.repeatHeaderOnPage == right.repeatHeaderOnPage
+        && left.keepGroupTogether == right.keepGroupTogether
+        && left.allowRowSplit == right.allowRowSplit
+        && left.maxPages == right.maxPages
+        && left.overflowPolicy == right.overflowPolicy
+        && left.orphanDetailRows == right.orphanDetailRows
+        && left.groupKeyField == right.groupKeyField;
+}
+
 bool sameTemplateElement(const sleekpr::core::TemplateElement& left, const sleekpr::core::TemplateElement& right)
 {
     return left.id == right.id
@@ -208,7 +219,8 @@ bool sameTableElement(const sleekpr::core::TableElement& left, const sleekpr::co
         && sameTableCellStyles(left.cellStyles, right.cellStyles)
         && sameTableRowBands(left.rowBands, right.rowBands)
         && sameTableCellTemplates(left.cellTemplates, right.cellTemplates)
-        && sameTableMergeRegions(left.mergeRegions, right.mergeRegions);
+        && sameTableMergeRegions(left.mergeRegions, right.mergeRegions)
+        && sameTablePagination(left.pagination, right.pagination);
 }
 
 sleekpr::core::TableElement* findTable(sleekpr::core::TemplateDocument& document, const QString& tableId)
@@ -427,6 +439,13 @@ TemplateDesignerCommandResult TablePropertiesCommand::apply(sleekpr::core::Templ
     updated.headerRowHeightMm = m_model.headerRowHeightMm;
     updated.detailRowHeightMm = m_model.detailRowHeightMm;
     updated.repeatHeaderOnPage = m_model.repeatHeaderOnPage;
+    updated.pagination.repeatHeaderOnPage = m_model.repeatHeaderOnPage;
+    updated.pagination.keepGroupTogether = m_model.keepGroupTogether;
+    updated.pagination.allowRowSplit = m_model.allowRowSplit;
+    updated.pagination.maxPages = std::max(1, m_model.maxPages);
+    updated.pagination.orphanDetailRows = std::max(0, m_model.orphanDetailRows);
+    updated.pagination.groupKeyField = m_model.groupKeyField.trimmed();
+    updated.pagination.overflowPolicy = m_model.tableOverflowPolicy;
     updated.drawBorders = m_model.drawBorders;
 
     QList<sleekpr::core::TableColumn> nextColumns;

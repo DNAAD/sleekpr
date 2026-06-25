@@ -3,11 +3,14 @@
 #include <QAbstractItemView>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QSpinBox>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -214,6 +217,16 @@ QComboBox* overflowCombo(sleekpr::core::TableCellOverflowPolicy policy)
 
 } // 匿名命名空间
 
+QComboBox* tableOverflowCombo(sleekpr::core::TableTableOverflowPolicy policy)
+{
+    return enumCombo({
+                          {QString::fromUtf8("报错"), static_cast<int>(sleekpr::core::TableTableOverflowPolicy::Error)},
+                          {QString::fromUtf8("裁剪"), static_cast<int>(sleekpr::core::TableTableOverflowPolicy::Clip)},
+                          {QString::fromUtf8("继续分页"), static_cast<int>(sleekpr::core::TableTableOverflowPolicy::Continue)},
+                      },
+        static_cast<int>(policy));
+}
+
 TableAdvancedEditorPanel::TableAdvancedEditorPanel(QWidget* parent)
     : QWidget(parent)
 {
@@ -356,7 +369,66 @@ TableAdvancedEditorPanel::TableAdvancedEditorPanel(QWidget* parent)
     configureGrid(m_mergeRegionTable);
     mergeLayout->addLayout(mergeButtons);
     mergeLayout->addWidget(m_mergeRegionTable);
+
+    auto* paginationPage = new QWidget(m_tabs);
+    auto* paginationLayout = new QVBoxLayout(paginationPage);
+    paginationLayout->setContentsMargins(0, 0, 0, 0);
+    paginationLayout->setSpacing(6);
+    auto* paginationGrid = new QGridLayout;
+    paginationGrid->setContentsMargins(0, 0, 0, 0);
+    paginationGrid->setHorizontalSpacing(8);
+    paginationGrid->setVerticalSpacing(6);
+
+    m_paginationRepeatHeaderCheck = new QCheckBox(QString::fromUtf8("重复表头"), paginationPage);
+    m_paginationRepeatHeaderCheck->setObjectName(QStringLiteral("tablePaginationRepeatHeaderCheck"));
+    m_paginationKeepGroupTogetherCheck = new QCheckBox(QString::fromUtf8("分组不拆分"), paginationPage);
+    m_paginationKeepGroupTogetherCheck->setObjectName(QStringLiteral("tablePaginationKeepGroupTogetherCheck"));
+    m_paginationAllowRowSplitCheck = new QCheckBox(QString::fromUtf8("允许拆行"), paginationPage);
+    m_paginationAllowRowSplitCheck->setObjectName(QStringLiteral("tablePaginationAllowRowSplitCheck"));
+    m_paginationMaxPagesSpin = new QSpinBox(paginationPage);
+    m_paginationMaxPagesSpin->setObjectName(QStringLiteral("tablePaginationMaxPagesSpin"));
+    m_paginationMaxPagesSpin->setRange(1, 10000);
+    m_paginationOrphanRowsSpin = new QSpinBox(paginationPage);
+    m_paginationOrphanRowsSpin->setObjectName(QStringLiteral("tablePaginationOrphanRowsSpin"));
+    m_paginationOrphanRowsSpin->setRange(0, 1000);
+    m_paginationGroupKeyEdit = new QLineEdit(paginationPage);
+    m_paginationGroupKeyEdit->setObjectName(QStringLiteral("tablePaginationGroupKeyEdit"));
+    m_paginationGroupKeyEdit->setPlaceholderText(QStringLiteral("group"));
+    m_paginationOverflowCombo = tableOverflowCombo(sleekpr::core::TableTableOverflowPolicy::Error);
+    m_paginationOverflowCombo->setObjectName(QStringLiteral("tablePaginationOverflowCombo"));
+
+    paginationGrid->addWidget(m_paginationRepeatHeaderCheck, 0, 0);
+    paginationGrid->addWidget(m_paginationKeepGroupTogetherCheck, 0, 1);
+    paginationGrid->addWidget(m_paginationAllowRowSplitCheck, 0, 2);
+    paginationGrid->addWidget(new QLabel(QString::fromUtf8("最大页数"), paginationPage), 1, 0);
+    paginationGrid->addWidget(m_paginationMaxPagesSpin, 1, 1);
+    paginationGrid->addWidget(new QLabel(QString::fromUtf8("孤行保护"), paginationPage), 2, 0);
+    paginationGrid->addWidget(m_paginationOrphanRowsSpin, 2, 1);
+    paginationGrid->addWidget(new QLabel(QString::fromUtf8("分组字段"), paginationPage), 3, 0);
+    paginationGrid->addWidget(m_paginationGroupKeyEdit, 3, 1, 1, 2);
+    paginationGrid->addWidget(new QLabel(QString::fromUtf8("溢出策略"), paginationPage), 4, 0);
+    paginationGrid->addWidget(m_paginationOverflowCombo, 4, 1);
+
+    m_paginationPreviewTable = new QTableWidget(paginationPage);
+    m_paginationPreviewTable->setObjectName(QStringLiteral("tablePaginationPreviewGrid"));
+    m_paginationPreviewTable->setColumnCount(4);
+    m_paginationPreviewTable->setHorizontalHeaderLabels({
+        QString::fromUtf8("页码"),
+        QString::fromUtf8("起始行"),
+        QString::fromUtf8("行数"),
+        QString::fromUtf8("说明"),
+    });
+    configureGrid(m_paginationPreviewTable);
+    m_paginationPreviewTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_paginationPreviewTable->setSelectionMode(QAbstractItemView::NoSelection);
+    m_paginationPreviewTable->setMinimumHeight(120);
+    m_paginationPreviewTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+
+    paginationLayout->addLayout(paginationGrid);
+    paginationLayout->addWidget(m_paginationPreviewTable);
     m_tabs->addTab(mergePage, QString::fromUtf8("合并"));
+
+    m_tabs->addTab(paginationPage, QString::fromUtf8("分页"));
 
     connect(m_rowBandTable, &QTableWidget::itemChanged, this, [this] { emitEdited(); });
     connect(m_cellStyleTable, &QTableWidget::itemChanged, this, [this] { emitEdited(); });
@@ -366,6 +438,13 @@ TableAdvancedEditorPanel::TableAdvancedEditorPanel(QWidget* parent)
     connect(m_cellStyleTable, &QTableWidget::itemSelectionChanged, this, [this] { updateButtonState(); });
     connect(m_cellTemplateTable, &QTableWidget::itemSelectionChanged, this, [this] { updateButtonState(); });
     connect(m_mergeRegionTable, &QTableWidget::itemSelectionChanged, this, [this] { updateButtonState(); });
+    connect(m_paginationRepeatHeaderCheck, &QCheckBox::toggled, this, [this] { emitEdited(); });
+    connect(m_paginationKeepGroupTogetherCheck, &QCheckBox::toggled, this, [this] { emitEdited(); });
+    connect(m_paginationAllowRowSplitCheck, &QCheckBox::toggled, this, [this] { emitEdited(); });
+    connect(m_paginationMaxPagesSpin, &QSpinBox::valueChanged, this, [this] { emitEdited(); });
+    connect(m_paginationOrphanRowsSpin, &QSpinBox::valueChanged, this, [this] { emitEdited(); });
+    connect(m_paginationGroupKeyEdit, &QLineEdit::textChanged, this, [this] { emitEdited(); });
+    connect(m_paginationOverflowCombo, &QComboBox::currentIndexChanged, this, [this] { emitEdited(); });
 
     connect(m_addRowBandButton, &QPushButton::clicked, this, [this] {
         m_model = tableProperties();
@@ -474,6 +553,7 @@ DesignerTablePropertyModel TableAdvancedEditorPanel::tableProperties() const
     model.cellStyles = cellStylesFromTable();
     model.cellTemplates = cellTemplatesFromTable();
     model.mergeRegions = mergeRegionsFromTable();
+    applyPaginationControls(&model);
     return model;
 }
 
@@ -485,6 +565,23 @@ void TableAdvancedEditorPanel::setEditable(bool editable)
             table->setEditTriggers(editable ? QAbstractItemView::AllEditTriggers : QAbstractItemView::NoEditTriggers);
         }
     }
+    for (auto* control : {m_paginationRepeatHeaderCheck, m_paginationKeepGroupTogetherCheck, m_paginationAllowRowSplitCheck}) {
+        if (control != nullptr) {
+            control->setEnabled(editable);
+        }
+    }
+    if (m_paginationMaxPagesSpin != nullptr) {
+        m_paginationMaxPagesSpin->setEnabled(editable);
+    }
+    if (m_paginationOrphanRowsSpin != nullptr) {
+        m_paginationOrphanRowsSpin->setEnabled(editable);
+    }
+    if (m_paginationGroupKeyEdit != nullptr) {
+        m_paginationGroupKeyEdit->setEnabled(editable);
+    }
+    if (m_paginationOverflowCombo != nullptr) {
+        m_paginationOverflowCombo->setEnabled(editable);
+    }
     rebuildTables();
 }
 
@@ -495,6 +592,7 @@ void TableAdvancedEditorPanel::rebuildTables()
     rebuildCellStyleTable();
     rebuildCellTemplateTable();
     rebuildMergeRegionTable();
+    rebuildPaginationControls();
     m_updating = false;
     updateButtonState();
 }
@@ -613,6 +711,42 @@ void TableAdvancedEditorPanel::rebuildMergeRegionTable()
         m_mergeRegionTable->setItem(row, MergeRegionStartColumn, editableItem(merge.startColumnId));
         m_mergeRegionTable->setItem(row, MergeRegionRowSpan, editableItem(QString::number(merge.rowSpan)));
         m_mergeRegionTable->setItem(row, MergeRegionColSpan, editableItem(QString::number(merge.colSpan)));
+    }
+}
+
+void TableAdvancedEditorPanel::rebuildPaginationControls()
+{
+    const QSignalBlocker repeatBlocker(m_paginationRepeatHeaderCheck);
+    const QSignalBlocker keepGroupBlocker(m_paginationKeepGroupTogetherCheck);
+    const QSignalBlocker allowRowSplitBlocker(m_paginationAllowRowSplitCheck);
+    const QSignalBlocker maxPagesBlocker(m_paginationMaxPagesSpin);
+    const QSignalBlocker orphanRowsBlocker(m_paginationOrphanRowsSpin);
+    const QSignalBlocker groupKeyBlocker(m_paginationGroupKeyEdit);
+    const QSignalBlocker overflowBlocker(m_paginationOverflowCombo);
+    const QSignalBlocker previewBlocker(m_paginationPreviewTable);
+
+    m_paginationRepeatHeaderCheck->setChecked(m_model.repeatHeaderOnPage);
+    m_paginationKeepGroupTogetherCheck->setChecked(m_model.keepGroupTogether);
+    m_paginationAllowRowSplitCheck->setChecked(m_model.allowRowSplit);
+    m_paginationMaxPagesSpin->setValue(std::max(1, m_model.maxPages));
+    m_paginationOrphanRowsSpin->setValue(std::max(0, m_model.orphanDetailRows));
+    m_paginationGroupKeyEdit->setText(m_model.groupKeyField);
+    const auto overflowIndex = m_paginationOverflowCombo->findData(static_cast<int>(m_model.tableOverflowPolicy));
+    m_paginationOverflowCombo->setCurrentIndex(overflowIndex >= 0 ? overflowIndex : 0);
+
+    m_paginationPreviewTable->setRowCount(0);
+    m_paginationPreviewTable->setRowCount(m_model.pagePreviews.size());
+    for (int row = 0; row < m_model.pagePreviews.size(); ++row) {
+        const auto& preview = m_model.pagePreviews[row];
+        const auto setReadOnlyItem = [this, row](int column, const QString& text) {
+            auto* item = new QTableWidgetItem(text);
+            item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+            m_paginationPreviewTable->setItem(row, column, item);
+        };
+        setReadOnlyItem(0, QString::number(preview.pageNumber));
+        setReadOnlyItem(1, QString::number(preview.firstRowIndex));
+        setReadOnlyItem(2, QString::number(preview.rowCount));
+        setReadOnlyItem(3, preview.note);
     }
 }
 
@@ -737,6 +871,34 @@ QList<DesignerTableMergeRegionModel> TableAdvancedEditorPanel::mergeRegionsFromT
         result.append(merge);
     }
     return result;
+}
+
+void TableAdvancedEditorPanel::applyPaginationControls(DesignerTablePropertyModel* model) const
+{
+    if (model == nullptr) {
+        return;
+    }
+    model->repeatHeaderOnPage = m_paginationRepeatHeaderCheck != nullptr
+        ? m_paginationRepeatHeaderCheck->isChecked()
+        : model->repeatHeaderOnPage;
+    model->keepGroupTogether = m_paginationKeepGroupTogetherCheck != nullptr
+        ? m_paginationKeepGroupTogetherCheck->isChecked()
+        : model->keepGroupTogether;
+    model->allowRowSplit = m_paginationAllowRowSplitCheck != nullptr
+        ? m_paginationAllowRowSplitCheck->isChecked()
+        : model->allowRowSplit;
+    model->maxPages = m_paginationMaxPagesSpin != nullptr
+        ? std::max(1, m_paginationMaxPagesSpin->value())
+        : std::max(1, model->maxPages);
+    model->orphanDetailRows = m_paginationOrphanRowsSpin != nullptr
+        ? std::max(0, m_paginationOrphanRowsSpin->value())
+        : std::max(0, model->orphanDetailRows);
+    model->groupKeyField = m_paginationGroupKeyEdit != nullptr
+        ? m_paginationGroupKeyEdit->text().trimmed()
+        : model->groupKeyField.trimmed();
+    if (m_paginationOverflowCombo != nullptr) {
+        model->tableOverflowPolicy = static_cast<sleekpr::core::TableTableOverflowPolicy>(m_paginationOverflowCombo->currentData().toInt());
+    }
 }
 
 DesignerTableRowBandModel TableAdvancedEditorPanel::createDefaultRowBand() const

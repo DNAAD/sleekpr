@@ -20,6 +20,7 @@
 #include "sleekpr/core/templates/TemplateDocumentRenderer.h"
 #include "sleekpr/core/templates/TemplateDocumentValidator.h"
 #include "sleekpr/core/templates/TemplateLibraryStore.h"
+#include "sleekpr/core/templates/TableElementLayout.h"
 #include "sleekpr/infrastructure/preview/LabelPreviewImageRenderer.h"
 #include "sleekpr/infrastructure/preview/PreviewLabelFactory.h"
 #include "sleekpr/infrastructure/printing/QtLabelPrintEngine.h"
@@ -155,6 +156,64 @@ QString sampleDataJson(const QJsonObject& sampleData)
 QString defaultSampleDataJson()
 {
     return sampleDataJson(TemplateDesignerFactory::createDefaultSampleData());
+}
+
+QString tableLayoutDiagnosticNote(sleekpr::core::TableLayoutDiagnosticCode code)
+{
+    switch (code) {
+    case sleekpr::core::TableLayoutDiagnosticCode::OrphanRowsMoved:
+        return QString::fromUtf8("孤行保护");
+    case sleekpr::core::TableLayoutDiagnosticCode::GroupMovedToNextPage:
+        return QString::fromUtf8("分组不拆分");
+    case sleekpr::core::TableLayoutDiagnosticCode::MergeRegionCrossesPage:
+        return QString::fromUtf8("跨页合并提示");
+    }
+    return QString();
+}
+
+QList<DesignerTablePagePreviewModel> tablePagePreviews(
+    const sleekpr::core::TableElement& table,
+    const sleekpr::core::TableLayoutResult& layout)
+{
+    QList<DesignerTablePagePreviewModel> previews;
+    previews.reserve(layout.pages.size());
+    for (const auto& page : layout.pages) {
+        DesignerTablePagePreviewModel preview;
+        preview.pageNumber = page.pageNumber;
+        preview.firstRowIndex = page.firstRowIndex;
+        preview.rowCount = page.rowCount;
+
+        QStringList notes;
+        if (page.pageNumber > 1 && table.pagination.repeatHeaderOnPage) {
+            notes.append(QString::fromUtf8("表头重复"));
+        }
+        for (const auto& diagnostic : layout.diagnostics) {
+            const auto inPageRows = diagnostic.sourceRowIndex >= page.firstRowIndex
+                && diagnostic.sourceRowIndex < page.firstRowIndex + std::max(1, page.rowCount);
+            if (diagnostic.pageNumber == page.pageNumber || inPageRows) {
+                const auto note = tableLayoutDiagnosticNote(diagnostic.code);
+                if (!note.isEmpty() && !notes.contains(note)) {
+                    notes.append(note);
+                }
+            }
+        }
+        preview.note = notes.join(QString::fromUtf8("，"));
+        previews.append(preview);
+    }
+
+    if (previews.isEmpty() && !layout.diagnostics.isEmpty()) {
+        const auto& diagnostic = layout.diagnostics.first();
+        DesignerTablePagePreviewModel preview;
+        preview.pageNumber = diagnostic.pageNumber;
+        preview.firstRowIndex = std::max(0, diagnostic.sourceRowIndex);
+        preview.note = tableLayoutDiagnosticNote(diagnostic.code);
+        previews.append(preview);
+    } else if (previews.isEmpty() && !layout.errorMessage.trimmed().isEmpty()) {
+        DesignerTablePagePreviewModel preview;
+        preview.note = layout.errorMessage;
+        previews.append(preview);
+    }
+    return previews;
 }
 
 QString paperSpecDisplayName(const sleekpr::core::PaperSpec& spec)
@@ -1556,7 +1615,13 @@ void TemplateDesignerWindow::refreshTablePropertyEditor()
         return;
     }
 
-    m_inspectorPanel->setTableProperties(m_presenter.tablePropertyModel(*table, canEditElement(table->id)));
+    auto model = m_presenter.tablePropertyModel(*table, canEditElement(table->id));
+    bool sampleDataOk = true;
+    const auto renderContext = sampleRenderContext(&sampleDataOk);
+    if (sampleDataOk) {
+        model.pagePreviews = tablePagePreviews(*table, sleekpr::core::TableElementLayout::layout(*table, renderContext));
+    }
+    m_inspectorPanel->setTableProperties(model);
 }
 
 void TemplateDesignerWindow::refreshPaperSpecSelector()

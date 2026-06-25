@@ -104,6 +104,9 @@ private slots:
     void tableElementLayoutRendersSummaryAndFooterBands();
     void tableElementLayoutPaginatesAndRepeatsHeader();
     void tableElementLayoutAppliesMaxPagesOverflowPolicy();
+    void tableElementLayoutProtectsOrphanDetailRows();
+    void tableElementLayoutKeepsGroupsTogetherWhenRequested();
+    void tableElementLayoutReportsMergeRegionsThatCannotStayOnOnePage();
     void tableElementRendererBuildsSinglePageCommands();
     void tableElementRendererUsesComplexLayoutCells();
     void tableElementRendererDistributesFlexibleColumnWidths();
@@ -1505,8 +1508,11 @@ void CoreTests::tableElementJsonPersistsComplexTableModel()
     table.mergeRegions.append(merge);
 
     table.pagination.repeatHeaderOnPage = true;
+    table.pagination.keepGroupTogether = true;
     table.pagination.maxPages = 5;
     table.pagination.overflowPolicy = TableTableOverflowPolicy::Error;
+    table.pagination.orphanDetailRows = 2;
+    table.pagination.groupKeyField = QStringLiteral("group");
 
     const auto json = TableElementJson::toJson(table);
 
@@ -1531,6 +1537,9 @@ void CoreTests::tableElementJsonPersistsComplexTableModel()
     QCOMPARE(actual.cellTemplates.first().overflowPolicy, TableCellOverflowPolicy::Wrap);
     QCOMPARE(actual.mergeRegions.size(), 1);
     QCOMPARE(actual.pagination.maxPages, 5);
+    QVERIFY(actual.pagination.keepGroupTogether);
+    QCOMPARE(actual.pagination.orphanDetailRows, 2);
+    QCOMPARE(actual.pagination.groupKeyField, QStringLiteral("group"));
 }
 
 void CoreTests::tableElementJsonKeepsLegacyColumnsCompatible()
@@ -1997,6 +2006,136 @@ void CoreTests::tableElementLayoutAppliesMaxPagesOverflowPolicy()
     QVERIFY2(continueResult.success(), qPrintable(continueResult.errorMessage));
     QCOMPARE(continueResult.pages.size(), 2);
     QCOMPARE(continueResult.pages.last().rowCount, 1);
+}
+
+void CoreTests::tableElementLayoutProtectsOrphanDetailRows()
+{
+    TableElement table;
+    table.id = QStringLiteral("orphan-layout");
+    table.dataPath = QStringLiteral("items");
+    table.width = 30.0;
+    table.height = 8.0;
+    table.headerRowHeightMm = 2.0;
+    table.detailRowHeightMm = 2.0;
+    table.pagination.repeatHeaderOnPage = true;
+    table.pagination.orphanDetailRows = 2;
+
+    TableColumn column;
+    column.id = QStringLiteral("name");
+    column.title = QString::fromUtf8("品名");
+    column.fieldKey = QStringLiteral("name");
+    column.widthMm = 30.0;
+    table.columns.append(column);
+
+    QJsonArray rows;
+    for (int index = 1; index <= 7; ++index) {
+        rows.append(QJsonObject{{QStringLiteral("name"), QStringLiteral("P%1").arg(index)}});
+    }
+    TemplateRenderContext context;
+    context.values = QJsonObject{{QStringLiteral("items"), rows}};
+
+    const auto result = TableElementLayout::layout(table, context);
+
+    QVERIFY2(result.success(), qPrintable(result.errorMessage));
+    QCOMPARE(result.pages.size(), 3);
+    QCOMPARE(result.pages[0].rowCount, 3);
+    QCOMPARE(result.pages[1].rowCount, 2);
+    QCOMPARE(result.pages[2].rowCount, 2);
+    QVERIFY(std::any_of(result.diagnostics.cbegin(), result.diagnostics.cend(), [](const TableLayoutDiagnostic& diagnostic) {
+        return diagnostic.code == TableLayoutDiagnosticCode::OrphanRowsMoved;
+    }));
+}
+
+void CoreTests::tableElementLayoutKeepsGroupsTogetherWhenRequested()
+{
+    TableElement table;
+    table.id = QStringLiteral("group-layout");
+    table.dataPath = QStringLiteral("items");
+    table.width = 30.0;
+    table.height = 8.0;
+    table.headerRowHeightMm = 2.0;
+    table.detailRowHeightMm = 2.0;
+    table.pagination.repeatHeaderOnPage = true;
+    table.pagination.keepGroupTogether = true;
+    table.pagination.groupKeyField = QStringLiteral("group");
+
+    TableColumn column;
+    column.id = QStringLiteral("name");
+    column.title = QString::fromUtf8("品名");
+    column.fieldKey = QStringLiteral("name");
+    column.widthMm = 30.0;
+    table.columns.append(column);
+
+    TemplateRenderContext context;
+    context.values = QJsonObject{
+        {QStringLiteral("items"),
+         QJsonArray{
+             QJsonObject{{QStringLiteral("group"), QStringLiteral("A")}, {QStringLiteral("name"), QStringLiteral("A1")}},
+             QJsonObject{{QStringLiteral("group"), QStringLiteral("A")}, {QStringLiteral("name"), QStringLiteral("A2")}},
+             QJsonObject{{QStringLiteral("group"), QStringLiteral("B")}, {QStringLiteral("name"), QStringLiteral("B1")}},
+             QJsonObject{{QStringLiteral("group"), QStringLiteral("B")}, {QStringLiteral("name"), QStringLiteral("B2")}},
+             QJsonObject{{QStringLiteral("group"), QStringLiteral("B")}, {QStringLiteral("name"), QStringLiteral("B3")}},
+         }},
+    };
+
+    const auto result = TableElementLayout::layout(table, context);
+
+    QVERIFY2(result.success(), qPrintable(result.errorMessage));
+    QCOMPARE(result.pages.size(), 2);
+    QCOMPARE(result.pages[0].firstRowIndex, 0);
+    QCOMPARE(result.pages[0].rowCount, 2);
+    QCOMPARE(result.pages[1].firstRowIndex, 2);
+    QCOMPARE(result.pages[1].rowCount, 3);
+    QVERIFY(std::any_of(result.diagnostics.cbegin(), result.diagnostics.cend(), [](const TableLayoutDiagnostic& diagnostic) {
+        return diagnostic.code == TableLayoutDiagnosticCode::GroupMovedToNextPage;
+    }));
+}
+
+void CoreTests::tableElementLayoutReportsMergeRegionsThatCannotStayOnOnePage()
+{
+    TableElement table;
+    table.id = QStringLiteral("merge-warning-layout");
+    table.dataPath = QStringLiteral("items");
+    table.width = 40.0;
+    table.height = 8.0;
+    table.headerRowHeightMm = 2.0;
+    table.detailRowHeightMm = 3.0;
+    table.pagination.repeatHeaderOnPage = true;
+    table.pagination.overflowPolicy = TableTableOverflowPolicy::Error;
+
+    TableColumn column;
+    column.id = QStringLiteral("name");
+    column.title = QString::fromUtf8("品名");
+    column.fieldKey = QStringLiteral("name");
+    column.widthMm = 40.0;
+    table.columns.append(column);
+
+    TableMergeRegion merge;
+    merge.id = QStringLiteral("merge-name");
+    merge.rowBandId = QStringLiteral("detail");
+    merge.startColumnId = QStringLiteral("name");
+    merge.startRowOffset = 0;
+    merge.rowSpan = 3;
+    table.mergeRegions.append(merge);
+
+    TemplateRenderContext context;
+    context.values = QJsonObject{
+        {QStringLiteral("items"),
+         QJsonArray{
+             QJsonObject{{QStringLiteral("name"), QStringLiteral("A")}},
+             QJsonObject{{QStringLiteral("name"), QStringLiteral("B")}},
+             QJsonObject{{QStringLiteral("name"), QStringLiteral("C")}},
+         }},
+    };
+
+    const auto result = TableElementLayout::layout(table, context);
+
+    QVERIFY(!result.success());
+    QVERIFY(std::any_of(result.diagnostics.cbegin(), result.diagnostics.cend(), [](const TableLayoutDiagnostic& diagnostic) {
+        return diagnostic.code == TableLayoutDiagnosticCode::MergeRegionCrossesPage
+            && diagnostic.mergeId == QStringLiteral("merge-name")
+            && diagnostic.sourceRowIndex == 0;
+    }));
 }
 
 void CoreTests::tableElementRendererBuildsSinglePageCommands()

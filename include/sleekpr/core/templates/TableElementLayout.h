@@ -31,9 +31,28 @@ struct TableLayoutPage
     QList<TableLayoutCell> cells;
 };
 
+enum class TableLayoutDiagnosticCode
+{
+    OrphanRowsMoved,
+    GroupMovedToNextPage,
+    MergeRegionCrossesPage,
+};
+
+struct TableLayoutDiagnostic
+{
+    TableLayoutDiagnosticCode code = TableLayoutDiagnosticCode::OrphanRowsMoved;
+    QString message;
+    int pageNumber = 1;
+    int sourceRowIndex = -1;
+    QString mergeId;
+    QString rowBandId;
+};
+
 struct TableLayoutResult
 {
     QList<TableLayoutPage> pages;
+    // 诊断不一定代表渲染失败；设计器用它展示分页调整、跨页风险等提示。
+    QList<TableLayoutDiagnostic> diagnostics;
     QString errorMessage;
 
     bool success() const;

@@ -635,6 +635,64 @@ double detailMergeGroupHeight(
     return requiredHeight;
 }
 
+const TableMergeRegion* detailMergeStartingAt(const TableElement& table, int rowIndex)
+{
+    for (const auto& merge : table.mergeRegions) {
+        if (merge.startRowOffset == rowIndex && merge.rowSpan > 1 && isDetailRowBand(table, merge.rowBandId)) {
+            return &merge;
+        }
+    }
+    return nullptr;
+}
+
+int contiguousGroupEndIndex(const TablePaginationPolicy& pagination, const QJsonArray& rows, int rowIndex)
+{
+    const auto groupKeyField = pagination.groupKeyField.trimmed();
+    if (!pagination.keepGroupTogether || groupKeyField.isEmpty() || rowIndex < 0 || rowIndex >= rows.size() || !rows[rowIndex].isObject()) {
+        return rowIndex + 1;
+    }
+
+    const auto firstRow = rows[rowIndex].toObject();
+    const auto groupKey = valueToText(valueAtPath(firstRow, groupKeyField));
+    if (groupKey.isEmpty()) {
+        return rowIndex + 1;
+    }
+
+    auto endIndex = rowIndex + 1;
+    while (endIndex < rows.size() && rows[endIndex].isObject()) {
+        const auto rowGroupKey = valueToText(valueAtPath(rows[endIndex].toObject(), groupKeyField));
+        if (rowGroupKey != groupKey) {
+            break;
+        }
+        ++endIndex;
+    }
+    return endIndex;
+}
+
+bool continuesKeptGroup(const TablePaginationPolicy& pagination, const QJsonArray& rows, int rowIndex)
+{
+    const auto groupKeyField = pagination.groupKeyField.trimmed();
+    if (!pagination.keepGroupTogether || groupKeyField.isEmpty() || rowIndex <= 0 || rowIndex >= rows.size()) {
+        return false;
+    }
+    if (!rows[rowIndex - 1].isObject() || !rows[rowIndex].isObject()) {
+        return false;
+    }
+
+    const auto previousGroupKey = valueToText(valueAtPath(rows[rowIndex - 1].toObject(), groupKeyField));
+    const auto currentGroupKey = valueToText(valueAtPath(rows[rowIndex].toObject(), groupKeyField));
+    return !currentGroupKey.isEmpty() && currentGroupKey == previousGroupKey;
+}
+
+double detailRowsHeight(int firstRowIndex, int endRowIndex, const QHash<int, double>& detailHeightsByIndex)
+{
+    double height = 0.0;
+    for (int rowIndex = firstRowIndex; rowIndex < endRowIndex; ++rowIndex) {
+        height += detailHeightsByIndex.value(rowIndex, 0.0);
+    }
+    return height;
+}
+
 void appendDetailRowToPage(TableLayoutPage* page,
                            const TableElement& table,
                            const QList<TableRowBand>& details,
@@ -731,6 +789,19 @@ TableLayoutResult TableElementLayout::layout(const TableElement& table, const Te
         appendHeaderBandsToPage(&page, table, headers, context.values, pageNumber, &currentY);
         return true;
     };
+
+    auto addDiagnostic = [&result](TableLayoutDiagnostic diagnostic) {
+        const auto exists = std::any_of(result.diagnostics.cbegin(), result.diagnostics.cend(), [&diagnostic](const TableLayoutDiagnostic& current) {
+            return current.code == diagnostic.code
+                && current.pageNumber == diagnostic.pageNumber
+                && current.sourceRowIndex == diagnostic.sourceRowIndex
+                && current.mergeId == diagnostic.mergeId;
+        });
+        if (!exists) {
+            result.diagnostics.append(diagnostic);
+        }
+    };
+
     for (int rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
         if (!rows[rowIndex].isObject()) {
             result.errorMessage = QString::fromUtf8("表格数据 %1 的第 %2 行必须是对象").arg(dataPath).arg(rowIndex + 1);
@@ -739,6 +810,49 @@ TableLayoutResult TableElementLayout::layout(const TableElement& table, const Te
         const auto row = rows[rowIndex].toObject();
         const auto rowHeight = detailRowHeight(table, details, row);
         const auto requiredRowHeight = detailMergeGroupHeight(table, rowIndex, rowHeight, detailHeightsByIndex);
+
+        const auto groupEndIndex = contiguousGroupEndIndex(table.pagination, rows, rowIndex);
+        const auto startsGroup = groupEndIndex > rowIndex + 1;
+        if (startsGroup && page.rowCount > 0) {
+            const auto groupHeight = detailRowsHeight(rowIndex, groupEndIndex, detailHeightsByIndex);
+            if (currentY + groupHeight > table.height) {
+                TableLayoutDiagnostic diagnostic;
+                diagnostic.code = TableLayoutDiagnosticCode::GroupMovedToNextPage;
+                diagnostic.pageNumber = pageNumber;
+                diagnostic.sourceRowIndex = rowIndex;
+                diagnostic.message = QString::fromUtf8("分组 %1 已移到下一页，避免同组明细行被拆分").arg(table.pagination.groupKeyField.trimmed());
+                addDiagnostic(diagnostic);
+                if (!startNextPage(rowIndex)) {
+                    if (result.errorMessage.isEmpty()) {
+                        return result;
+                    }
+                    result.pages.clear();
+                    return result;
+                }
+            }
+        }
+
+        const auto remainingRows = rows.size() - rowIndex;
+        const auto continuesGroup = continuesKeptGroup(table.pagination, rows, rowIndex);
+        if (table.pagination.orphanDetailRows > 0
+            && !continuesGroup
+            && remainingRows <= table.pagination.orphanDetailRows
+            && page.rowCount >= table.pagination.orphanDetailRows) {
+            TableLayoutDiagnostic diagnostic;
+            diagnostic.code = TableLayoutDiagnosticCode::OrphanRowsMoved;
+            diagnostic.pageNumber = pageNumber;
+            diagnostic.sourceRowIndex = rowIndex;
+            diagnostic.message = QString::fromUtf8("最后 %1 行明细已移到下一页，避免页尾孤行").arg(remainingRows);
+            addDiagnostic(diagnostic);
+            if (!startNextPage(rowIndex)) {
+                if (result.errorMessage.isEmpty()) {
+                    return result;
+                }
+                result.pages.clear();
+                return result;
+            }
+        }
+
         if (currentY + requiredRowHeight > table.height && page.rowCount > 0) {
             if (!startNextPage(rowIndex)) {
                 if (result.errorMessage.isEmpty()) {
@@ -750,6 +864,16 @@ TableLayoutResult TableElementLayout::layout(const TableElement& table, const Te
         }
 
         if (currentY + requiredRowHeight > table.height) {
+            if (const auto* merge = detailMergeStartingAt(table, rowIndex)) {
+                TableLayoutDiagnostic diagnostic;
+                diagnostic.code = TableLayoutDiagnosticCode::MergeRegionCrossesPage;
+                diagnostic.pageNumber = pageNumber;
+                diagnostic.sourceRowIndex = rowIndex;
+                diagnostic.mergeId = merge->id;
+                diagnostic.rowBandId = merge->rowBandId;
+                diagnostic.message = QString::fromUtf8("合并区域 %1 无法完整放入单页，请缩小行高或调整分页策略").arg(merge->id);
+                addDiagnostic(diagnostic);
+            }
             if (table.pagination.overflowPolicy == TableTableOverflowPolicy::Clip) {
                 break;
             }
