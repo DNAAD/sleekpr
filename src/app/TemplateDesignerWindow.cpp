@@ -6,6 +6,7 @@
 #include "sleekpr/app/TemplateInspectorPanel.h"
 #include "sleekpr/app/TemplateLayerPanel.h"
 #include "sleekpr/app/TemplatePreviewLabel.h"
+#include "sleekpr/app/TemplateTableCanvasEditor.h"
 #include "sleekpr/app/TemplateWorkspacePanel.h"
 #include "sleekpr/core/labels/LabelRenderPlanner.h"
 #include "sleekpr/core/native/NativeLabelDrawingPlanner.h"
@@ -37,6 +38,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include <QInputDialog>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -45,6 +47,7 @@
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QMessageBox>
+#include <QMenu>
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -686,6 +689,12 @@ void TemplateDesignerWindow::buildUi()
             return;
         }
         moveSelectedElementByPixels(delta);
+    });
+    m_previewLabel->setDoubleClickCallback([this](QPoint position) {
+        editTableCanvasCellAt(position);
+    });
+    m_previewLabel->setContextMenuCallback([this](QPoint position, QPoint globalPosition) {
+        showTableCanvasContextMenu(position, globalPosition);
     });
     m_previewLabel->setKeyboardNudgeCallback([this](QPoint direction, Qt::KeyboardModifiers modifiers) {
         nudgeSelectedElement(direction, modifiers);
@@ -2852,6 +2861,180 @@ void TemplateDesignerWindow::resizeTableColumnByPixels(QPoint delta)
     if (m_statusLabel != nullptr) {
         m_statusLabel->setText(QString::fromUtf8("已调整表格列宽"));
     }
+}
+
+std::optional<TableCanvasHit> TemplateDesignerWindow::tableCanvasHitAt(QPoint position) const
+{
+    if (m_previewLabel == nullptr) {
+        return std::nullopt;
+    }
+
+    const auto paperSize = currentPaperSizeMm();
+    const auto previewSize = m_previewLabel->printableImageSizePx();
+    if (paperSize.isEmpty() || previewSize.isEmpty()) {
+        return std::nullopt;
+    }
+
+    const auto& document = m_settings.templateDocuments.value(m_templateKey);
+    return TemplateTableCanvasEditor::hitTest(
+        document,
+        paperSize,
+        previewSize,
+        m_previewLabel->mapToPrintableImagePx(position));
+}
+
+void TemplateDesignerWindow::editTableCanvasCellAt(QPoint position)
+{
+    const auto hit = tableCanvasHitAt(position);
+    if (!hit.has_value() || !canEditElement(hit->tableId)) {
+        return;
+    }
+
+    selectElement(hit->tableId);
+    editTableCanvasColumnText(*hit);
+}
+
+void TemplateDesignerWindow::showTableCanvasContextMenu(QPoint position, QPoint globalPosition)
+{
+    const auto hit = tableCanvasHitAt(position);
+    if (!hit.has_value() || !canEditElement(hit->tableId)) {
+        return;
+    }
+
+    selectElement(hit->tableId);
+
+    QMenu menu(this);
+    auto* editTitleAction = menu.addAction(QString::fromUtf8("编辑列标题"));
+    auto* editFieldAction = menu.addAction(QString::fromUtf8("编辑绑定字段"));
+    menu.addSeparator();
+    auto* insertAction = menu.addAction(QString::fromUtf8("在右侧新增列"));
+    auto* duplicateAction = menu.addAction(QString::fromUtf8("复制当前列"));
+    auto* deleteAction = menu.addAction(QString::fromUtf8("删除当前列"));
+    menu.addSeparator();
+    auto* moveLeftAction = menu.addAction(QString::fromUtf8("左移列"));
+    auto* moveRightAction = menu.addAction(QString::fromUtf8("右移列"));
+
+    auto* table = currentTable();
+    const auto columnCount = table != nullptr ? table->columns.size() : 0;
+    deleteAction->setEnabled(columnCount > 1);
+    moveLeftAction->setEnabled(hit->columnIndex > 0);
+    moveRightAction->setEnabled(hit->columnIndex >= 0 && hit->columnIndex < columnCount - 1);
+
+    connect(editTitleAction, &QAction::triggered, this, [this, hit] {
+        auto titleHit = *hit;
+        titleHit.band = TableCanvasBand::Header;
+        editTableCanvasColumnText(titleHit);
+    });
+    connect(editFieldAction, &QAction::triggered, this, [this, hit] {
+        auto fieldHit = *hit;
+        fieldHit.band = TableCanvasBand::Detail;
+        editTableCanvasColumnText(fieldHit);
+    });
+    connect(insertAction, &QAction::triggered, this, [this, hit] {
+        applyTableCanvasColumnMutation(
+            *hit,
+            [hit](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::insertColumnAfter(table, hit->columnIndex);
+            },
+            QString::fromUtf8("已在画布上新增表格列"));
+    });
+    connect(duplicateAction, &QAction::triggered, this, [this, hit] {
+        applyTableCanvasColumnMutation(
+            *hit,
+            [hit](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::duplicateColumn(table, hit->columnIndex);
+            },
+            QString::fromUtf8("已复制表格列"));
+    });
+    connect(deleteAction, &QAction::triggered, this, [this, hit] {
+        applyTableCanvasColumnMutation(
+            *hit,
+            [hit](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::deleteColumn(table, hit->columnIndex);
+            },
+            QString::fromUtf8("已删除表格列"));
+    });
+    connect(moveLeftAction, &QAction::triggered, this, [this, hit] {
+        applyTableCanvasColumnMutation(
+            *hit,
+            [hit](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::moveColumnLeft(table, hit->columnIndex);
+            },
+            QString::fromUtf8("已左移表格列"));
+    });
+    connect(moveRightAction, &QAction::triggered, this, [this, hit] {
+        applyTableCanvasColumnMutation(
+            *hit,
+            [hit](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::moveColumnRight(table, hit->columnIndex);
+            },
+            QString::fromUtf8("已右移表格列"));
+    });
+
+    menu.exec(globalPosition);
+}
+
+bool TemplateDesignerWindow::editTableCanvasColumnText(const TableCanvasHit& hit)
+{
+    ensureCurrentTemplateDocument();
+    if (currentElementId() != hit.tableId) {
+        selectElement(hit.tableId);
+    }
+
+    auto* table = currentTable();
+    if (table == nullptr || table->id != hit.tableId || hit.columnIndex < 0 || hit.columnIndex >= table->columns.size()) {
+        return false;
+    }
+
+    const auto editingHeader = hit.band == TableCanvasBand::Header;
+    const auto currentText = editingHeader
+        ? table->columns[hit.columnIndex].title
+        : table->columns[hit.columnIndex].fieldKey;
+    bool ok = false;
+    const auto nextText = QInputDialog::getText(
+                              this,
+                              QString::fromUtf8("编辑表格列"),
+                              editingHeader ? QString::fromUtf8("列标题") : QString::fromUtf8("绑定字段"),
+                              QLineEdit::Normal,
+                              currentText,
+                              &ok)
+                              .trimmed();
+    if (!ok) {
+        return false;
+    }
+
+    return applyTableCanvasColumnMutation(
+        hit,
+        [editingHeader, nextText, hit](sleekpr::core::TableElement* currentTable) {
+            return editingHeader
+                ? TemplateTableCanvasEditor::setColumnTitle(currentTable, hit.columnIndex, nextText)
+                : TemplateTableCanvasEditor::setColumnFieldKey(currentTable, hit.columnIndex, nextText);
+        },
+        editingHeader ? QString::fromUtf8("已更新表格列标题") : QString::fromUtf8("已更新表格绑定字段"));
+}
+
+bool TemplateDesignerWindow::applyTableCanvasColumnMutation(
+    const TableCanvasHit& hit,
+    const std::function<bool(sleekpr::core::TableElement*)>& mutation,
+    const QString& statusText)
+{
+    ensureCurrentTemplateDocument();
+    if (currentElementId() != hit.tableId) {
+        selectElement(hit.tableId);
+    }
+
+    auto* table = currentTable();
+    if (table == nullptr || table->id != hit.tableId || !mutation(table)) {
+        return false;
+    }
+
+    scheduleSelectionPropertyRefresh(kPreviewRefreshDelayMs);
+    schedulePreviewRefresh(kPreviewRefreshDelayMs);
+    scheduleSettingsChanged(kSettingsChangedDelayMs);
+    if (m_statusLabel != nullptr) {
+        m_statusLabel->setText(statusText);
+    }
+    return true;
 }
 
 void TemplateDesignerWindow::nudgeSelectedElement(QPoint direction, Qt::KeyboardModifiers modifiers)

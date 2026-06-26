@@ -14,6 +14,7 @@
 #include <functional>
 
 class QPainter;
+class QContextMenuEvent;
 
 namespace sleekpr::app {
 
@@ -22,6 +23,8 @@ class TemplatePreviewLabel final : public QLabel
 public:
     using DragDeltaCallback = std::function<void(QPoint)>;
     using DragStartCallback = std::function<bool(QPoint)>;
+    using DoubleClickCallback = std::function<void(QPoint)>;
+    using ContextMenuCallback = std::function<void(QPoint, QPoint)>;
     using KeyboardNudgeCallback = std::function<void(QPoint, Qt::KeyboardModifiers)>;
 
     explicit TemplatePreviewLabel(QWidget* parent = nullptr);
@@ -29,6 +32,8 @@ public:
     void setDraggingEnabled(bool enabled);
     void setDragStartCallback(DragStartCallback callback);
     void setDragDeltaCallback(DragDeltaCallback callback);
+    void setDoubleClickCallback(DoubleClickCallback callback);
+    void setContextMenuCallback(ContextMenuCallback callback);
     void setKeyboardNudgeCallback(KeyboardNudgeCallback callback);
     void setRulerVisible(bool visible);
     bool isRulerVisible() const;
@@ -49,6 +54,8 @@ protected:
     void paintEvent(QPaintEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
+    void mouseDoubleClickEvent(QMouseEvent* event) override;
+    void contextMenuEvent(QContextMenuEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
 
@@ -67,6 +74,8 @@ private:
     QPoint m_lastMousePosition;
     DragStartCallback m_dragStartCallback;
     DragDeltaCallback m_dragDeltaCallback;
+    DoubleClickCallback m_doubleClickCallback;
+    ContextMenuCallback m_contextMenuCallback;
     KeyboardNudgeCallback m_keyboardNudgeCallback;
 };
 

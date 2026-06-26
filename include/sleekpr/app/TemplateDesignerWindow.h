@@ -2,6 +2,7 @@
 
 #include "sleekpr/app/TemplateDesignerPresenter.h"
 #include "sleekpr/app/TemplateDesignerState.h"
+#include "sleekpr/app/TemplateTableCanvasEditor.h"
 #include "sleekpr/core/settings/PrintClientSettings.h"
 #include "sleekpr/core/native/NativeDrawCommand.h"
 #include "sleekpr/core/native/NativePrintDrawingPlan.h"
@@ -174,6 +175,14 @@ private:
     void updateHistoryButtons();
     void moveSelectedElementByPixels(QPoint delta);
     void resizeTableColumnByPixels(QPoint delta);
+    std::optional<TableCanvasHit> tableCanvasHitAt(QPoint position) const;
+    void editTableCanvasCellAt(QPoint position);
+    void showTableCanvasContextMenu(QPoint position, QPoint globalPosition);
+    bool editTableCanvasColumnText(const TableCanvasHit& hit);
+    bool applyTableCanvasColumnMutation(
+        const TableCanvasHit& hit,
+        const std::function<bool(sleekpr::core::TableElement*)>& mutation,
+        const QString& statusText);
     void nudgeSelectedElement(QPoint direction, Qt::KeyboardModifiers modifiers);
     std::optional<TableColumnResizeDrag> tableColumnResizeDragAt(QPoint position) const;
     bool currentSelectionContainsCanvasPosition(QPoint position) const;

@@ -49,6 +49,8 @@ add_executable(sleekpr_app_tests
     ../src/app/TemplateLayerPanel.cpp
     ../src/app/TemplateLibraryPanel.cpp
     ../src/app/TemplatePreviewLabel.cpp
+    ../src/app/TemplateTableCanvasEditor.cpp
+    ../include/sleekpr/app/TemplateTableCanvasEditor.h
     ../src/app/TemplateWorkspacePanel.cpp
     ../src/app/TemplateWorkspaceToolbar.cpp
     ../src/app/WindowActivation.cpp

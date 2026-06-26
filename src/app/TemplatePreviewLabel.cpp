@@ -2,6 +2,7 @@
 
 #include <QKeyEvent>
 #include <QColor>
+#include <QContextMenuEvent>
 #include <QFont>
 #include <QHash>
 #include <QMouseEvent>
@@ -84,6 +85,16 @@ void TemplatePreviewLabel::setDragStartCallback(DragStartCallback callback)
 void TemplatePreviewLabel::setDragDeltaCallback(DragDeltaCallback callback)
 {
     m_dragDeltaCallback = std::move(callback);
+}
+
+void TemplatePreviewLabel::setDoubleClickCallback(DoubleClickCallback callback)
+{
+    m_doubleClickCallback = std::move(callback);
+}
+
+void TemplatePreviewLabel::setContextMenuCallback(ContextMenuCallback callback)
+{
+    m_contextMenuCallback = std::move(callback);
 }
 
 void TemplatePreviewLabel::setKeyboardNudgeCallback(KeyboardNudgeCallback callback)
@@ -409,6 +420,29 @@ void TemplatePreviewLabel::mousePressEvent(QMouseEvent* event)
         return;
     }
     QLabel::mousePressEvent(event);
+}
+
+void TemplatePreviewLabel::mouseDoubleClickEvent(QMouseEvent* event)
+{
+    if (m_draggingEnabled && event->button() == Qt::LeftButton && m_doubleClickCallback) {
+        setFocus(Qt::MouseFocusReason);
+        // 双击只上报画布坐标，具体是表头、字段还是普通元素由设计器窗口判断。
+        m_doubleClickCallback(event->pos());
+        event->accept();
+        return;
+    }
+    QLabel::mouseDoubleClickEvent(event);
+}
+
+void TemplatePreviewLabel::contextMenuEvent(QContextMenuEvent* event)
+{
+    if (m_draggingEnabled && m_contextMenuCallback) {
+        // 右键菜单需要本地坐标命中元素，也需要全局坐标定位弹出位置。
+        m_contextMenuCallback(event->pos(), event->globalPos());
+        event->accept();
+        return;
+    }
+    QLabel::contextMenuEvent(event);
 }
 
 void TemplatePreviewLabel::mouseMoveEvent(QMouseEvent* event)
