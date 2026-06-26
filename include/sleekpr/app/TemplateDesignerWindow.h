@@ -179,7 +179,7 @@ private:
     void editTableCanvasCellAt(QPoint position);
     void showTableCanvasContextMenu(QPoint position, QPoint globalPosition);
     bool editTableCanvasColumnText(const TableCanvasHit& hit);
-    bool applyTableCanvasColumnMutation(
+    bool applyTableCanvasMutation(
         const TableCanvasHit& hit,
         const std::function<bool(sleekpr::core::TableElement*)>& mutation,
         const QString& statusText);

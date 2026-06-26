@@ -180,6 +180,20 @@ QString TemplatePreviewLabel::designAidSelectedElementKey() const
     return m_designAidSelectedElementKey;
 }
 
+void TemplatePreviewLabel::setCanvasFocusRectMm(QRectF rectMm)
+{
+    if (m_canvasFocusRectMm == rectMm) {
+        return;
+    }
+    m_canvasFocusRectMm = rectMm;
+    update();
+}
+
+QRectF TemplatePreviewLabel::canvasFocusRectMm() const
+{
+    return m_canvasFocusRectMm;
+}
+
 QPoint TemplatePreviewLabel::printableImageOriginPx() const
 {
     return m_rulerVisible ? QPoint(kVerticalRulerWidthPx, kHorizontalRulerHeightPx) : QPoint(0, 0);
@@ -257,6 +271,7 @@ void TemplatePreviewLabel::paintEvent(QPaintEvent* event)
     if (m_designAidVisible && !m_designAidCommands.isEmpty()) {
         drawDesignAids(painter, origin, imageSize);
     }
+    drawCanvasFocusRect(painter, origin, imageSize);
 }
 
 QRectF TemplatePreviewLabel::commandRectPx(
@@ -370,6 +385,32 @@ void TemplatePreviewLabel::drawDesignAids(QPainter& painter, QPoint imageOrigin,
         painter.drawRect(textRect);
         painter.drawText(textRect, Qt::AlignCenter, sizeText);
     }
+    painter.restore();
+}
+
+void TemplatePreviewLabel::drawCanvasFocusRect(QPainter& painter, QPoint imageOrigin, QSize imageSize) const
+{
+    if (m_canvasFocusRectMm.isNull() || m_rulerPaperSizeMm.isEmpty() || imageSize.isEmpty()) {
+        return;
+    }
+
+    const auto scaleX = imageSize.width() / m_rulerPaperSizeMm.width();
+    const auto scaleY = imageSize.height() / m_rulerPaperSizeMm.height();
+    QRectF rectPx(
+        imageOrigin.x() + m_canvasFocusRectMm.x() * scaleX,
+        imageOrigin.y() + m_canvasFocusRectMm.y() * scaleY,
+        m_canvasFocusRectMm.width() * scaleX,
+        m_canvasFocusRectMm.height() * scaleY);
+    rectPx = rectPx.normalized().adjusted(0.5, 0.5, -0.5, -0.5);
+
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, false);
+    // 焦点框只标记当前画布编辑目标，不参与真实预览图和打印输出。
+    painter.fillRect(rectPx, QColor(0, 132, 255, 34));
+    QPen focusPen(QColor(0, 120, 215, 230));
+    focusPen.setWidth(2);
+    painter.setPen(focusPen);
+    painter.drawRect(rectPx);
     painter.restore();
 }
 

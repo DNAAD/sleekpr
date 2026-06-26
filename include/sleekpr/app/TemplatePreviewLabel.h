@@ -46,6 +46,8 @@ public:
     int designAidCommandCount() const;
     void setDesignAidSelectedElementKey(QString elementKey);
     QString designAidSelectedElementKey() const;
+    void setCanvasFocusRectMm(QRectF rectMm);
+    QRectF canvasFocusRectMm() const;
     QPoint printableImageOriginPx() const;
     QSize printableImageSizePx() const;
     QPoint mapToPrintableImagePx(QPoint widgetPosition) const;
@@ -62,6 +64,7 @@ protected:
 private:
     QRectF commandRectPx(const sleekpr::core::NativeDrawCommand& command, QPoint imageOrigin, QSize imageSize) const;
     void drawDesignAids(QPainter& painter, QPoint imageOrigin, QSize imageSize) const;
+    void drawCanvasFocusRect(QPainter& painter, QPoint imageOrigin, QSize imageSize) const;
 
     bool m_draggingEnabled = false;
     bool m_dragging = false;
@@ -71,6 +74,7 @@ private:
     QSizeF m_rulerPaperSizeMm;
     QList<sleekpr::core::NativeDrawCommand> m_designAidCommands;
     QString m_designAidSelectedElementKey;
+    QRectF m_canvasFocusRectMm;
     QPoint m_lastMousePosition;
     DragStartCallback m_dragStartCallback;
     DragDeltaCallback m_dragDeltaCallback;

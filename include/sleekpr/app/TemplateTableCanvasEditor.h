@@ -3,6 +3,7 @@
 #include "sleekpr/core/templates/TemplateDocument.h"
 
 #include <QPoint>
+#include <QRectF>
 #include <QSize>
 #include <QSizeF>
 #include <QString>
@@ -21,7 +22,11 @@ struct TableCanvasHit
 {
     QString tableId;
     int columnIndex = -1;
+    QString columnId;
     TableCanvasBand band = TableCanvasBand::Detail;
+    QString rowBandId;
+    int rowOffset = 0;
+    QRectF cellRectMm;
 };
 
 class TemplateTableCanvasEditor final
@@ -40,6 +45,14 @@ public:
     static bool deleteColumn(sleekpr::core::TableElement* table, int columnIndex);
     static bool moveColumnLeft(sleekpr::core::TableElement* table, int columnIndex);
     static bool moveColumnRight(sleekpr::core::TableElement* table, int columnIndex);
+    static bool mergeCellRight(sleekpr::core::TableElement* table, const TableCanvasHit& hit);
+    static bool splitCell(sleekpr::core::TableElement* table, const TableCanvasHit& hit);
+    static bool toggleCellBold(sleekpr::core::TableElement* table, const TableCanvasHit& hit);
+    static bool toggleCellWrap(sleekpr::core::TableElement* table, const TableCanvasHit& hit);
+    static bool setCellAlignment(
+        sleekpr::core::TableElement* table,
+        const TableCanvasHit& hit,
+        sleekpr::core::TableCellAlignment alignment);
 };
 
 } // namespace sleekpr::app

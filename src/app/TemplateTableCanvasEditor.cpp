@@ -3,6 +3,7 @@
 #include "sleekpr/core/templates/TableElement.h"
 
 #include <QRectF>
+#include <QSet>
 
 #include <algorithm>
 #include <cmath>
@@ -12,6 +13,7 @@ namespace sleekpr::app {
 namespace {
 
 constexpr double kDefaultCanvasColumnWidthMm = 20.0;
+constexpr double kMinimumCanvasRowHeightMm = 0.1;
 
 double columnFlexWeight(const sleekpr::core::TableColumn& column)
 {
@@ -56,6 +58,35 @@ int columnIndexAt(const sleekpr::core::TableElement& table, double xMm)
         currentX = nextX;
     }
     return -1;
+}
+
+double columnLeftAt(const sleekpr::core::TableElement& table, int columnIndex)
+{
+    const auto widths = resolvedColumnWidths(table);
+    auto currentX = table.x;
+    for (int index = 0; index < columnIndex && index < widths.size(); ++index) {
+        currentX += widths[index];
+    }
+    return currentX;
+}
+
+double columnWidthAt(const sleekpr::core::TableElement& table, int columnIndex)
+{
+    const auto widths = resolvedColumnWidths(table);
+    if (columnIndex < 0 || columnIndex >= widths.size()) {
+        return 0.0;
+    }
+    return widths[columnIndex];
+}
+
+QString rowBandIdFor(TableCanvasBand band)
+{
+    return band == TableCanvasBand::Header ? QStringLiteral("header") : QStringLiteral("detail");
+}
+
+QString rowBandIdForHit(const TableCanvasHit& hit)
+{
+    return hit.rowBandId.trimmed().isEmpty() ? rowBandIdFor(hit.band) : hit.rowBandId.trimmed();
 }
 
 bool hasColumnId(const sleekpr::core::TableElement& table, const QString& columnId)
@@ -107,6 +138,65 @@ int currentColumnIndexById(const sleekpr::core::TableElement& table, const QStri
     return -1;
 }
 
+QString columnIdForHit(const sleekpr::core::TableElement& table, const TableCanvasHit& hit)
+{
+    if (!hit.columnId.trimmed().isEmpty()) {
+        return hit.columnId.trimmed();
+    }
+    if (hit.columnIndex >= 0 && hit.columnIndex < table.columns.size()) {
+        return table.columns[hit.columnIndex].id;
+    }
+    return QString();
+}
+
+QString uniqueId(QString base, const QSet<QString>& usedIds)
+{
+    base = base.trimmed();
+    if (base.isEmpty()) {
+        base = QStringLiteral("item");
+    }
+
+    auto candidate = base;
+    auto suffix = 2;
+    while (usedIds.contains(candidate)) {
+        candidate = QStringLiteral("%1_%2").arg(base).arg(suffix);
+        ++suffix;
+    }
+    return candidate;
+}
+
+QString uniqueCellTemplateId(const sleekpr::core::TableElement& table, const QString& rowBandId, const QString& columnId)
+{
+    QSet<QString> usedIds;
+    for (const auto& cell : table.cellTemplates) {
+        usedIds.insert(cell.id);
+    }
+    return uniqueId(QStringLiteral("canvas-cell-%1-%2").arg(rowBandId, columnId), usedIds);
+}
+
+QString uniqueCellStyleId(const sleekpr::core::TableElement& table, const QString& rowBandId, const QString& columnId)
+{
+    QSet<QString> usedIds;
+    for (const auto& style : table.cellStyles) {
+        usedIds.insert(style.id);
+    }
+    return uniqueId(QStringLiteral("canvas-style-%1-%2").arg(rowBandId, columnId), usedIds);
+}
+
+bool isCanvasCellStyleId(const QString& styleId)
+{
+    return styleId.startsWith(QStringLiteral("canvas-style-"));
+}
+
+QString uniqueMergeRegionId(const sleekpr::core::TableElement& table, const QString& rowBandId, const QString& columnId, int rowOffset)
+{
+    QSet<QString> usedIds;
+    for (const auto& merge : table.mergeRegions) {
+        usedIds.insert(merge.id);
+    }
+    return uniqueId(QStringLiteral("canvas-merge-%1-%2-%3").arg(rowBandId, columnId).arg(rowOffset), usedIds);
+}
+
 void removeColumnReferences(sleekpr::core::TableElement* table, const QString& columnId, int columnIndex)
 {
     if (table == nullptr || columnId.trimmed().isEmpty()) {
@@ -140,6 +230,103 @@ void removeColumnReferences(sleekpr::core::TableElement* table, const QString& c
 bool validColumnIndex(const sleekpr::core::TableElement* table, int columnIndex)
 {
     return table != nullptr && columnIndex >= 0 && columnIndex < table->columns.size();
+}
+
+bool validCellHit(const sleekpr::core::TableElement* table, const TableCanvasHit& hit)
+{
+    return validColumnIndex(table, hit.columnIndex) && !columnIdForHit(*table, hit).isEmpty();
+}
+
+bool mergeCoversHit(const sleekpr::core::TableElement& table, const sleekpr::core::TableMergeRegion& merge, const TableCanvasHit& hit)
+{
+    const auto rowBandId = rowBandIdForHit(hit);
+    if (merge.rowBandId != rowBandId) {
+        return false;
+    }
+    const auto startIndex = currentColumnIndexById(table, merge.startColumnId);
+    if (startIndex < 0) {
+        return false;
+    }
+
+    const auto colSpan = std::max(1, merge.colSpan);
+    const auto rowSpan = std::max(1, merge.rowSpan);
+    const auto rowCovered = hit.rowOffset >= merge.startRowOffset && hit.rowOffset < merge.startRowOffset + rowSpan;
+    const auto columnCovered = hit.columnIndex >= startIndex && hit.columnIndex < startIndex + colSpan;
+    return rowCovered && columnCovered;
+}
+
+sleekpr::core::TableCellStyle styleFromColumn(const sleekpr::core::TableColumn& column)
+{
+    sleekpr::core::TableCellStyle style;
+    style.fontSizePt = column.fontSizePt > 0.0 ? column.fontSizePt : style.fontSizePt;
+    style.bold = column.bold;
+    style.alignment = column.alignment;
+    style.wrapText = column.wrapText;
+    style.ellipsis = column.ellipsis;
+    return style;
+}
+
+sleekpr::core::TableCellTemplate* ensureCellTemplate(sleekpr::core::TableElement* table, const TableCanvasHit& hit)
+{
+    if (!validCellHit(table, hit)) {
+        return nullptr;
+    }
+
+    const auto rowBandId = rowBandIdForHit(hit);
+    const auto columnId = columnIdForHit(*table, hit);
+    auto cell = std::find_if(
+        table->cellTemplates.begin(),
+        table->cellTemplates.end(),
+        [&rowBandId, &columnId](const sleekpr::core::TableCellTemplate& candidate) {
+            return candidate.rowBandId == rowBandId && candidate.columnId == columnId;
+        });
+    if (cell != table->cellTemplates.end()) {
+        return &(*cell);
+    }
+
+    sleekpr::core::TableCellTemplate created;
+    created.id = uniqueCellTemplateId(*table, rowBandId, columnId);
+    created.rowBandId = rowBandId;
+    created.columnId = columnId;
+    table->cellTemplates.append(created);
+    return &table->cellTemplates.last();
+}
+
+sleekpr::core::TableCellStyle* findStyle(sleekpr::core::TableElement* table, const QString& styleId)
+{
+    if (table == nullptr || styleId.trimmed().isEmpty()) {
+        return nullptr;
+    }
+
+    auto style = std::find_if(
+        table->cellStyles.begin(),
+        table->cellStyles.end(),
+        [&styleId](const sleekpr::core::TableCellStyle& candidate) {
+            return candidate.id == styleId;
+        });
+    return style == table->cellStyles.end() ? nullptr : &(*style);
+}
+
+sleekpr::core::TableCellStyle* ensureCellStyle(sleekpr::core::TableElement* table, const TableCanvasHit& hit)
+{
+    auto* cell = ensureCellTemplate(table, hit);
+    if (cell == nullptr) {
+        return nullptr;
+    }
+
+    const auto rowBandId = rowBandIdForHit(hit);
+    const auto columnId = columnIdForHit(*table, hit);
+    auto* existing = findStyle(table, cell->styleId);
+    if (existing != nullptr && isCanvasCellStyleId(cell->styleId)) {
+        return existing;
+    }
+
+    // 画布上的单元格样式修改必须生成当前单元格专属样式，避免误改被多个单元格复用的共享样式。
+    auto created = existing != nullptr ? *existing : styleFromColumn(table->columns[hit.columnIndex]);
+    created.id = uniqueCellStyleId(*table, rowBandId, columnId);
+    table->cellStyles.append(created);
+    cell->styleId = table->cellStyles.last().id;
+    return &table->cellStyles.last();
 }
 
 } // namespace
@@ -180,9 +367,25 @@ std::optional<TableCanvasHit> TemplateTableCanvasEditor::hitTest(
             TableCanvasHit hit;
             hit.tableId = table.id;
             hit.columnIndex = columnIndex;
-            hit.band = positionMm.y() <= table.y + std::max(0.1, table.headerRowHeightMm)
-                ? TableCanvasBand::Header
-                : TableCanvasBand::Detail;
+            hit.columnId = table.columns[columnIndex].id;
+            const auto headerRowHeight = std::max(kMinimumCanvasRowHeightMm, table.headerRowHeightMm);
+            const auto detailRowHeight = std::max(kMinimumCanvasRowHeightMm, table.detailRowHeightMm);
+            const auto columnLeft = columnLeftAt(table, columnIndex);
+            const auto columnWidth = columnWidthAt(table, columnIndex);
+            if (positionMm.y() <= table.y + headerRowHeight) {
+                hit.band = TableCanvasBand::Header;
+                hit.rowBandId = QStringLiteral("header");
+                hit.rowOffset = 0;
+                hit.cellRectMm = QRectF(columnLeft, table.y, columnWidth, headerRowHeight);
+            } else {
+                const auto detailY = table.y + headerRowHeight;
+                hit.band = TableCanvasBand::Detail;
+                hit.rowBandId = QStringLiteral("detail");
+                hit.rowOffset = std::max(0, static_cast<int>(std::floor((positionMm.y() - detailY) / detailRowHeight)));
+                const auto rowTop = detailY + hit.rowOffset * detailRowHeight;
+                const auto rowHeight = std::min(detailRowHeight, std::max(kMinimumCanvasRowHeightMm, table.y + table.height - rowTop));
+                hit.cellRectMm = QRectF(columnLeft, rowTop, columnWidth, rowHeight);
+            }
             return hit;
         }
     }
@@ -272,6 +475,93 @@ bool TemplateTableCanvasEditor::moveColumnRight(sleekpr::core::TableElement* tab
     }
 
     table->columns.swapItemsAt(columnIndex, columnIndex + 1);
+    return true;
+}
+
+bool TemplateTableCanvasEditor::mergeCellRight(sleekpr::core::TableElement* table, const TableCanvasHit& hit)
+{
+    if (!validCellHit(table, hit) || hit.columnIndex >= table->columns.size() - 1) {
+        return false;
+    }
+
+    for (const auto& merge : table->mergeRegions) {
+        auto nextHit = hit;
+        nextHit.columnIndex = hit.columnIndex + 1;
+        nextHit.columnId = table->columns[nextHit.columnIndex].id;
+        if (mergeCoversHit(*table, merge, hit) || mergeCoversHit(*table, merge, nextHit)) {
+            return false;
+        }
+    }
+
+    const auto rowBandId = rowBandIdForHit(hit);
+    const auto columnId = columnIdForHit(*table, hit);
+    sleekpr::core::TableMergeRegion merge;
+    merge.id = uniqueMergeRegionId(*table, rowBandId, columnId, hit.rowOffset);
+    merge.rowBandId = rowBandId;
+    merge.startRowOffset = hit.rowOffset;
+    merge.startColumnId = columnId;
+    merge.rowSpan = 1;
+    merge.colSpan = 2;
+    table->mergeRegions.append(merge);
+    return true;
+}
+
+bool TemplateTableCanvasEditor::splitCell(sleekpr::core::TableElement* table, const TableCanvasHit& hit)
+{
+    if (!validCellHit(table, hit)) {
+        return false;
+    }
+
+    const auto beforeSize = table->mergeRegions.size();
+    table->mergeRegions.erase(
+        std::remove_if(
+            table->mergeRegions.begin(),
+            table->mergeRegions.end(),
+            [table, hit](const sleekpr::core::TableMergeRegion& merge) {
+                return mergeCoversHit(*table, merge, hit);
+            }),
+        table->mergeRegions.end());
+    return table->mergeRegions.size() != beforeSize;
+}
+
+bool TemplateTableCanvasEditor::toggleCellBold(sleekpr::core::TableElement* table, const TableCanvasHit& hit)
+{
+    auto* style = ensureCellStyle(table, hit);
+    if (style == nullptr) {
+        return false;
+    }
+
+    style->bold = !style->bold;
+    return true;
+}
+
+bool TemplateTableCanvasEditor::toggleCellWrap(sleekpr::core::TableElement* table, const TableCanvasHit& hit)
+{
+    auto* style = ensureCellStyle(table, hit);
+    auto* cell = ensureCellTemplate(table, hit);
+    if (style == nullptr || cell == nullptr) {
+        return false;
+    }
+
+    style->wrapText = !style->wrapText;
+    cell->overflowPolicy = style->wrapText
+        ? sleekpr::core::TableCellOverflowPolicy::Wrap
+        : sleekpr::core::TableCellOverflowPolicy::Clip;
+    cell->maxLines = style->wrapText ? 0 : 1;
+    return true;
+}
+
+bool TemplateTableCanvasEditor::setCellAlignment(
+    sleekpr::core::TableElement* table,
+    const TableCanvasHit& hit,
+    sleekpr::core::TableCellAlignment alignment)
+{
+    auto* style = ensureCellStyle(table, hit);
+    if (style == nullptr || style->alignment == alignment) {
+        return false;
+    }
+
+    style->alignment = alignment;
     return true;
 }
 

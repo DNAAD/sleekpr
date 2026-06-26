@@ -649,6 +649,9 @@ void TemplateDesignerWindow::buildUi()
         refreshPreview();
     });
     connect(m_elementList, &QListWidget::currentRowChanged, this, [this] {
+        if (m_previewLabel != nullptr) {
+            m_previewLabel->setCanvasFocusRectMm(QRectF());
+        }
         refreshElementPropertyEditor();
         refreshTablePropertyEditor();
         refreshInspectorTabForCurrentSelection();
@@ -2891,6 +2894,9 @@ void TemplateDesignerWindow::editTableCanvasCellAt(QPoint position)
     }
 
     selectElement(hit->tableId);
+    if (m_previewLabel != nullptr) {
+        m_previewLabel->setCanvasFocusRectMm(hit->cellRectMm);
+    }
     editTableCanvasColumnText(*hit);
 }
 
@@ -2902,10 +2908,23 @@ void TemplateDesignerWindow::showTableCanvasContextMenu(QPoint position, QPoint 
     }
 
     selectElement(hit->tableId);
+    if (m_previewLabel != nullptr) {
+        m_previewLabel->setCanvasFocusRectMm(hit->cellRectMm);
+    }
 
     QMenu menu(this);
     auto* editTitleAction = menu.addAction(QString::fromUtf8("编辑列标题"));
     auto* editFieldAction = menu.addAction(QString::fromUtf8("编辑绑定字段"));
+    menu.addSeparator();
+    auto* mergeRightAction = menu.addAction(QString::fromUtf8("向右合并单元格"));
+    auto* splitCellAction = menu.addAction(QString::fromUtf8("拆分单元格"));
+    menu.addSeparator();
+    auto* boldCellAction = menu.addAction(QString::fromUtf8("切换单元格加粗"));
+    auto* wrapCellAction = menu.addAction(QString::fromUtf8("切换单元格换行"));
+    auto* alignMenu = menu.addMenu(QString::fromUtf8("单元格对齐"));
+    auto* alignLeftAction = alignMenu->addAction(QString::fromUtf8("左对齐"));
+    auto* alignCenterAction = alignMenu->addAction(QString::fromUtf8("居中"));
+    auto* alignRightAction = alignMenu->addAction(QString::fromUtf8("右对齐"));
     menu.addSeparator();
     auto* insertAction = menu.addAction(QString::fromUtf8("在右侧新增列"));
     auto* duplicateAction = menu.addAction(QString::fromUtf8("复制当前列"));
@@ -2916,6 +2935,7 @@ void TemplateDesignerWindow::showTableCanvasContextMenu(QPoint position, QPoint 
 
     auto* table = currentTable();
     const auto columnCount = table != nullptr ? table->columns.size() : 0;
+    mergeRightAction->setEnabled(hit->columnIndex >= 0 && hit->columnIndex < columnCount - 1);
     deleteAction->setEnabled(columnCount > 1);
     moveLeftAction->setEnabled(hit->columnIndex > 0);
     moveRightAction->setEnabled(hit->columnIndex >= 0 && hit->columnIndex < columnCount - 1);
@@ -2930,8 +2950,64 @@ void TemplateDesignerWindow::showTableCanvasContextMenu(QPoint position, QPoint 
         fieldHit.band = TableCanvasBand::Detail;
         editTableCanvasColumnText(fieldHit);
     });
+    connect(mergeRightAction, &QAction::triggered, this, [this, hit] {
+        applyTableCanvasMutation(
+            *hit,
+            [hit](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::mergeCellRight(table, *hit);
+            },
+            QString::fromUtf8("已合并右侧单元格"));
+    });
+    connect(splitCellAction, &QAction::triggered, this, [this, hit] {
+        applyTableCanvasMutation(
+            *hit,
+            [hit](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::splitCell(table, *hit);
+            },
+            QString::fromUtf8("已拆分单元格"));
+    });
+    connect(boldCellAction, &QAction::triggered, this, [this, hit] {
+        applyTableCanvasMutation(
+            *hit,
+            [hit](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::toggleCellBold(table, *hit);
+            },
+            QString::fromUtf8("已切换单元格加粗"));
+    });
+    connect(wrapCellAction, &QAction::triggered, this, [this, hit] {
+        applyTableCanvasMutation(
+            *hit,
+            [hit](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::toggleCellWrap(table, *hit);
+            },
+            QString::fromUtf8("已切换单元格换行"));
+    });
+    connect(alignLeftAction, &QAction::triggered, this, [this, hit] {
+        applyTableCanvasMutation(
+            *hit,
+            [hit](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::setCellAlignment(table, *hit, sleekpr::core::TableCellAlignment::Left);
+            },
+            QString::fromUtf8("已设置单元格左对齐"));
+    });
+    connect(alignCenterAction, &QAction::triggered, this, [this, hit] {
+        applyTableCanvasMutation(
+            *hit,
+            [hit](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::setCellAlignment(table, *hit, sleekpr::core::TableCellAlignment::Center);
+            },
+            QString::fromUtf8("已设置单元格居中"));
+    });
+    connect(alignRightAction, &QAction::triggered, this, [this, hit] {
+        applyTableCanvasMutation(
+            *hit,
+            [hit](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::setCellAlignment(table, *hit, sleekpr::core::TableCellAlignment::Right);
+            },
+            QString::fromUtf8("已设置单元格右对齐"));
+    });
     connect(insertAction, &QAction::triggered, this, [this, hit] {
-        applyTableCanvasColumnMutation(
+        applyTableCanvasMutation(
             *hit,
             [hit](sleekpr::core::TableElement* table) {
                 return TemplateTableCanvasEditor::insertColumnAfter(table, hit->columnIndex);
@@ -2939,7 +3015,7 @@ void TemplateDesignerWindow::showTableCanvasContextMenu(QPoint position, QPoint 
             QString::fromUtf8("已在画布上新增表格列"));
     });
     connect(duplicateAction, &QAction::triggered, this, [this, hit] {
-        applyTableCanvasColumnMutation(
+        applyTableCanvasMutation(
             *hit,
             [hit](sleekpr::core::TableElement* table) {
                 return TemplateTableCanvasEditor::duplicateColumn(table, hit->columnIndex);
@@ -2947,7 +3023,7 @@ void TemplateDesignerWindow::showTableCanvasContextMenu(QPoint position, QPoint 
             QString::fromUtf8("已复制表格列"));
     });
     connect(deleteAction, &QAction::triggered, this, [this, hit] {
-        applyTableCanvasColumnMutation(
+        applyTableCanvasMutation(
             *hit,
             [hit](sleekpr::core::TableElement* table) {
                 return TemplateTableCanvasEditor::deleteColumn(table, hit->columnIndex);
@@ -2955,7 +3031,7 @@ void TemplateDesignerWindow::showTableCanvasContextMenu(QPoint position, QPoint 
             QString::fromUtf8("已删除表格列"));
     });
     connect(moveLeftAction, &QAction::triggered, this, [this, hit] {
-        applyTableCanvasColumnMutation(
+        applyTableCanvasMutation(
             *hit,
             [hit](sleekpr::core::TableElement* table) {
                 return TemplateTableCanvasEditor::moveColumnLeft(table, hit->columnIndex);
@@ -2963,7 +3039,7 @@ void TemplateDesignerWindow::showTableCanvasContextMenu(QPoint position, QPoint 
             QString::fromUtf8("已左移表格列"));
     });
     connect(moveRightAction, &QAction::triggered, this, [this, hit] {
-        applyTableCanvasColumnMutation(
+        applyTableCanvasMutation(
             *hit,
             [hit](sleekpr::core::TableElement* table) {
                 return TemplateTableCanvasEditor::moveColumnRight(table, hit->columnIndex);
@@ -3003,7 +3079,7 @@ bool TemplateDesignerWindow::editTableCanvasColumnText(const TableCanvasHit& hit
         return false;
     }
 
-    return applyTableCanvasColumnMutation(
+    return applyTableCanvasMutation(
         hit,
         [editingHeader, nextText, hit](sleekpr::core::TableElement* currentTable) {
             return editingHeader
@@ -3013,7 +3089,7 @@ bool TemplateDesignerWindow::editTableCanvasColumnText(const TableCanvasHit& hit
         editingHeader ? QString::fromUtf8("已更新表格列标题") : QString::fromUtf8("已更新表格绑定字段"));
 }
 
-bool TemplateDesignerWindow::applyTableCanvasColumnMutation(
+bool TemplateDesignerWindow::applyTableCanvasMutation(
     const TableCanvasHit& hit,
     const std::function<bool(sleekpr::core::TableElement*)>& mutation,
     const QString& statusText)
@@ -3028,6 +3104,9 @@ bool TemplateDesignerWindow::applyTableCanvasColumnMutation(
         return false;
     }
 
+    if (m_previewLabel != nullptr && !hit.cellRectMm.isNull()) {
+        m_previewLabel->setCanvasFocusRectMm(hit.cellRectMm);
+    }
     scheduleSelectionPropertyRefresh(kPreviewRefreshDelayMs);
     schedulePreviewRefresh(kPreviewRefreshDelayMs);
     scheduleSettingsChanged(kSettingsChangedDelayMs);

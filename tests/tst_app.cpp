@@ -125,6 +125,7 @@ private slots:
     void templatePreviewLabelReportsDragDelta();
     void templatePreviewLabelRejectsDragStartOutsideEditableArea();
     void templatePreviewLabelReportsTableEditGestures();
+    void templatePreviewLabelDrawsCanvasFocusRect();
     void settingsWindowShowsPreviewOnlyWithoutElementEditor();
     void settingsWindowLoadsTemplateLibraryDocuments();
     void settingsWindowEditsAllowedOrigins();
@@ -180,7 +181,9 @@ private slots:
     void templateDesignerWindowCoalescesDragPreviewRefresh();
     void templateDesignerWindowDragsTableColumnWidthOnCanvas();
     void templateTableCanvasEditorHitsTableCells();
+    void templateTableCanvasEditorReportsCellGeometry();
     void templateTableCanvasEditorEditsColumns();
+    void templateTableCanvasEditorMergesSplitsAndStylesCell();
     void templateDesignerWindowDragsCurrentTableWhenAnotherElementOverlaps();
     void templateDesignerWindowDraggingTableClearsPreviousRenderedPosition();
     void templateDesignerWindowSkipsNoopPropertyApply();
@@ -342,6 +345,36 @@ void AppTests::templatePreviewLabelReportsTableEditGestures()
 
     QCOMPARE(doubleClickPosition, QPoint(18, 21));
     QCOMPARE(contextMenuPosition, QPoint(33, 37));
+}
+
+void AppTests::templatePreviewLabelDrawsCanvasFocusRect()
+{
+    TemplatePreviewLabel label;
+    label.resize(828, 318);
+    label.setRulerVisible(true);
+    label.setRulerPaperSizeMm(QSizeF(80.0, 30.0));
+
+    QPixmap preview(800, 300);
+    preview.fill(Qt::white);
+    label.setPixmap(preview);
+    label.setCanvasFocusRectMm(QRectF(10.0, 5.0, 20.0, 6.0));
+
+    label.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&label));
+
+    const auto rendered = label.grab().toImage().convertToFormat(QImage::Format_ARGB32);
+    int focusPixelCount = 0;
+    for (int y = 0; y < rendered.height(); ++y) {
+        for (int x = 0; x < rendered.width(); ++x) {
+            const auto color = rendered.pixelColor(x, y);
+            if (color.blue() > 150 && color.green() > 120 && color.red() < 120) {
+                ++focusPixelCount;
+            }
+        }
+    }
+
+    QCOMPARE(label.canvasFocusRectMm(), QRectF(10.0, 5.0, 20.0, 6.0));
+    QVERIFY(focusPixelCount > 0);
 }
 
 void AppTests::settingsWindowShowsPreviewOnlyWithoutElementEditor()
@@ -2589,6 +2622,60 @@ void AppTests::templateTableCanvasEditorHitsTableCells()
     QVERIFY(!miss.has_value());
 }
 
+void AppTests::templateTableCanvasEditorReportsCellGeometry()
+{
+    TemplateDocument document;
+    TemplateLayer layer;
+    layer.id = QStringLiteral("base");
+
+    TableElement table;
+    table.id = QStringLiteral("geometry-table");
+    table.layerId = layer.id;
+    table.x = 10.0;
+    table.y = 5.0;
+    table.width = 70.0;
+    table.height = 20.0;
+    table.headerRowHeightMm = 5.0;
+    table.detailRowHeightMm = 5.0;
+
+    TableColumn nameColumn;
+    nameColumn.id = QStringLiteral("name");
+    nameColumn.title = QString::fromUtf8("品名");
+    nameColumn.fieldKey = QStringLiteral("productName");
+    nameColumn.widthMm = 45.0;
+    table.columns.append(nameColumn);
+
+    TableColumn weightColumn;
+    weightColumn.id = QStringLiteral("weight");
+    weightColumn.title = QString::fromUtf8("重量");
+    weightColumn.fieldKey = QStringLiteral("weight");
+    weightColumn.widthMm = 25.0;
+    table.columns.append(weightColumn);
+
+    layer.tables.append(table);
+    document.layers.append(layer);
+
+    const auto pxAtMm = [](double xMm, double yMm) {
+        return QPoint(
+            static_cast<int>(std::round(xMm / 80.0 * 800.0)),
+            static_cast<int>(std::round(yMm / 30.0 * 300.0)));
+    };
+
+    const auto hit = TemplateTableCanvasEditor::hitTest(
+        document,
+        QSizeF(80.0, 30.0),
+        QSize(800, 300),
+        pxAtMm(60.0, 16.0));
+
+    QVERIFY(hit.has_value());
+    QCOMPARE(hit->tableId, QStringLiteral("geometry-table"));
+    QCOMPARE(hit->columnIndex, 1);
+    QCOMPARE(hit->columnId, QStringLiteral("weight"));
+    QCOMPARE(hit->rowBandId, QStringLiteral("detail"));
+    QCOMPARE(hit->rowOffset, 1);
+    QCOMPARE(hit->cellRectMm, QRectF(55.0, 15.0, 25.0, 5.0));
+}
+
 void AppTests::templateTableCanvasEditorEditsColumns()
 {
     TableElement table;
@@ -2649,6 +2736,101 @@ void AppTests::templateTableCanvasEditorEditsColumns()
     QVERIFY(TemplateTableCanvasEditor::deleteColumn(&table, 1));
     QCOMPARE(table.columns.size(), 1);
     QVERIFY(!TemplateTableCanvasEditor::deleteColumn(&table, 0));
+}
+
+void AppTests::templateTableCanvasEditorMergesSplitsAndStylesCell()
+{
+    TableElement table;
+    table.id = QStringLiteral("editable-cell-table");
+
+    TableColumn nameColumn;
+    nameColumn.id = QStringLiteral("name");
+    nameColumn.title = QString::fromUtf8("品名");
+    nameColumn.fieldKey = QStringLiteral("productName");
+    nameColumn.widthMm = 45.0;
+    table.columns.append(nameColumn);
+
+    TableColumn weightColumn;
+    weightColumn.id = QStringLiteral("weight");
+    weightColumn.title = QString::fromUtf8("重量");
+    weightColumn.fieldKey = QStringLiteral("weight");
+    weightColumn.widthMm = 25.0;
+    table.columns.append(weightColumn);
+
+    TableCanvasHit headerHit;
+    headerHit.tableId = table.id;
+    headerHit.columnIndex = 0;
+    headerHit.columnId = QStringLiteral("name");
+    headerHit.band = TableCanvasBand::Header;
+    headerHit.rowBandId = QStringLiteral("header");
+    headerHit.rowOffset = 0;
+
+    QVERIFY(TemplateTableCanvasEditor::mergeCellRight(&table, headerHit));
+    QCOMPARE(table.mergeRegions.size(), 1);
+    QCOMPARE(table.mergeRegions.first().rowBandId, QStringLiteral("header"));
+    QCOMPARE(table.mergeRegions.first().startColumnId, QStringLiteral("name"));
+    QCOMPARE(table.mergeRegions.first().colSpan, 2);
+    QVERIFY(!TemplateTableCanvasEditor::mergeCellRight(&table, headerHit));
+
+    auto coveredHeaderHit = headerHit;
+    coveredHeaderHit.columnIndex = 1;
+    coveredHeaderHit.columnId = QStringLiteral("weight");
+    QVERIFY(TemplateTableCanvasEditor::splitCell(&table, coveredHeaderHit));
+    QVERIFY(table.mergeRegions.isEmpty());
+
+    TableCanvasHit detailHit;
+    detailHit.tableId = table.id;
+    detailHit.columnIndex = 1;
+    detailHit.columnId = QStringLiteral("weight");
+    detailHit.band = TableCanvasBand::Detail;
+    detailHit.rowBandId = QStringLiteral("detail");
+    detailHit.rowOffset = 0;
+
+    QVERIFY(TemplateTableCanvasEditor::toggleCellBold(&table, detailHit));
+    QVERIFY(TemplateTableCanvasEditor::toggleCellWrap(&table, detailHit));
+    QVERIFY(TemplateTableCanvasEditor::setCellAlignment(&table, detailHit, TableCellAlignment::Center));
+
+    QCOMPARE(table.cellTemplates.size(), 1);
+    QCOMPARE(table.cellTemplates.first().rowBandId, QStringLiteral("detail"));
+    QCOMPARE(table.cellTemplates.first().columnId, QStringLiteral("weight"));
+    QVERIFY(!table.cellTemplates.first().styleId.isEmpty());
+    QCOMPARE(table.cellStyles.size(), 1);
+    QCOMPARE(table.cellStyles.first().id, table.cellTemplates.first().styleId);
+    QVERIFY(table.cellStyles.first().bold);
+    QVERIFY(table.cellStyles.first().wrapText);
+    QCOMPARE(table.cellStyles.first().alignment, TableCellAlignment::Center);
+
+    QVERIFY(TemplateTableCanvasEditor::toggleCellBold(&table, detailHit));
+    QVERIFY(!table.cellStyles.first().bold);
+
+    TableElement sharedStyleTable;
+    sharedStyleTable.id = QStringLiteral("shared-style-table");
+    sharedStyleTable.columns = table.columns;
+    TableCellStyle sharedStyle;
+    sharedStyle.id = QStringLiteral("shared-style");
+    sharedStyle.bold = false;
+    sharedStyleTable.cellStyles.append(sharedStyle);
+
+    TableCellTemplate nameCell;
+    nameCell.id = QStringLiteral("name-cell");
+    nameCell.rowBandId = QStringLiteral("detail");
+    nameCell.columnId = QStringLiteral("name");
+    nameCell.styleId = sharedStyle.id;
+    sharedStyleTable.cellTemplates.append(nameCell);
+
+    TableCellTemplate weightCell;
+    weightCell.id = QStringLiteral("weight-cell");
+    weightCell.rowBandId = QStringLiteral("detail");
+    weightCell.columnId = QStringLiteral("weight");
+    weightCell.styleId = sharedStyle.id;
+    sharedStyleTable.cellTemplates.append(weightCell);
+
+    QVERIFY(TemplateTableCanvasEditor::toggleCellBold(&sharedStyleTable, detailHit));
+    QCOMPARE(sharedStyleTable.cellTemplates.first().styleId, sharedStyle.id);
+    QVERIFY(sharedStyleTable.cellTemplates.last().styleId != sharedStyle.id);
+    QCOMPARE(sharedStyleTable.cellStyles.first().id, sharedStyle.id);
+    QVERIFY(!sharedStyleTable.cellStyles.first().bold);
+    QVERIFY(sharedStyleTable.cellStyles.last().bold);
 }
 
 void AppTests::templateDesignerWindowDragsCurrentTableWhenAnotherElementOverlaps()
