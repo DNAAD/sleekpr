@@ -7,6 +7,7 @@
 
 class QCheckBox;
 class QComboBox;
+class QLabel;
 class QLineEdit;
 class QPushButton;
 class QSpinBox;
@@ -45,9 +46,14 @@ private:
     void rebuildMergeRegionTable();
     void rebuildPaginationControls();
     void updateButtonState();
+    void updatePaginationRiskState();
     void emitEdited();
     void emitPaginationPreviewSelection(int row);
     void applyPaginationPreset(PaginationPreset preset);
+    void splitPaginationMergeRegions();
+    void expandPaginationMaxPages();
+    QString paginationRiskTextForRow(int row) const;
+    QString paginationNoteForRow(int row) const;
 
     QList<DesignerTableRowBandModel> rowBandsFromTable() const;
     QList<DesignerTableCellStyleModel> cellStylesFromTable() const;
@@ -77,6 +83,10 @@ private:
     QPushButton* m_paginationPresetContinueButton = nullptr;
     QPushButton* m_paginationPresetStrictButton = nullptr;
     QPushButton* m_paginationPresetCompactButton = nullptr;
+    QLabel* m_paginationRiskLabel = nullptr;
+    QPushButton* m_paginationQuickSplitMergeButton = nullptr;
+    QPushButton* m_paginationQuickContinueButton = nullptr;
+    QPushButton* m_paginationQuickExpandPagesButton = nullptr;
     QPushButton* m_addRowBandButton = nullptr;
     QPushButton* m_deleteRowBandButton = nullptr;
     QPushButton* m_moveRowBandUpButton = nullptr;

@@ -11,6 +11,7 @@
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QStringList>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -407,6 +408,25 @@ TableAdvancedEditorPanel::TableAdvancedEditorPanel(QWidget* parent)
     paginationPresetButtons->addWidget(m_paginationPresetStrictButton);
     paginationPresetButtons->addWidget(m_paginationPresetCompactButton);
 
+    m_paginationRiskLabel = new QLabel(QString::fromUtf8("选择分页预览行查看风险提示。"), paginationPage);
+    m_paginationRiskLabel->setObjectName(QStringLiteral("tablePaginationRiskLabel"));
+    m_paginationRiskLabel->setWordWrap(true);
+    m_paginationRiskLabel->setMinimumHeight(36);
+    m_paginationRiskLabel->setStyleSheet(QStringLiteral(
+        "QLabel#tablePaginationRiskLabel { color: #5c3b00; background: #fff7e6; border: 1px solid #f0cf8a; "
+        "border-radius: 4px; padding: 6px; }"));
+
+    m_paginationQuickSplitMergeButton = new QPushButton(QString::fromUtf8("拆分合并区域"), paginationPage);
+    m_paginationQuickSplitMergeButton->setObjectName(QStringLiteral("tablePaginationQuickSplitMergeButton"));
+    m_paginationQuickContinueButton = new QPushButton(QString::fromUtf8("启用跨页输出"), paginationPage);
+    m_paginationQuickContinueButton->setObjectName(QStringLiteral("tablePaginationQuickContinueButton"));
+    m_paginationQuickExpandPagesButton = new QPushButton(QString::fromUtf8("增加最大页数"), paginationPage);
+    m_paginationQuickExpandPagesButton->setObjectName(QStringLiteral("tablePaginationQuickExpandPagesButton"));
+    auto* paginationQuickFixButtons = new QHBoxLayout;
+    paginationQuickFixButtons->addWidget(m_paginationQuickSplitMergeButton);
+    paginationQuickFixButtons->addWidget(m_paginationQuickContinueButton);
+    paginationQuickFixButtons->addWidget(m_paginationQuickExpandPagesButton);
+
     paginationGrid->addWidget(m_paginationRepeatHeaderCheck, 0, 0);
     paginationGrid->addWidget(m_paginationKeepGroupTogetherCheck, 0, 1);
     paginationGrid->addWidget(m_paginationAllowRowSplitCheck, 0, 2);
@@ -436,6 +456,8 @@ TableAdvancedEditorPanel::TableAdvancedEditorPanel(QWidget* parent)
 
     paginationLayout->addLayout(paginationPresetButtons);
     paginationLayout->addLayout(paginationGrid);
+    paginationLayout->addWidget(m_paginationRiskLabel);
+    paginationLayout->addLayout(paginationQuickFixButtons);
     paginationLayout->addWidget(m_paginationPreviewTable);
     m_tabs->addTab(mergePage, QString::fromUtf8("合并"));
 
@@ -458,6 +480,7 @@ TableAdvancedEditorPanel::TableAdvancedEditorPanel(QWidget* parent)
     connect(m_paginationOverflowCombo, &QComboBox::currentIndexChanged, this, [this] { emitEdited(); });
     connect(m_paginationPreviewTable, &QTableWidget::currentCellChanged, this, [this](int currentRow, int, int, int) {
         emitPaginationPreviewSelection(currentRow);
+        updatePaginationRiskState();
     });
     connect(m_paginationPresetContinueButton, &QPushButton::clicked, this, [this] {
         applyPaginationPreset(PaginationPreset::ContinuePages);
@@ -467,6 +490,15 @@ TableAdvancedEditorPanel::TableAdvancedEditorPanel(QWidget* parent)
     });
     connect(m_paginationPresetCompactButton, &QPushButton::clicked, this, [this] {
         applyPaginationPreset(PaginationPreset::CompactClip);
+    });
+    connect(m_paginationQuickSplitMergeButton, &QPushButton::clicked, this, [this] {
+        splitPaginationMergeRegions();
+    });
+    connect(m_paginationQuickContinueButton, &QPushButton::clicked, this, [this] {
+        applyPaginationPreset(PaginationPreset::ContinuePages);
+    });
+    connect(m_paginationQuickExpandPagesButton, &QPushButton::clicked, this, [this] {
+        expandPaginationMaxPages();
     });
 
     connect(m_addRowBandButton, &QPushButton::clicked, this, [this] {
@@ -798,6 +830,68 @@ void TableAdvancedEditorPanel::updateButtonState()
     if (m_paginationPresetCompactButton != nullptr) {
         m_paginationPresetCompactButton->setEnabled(m_editable);
     }
+    updatePaginationRiskState();
+}
+
+QString TableAdvancedEditorPanel::paginationNoteForRow(int row) const
+{
+    if (m_model.pagePreviews.isEmpty()) {
+        return {};
+    }
+
+    const auto safeRow = row >= 0 && row < m_model.pagePreviews.size() ? row : 0;
+    return m_model.pagePreviews[safeRow].note.trimmed();
+}
+
+QString TableAdvancedEditorPanel::paginationRiskTextForRow(int row) const
+{
+    const auto note = paginationNoteForRow(row);
+    if (note.isEmpty()) {
+        return QString::fromUtf8("当前分页预览未发现需要处理的风险。");
+    }
+
+    QStringList details;
+    if (note.contains(QString::fromUtf8("跨页合并"))) {
+        details.append(QString::fromUtf8("跨页合并区域可能被分页切开，建议拆分合并区域或调整行高。"));
+    }
+    if (note.contains(QString::fromUtf8("孤行"))) {
+        details.append(QString::fromUtf8("孤行保护已触发，部分明细会移动到下一页，请确认行高和分页密度。"));
+    }
+    if (note.contains(QString::fromUtf8("分组"))) {
+        details.append(QString::fromUtf8("分组不拆分规则正在影响分页，建议检查分组字段和分组高度。"));
+    }
+    if (note.contains(QString::fromUtf8("最大页")) || note.contains(QString::fromUtf8("页数"))) {
+        details.append(QString::fromUtf8("输出页数接近上限，建议增加最大页数或压缩表格高度。"));
+    }
+    if (details.isEmpty()) {
+        details.append(QString::fromUtf8("分页说明：%1").arg(note));
+    }
+
+    return details.join(QStringLiteral(" "));
+}
+
+void TableAdvancedEditorPanel::updatePaginationRiskState()
+{
+    if (m_paginationRiskLabel == nullptr) {
+        return;
+    }
+
+    const auto row = m_paginationPreviewTable != nullptr ? m_paginationPreviewTable->currentRow() : -1;
+    const auto note = paginationNoteForRow(row);
+    m_paginationRiskLabel->setText(paginationRiskTextForRow(row));
+
+    const auto hasCrossPageMergeRisk = note.contains(QString::fromUtf8("跨页合并"));
+    if (m_paginationQuickSplitMergeButton != nullptr) {
+        m_paginationQuickSplitMergeButton->setEnabled(m_editable && hasCrossPageMergeRisk && !m_model.mergeRegions.isEmpty());
+    }
+    if (m_paginationQuickContinueButton != nullptr) {
+        const auto needsContinuePreset = m_model.tableOverflowPolicy != sleekpr::core::TableTableOverflowPolicy::Continue
+            || !m_model.repeatHeaderOnPage || m_model.allowRowSplit;
+        m_paginationQuickContinueButton->setEnabled(m_editable && needsContinuePreset);
+    }
+    if (m_paginationQuickExpandPagesButton != nullptr && m_paginationMaxPagesSpin != nullptr) {
+        m_paginationQuickExpandPagesButton->setEnabled(m_editable && m_paginationMaxPagesSpin->value() < m_paginationMaxPagesSpin->maximum());
+    }
 }
 
 void TableAdvancedEditorPanel::emitEdited()
@@ -809,6 +903,7 @@ void TableAdvancedEditorPanel::emitEdited()
     // 所有高级表格编辑都先折回同一个模型，避免多个网格之间出现旧数据分叉。
     m_model = tableProperties();
     updateButtonState();
+    updatePaginationRiskState();
     emit advancedPropertiesEdited();
 }
 
@@ -867,6 +962,44 @@ void TableAdvancedEditorPanel::applyPaginationPreset(PaginationPreset preset)
         break;
     }
 
+    emitEdited();
+}
+
+void TableAdvancedEditorPanel::splitPaginationMergeRegions()
+{
+    if (!m_editable) {
+        return;
+    }
+
+    m_model = tableProperties();
+    if (m_model.mergeRegions.isEmpty()) {
+        updatePaginationRiskState();
+        return;
+    }
+
+    // 快速修复选择“全部拆分”，让设计器里不再保留可能跨页的合并区域。
+    m_model.mergeRegions.clear();
+    rebuildMergeRegionTable();
+    updatePaginationRiskState();
+    emitEdited();
+}
+
+void TableAdvancedEditorPanel::expandPaginationMaxPages()
+{
+    if (!m_editable || m_paginationMaxPagesSpin == nullptr) {
+        return;
+    }
+
+    const auto current = std::max(1, m_paginationMaxPagesSpin->value());
+    const auto next = std::min(m_paginationMaxPagesSpin->maximum(), std::max(current + 1, current * 2));
+    if (next == current) {
+        updatePaginationRiskState();
+        return;
+    }
+
+    // 这里手动发出模型变更，避免 SpinBox 自动信号和快速修复动作重复提交历史点。
+    const QSignalBlocker maxPagesBlocker(m_paginationMaxPagesSpin);
+    m_paginationMaxPagesSpin->setValue(next);
     emitEdited();
 }
 

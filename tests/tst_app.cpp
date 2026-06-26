@@ -213,6 +213,7 @@ private slots:
     void tableAdvancedEditorPanelEditsComplexTableSections();
     void tableAdvancedEditorPanelEditsPaginationPolicyAndPreview();
     void tableAdvancedEditorPanelSelectsPaginationPreviewAndAppliesPreset();
+    void tableAdvancedEditorPanelShowsPaginationRiskAndQuickFixes();
     void templateDesignerWindowFocusesSelectedPaginationPreview();
     void templateInspectorPanelExposesTableColumnEditor();
     void templateDesignerPresenterRejectsInvalidTableColumns();
@@ -4267,6 +4268,66 @@ void AppTests::tableAdvancedEditorPanelSelectsPaginationPreviewAndAppliesPreset(
     QVERIFY(actual.repeatHeaderOnPage);
     QVERIFY(!actual.allowRowSplit);
     QCOMPARE(actual.tableOverflowPolicy, TableTableOverflowPolicy::Continue);
+}
+
+void AppTests::tableAdvancedEditorPanelShowsPaginationRiskAndQuickFixes()
+{
+    DesignerTablePagePreviewModel riskyPage;
+    riskyPage.pageNumber = 2;
+    riskyPage.firstRowIndex = 4;
+    riskyPage.rowCount = 1;
+    riskyPage.note = QString::fromUtf8("跨页合并提示，孤行保护");
+
+    DesignerTableMergeRegionModel merge;
+    merge.mergeId = QStringLiteral("merge-name");
+    merge.rowBandId = QStringLiteral("detail");
+    merge.startColumnId = QStringLiteral("name");
+    merge.rowSpan = 2;
+
+    DesignerTablePropertyModel model;
+    model.visible = true;
+    model.canEdit = true;
+    model.repeatHeaderOnPage = false;
+    model.maxPages = 2;
+    model.tableOverflowPolicy = TableTableOverflowPolicy::Error;
+    model.mergeRegions = {merge};
+    model.pagePreviews = {riskyPage};
+
+    TableAdvancedEditorPanel panel;
+    panel.setProperties(model);
+
+    auto* previewGrid = panel.findChild<QTableWidget*>(QStringLiteral("tablePaginationPreviewGrid"));
+    auto* riskLabel = panel.findChild<QLabel*>(QStringLiteral("tablePaginationRiskLabel"));
+    auto* splitMergeButton = panel.findChild<QPushButton*>(QStringLiteral("tablePaginationQuickSplitMergeButton"));
+    auto* continueButton = panel.findChild<QPushButton*>(QStringLiteral("tablePaginationQuickContinueButton"));
+    auto* expandPagesButton = panel.findChild<QPushButton*>(QStringLiteral("tablePaginationQuickExpandPagesButton"));
+    QVERIFY(previewGrid != nullptr);
+    QVERIFY(riskLabel != nullptr);
+    QVERIFY(splitMergeButton != nullptr);
+    QVERIFY(continueButton != nullptr);
+    QVERIFY(expandPagesButton != nullptr);
+
+    previewGrid->setCurrentCell(0, 0);
+    QVERIFY(riskLabel->text().contains(QString::fromUtf8("跨页合并")));
+    QVERIFY(splitMergeButton->isEnabled());
+    QVERIFY(continueButton->isEnabled());
+    QVERIFY(expandPagesButton->isEnabled());
+
+    QSignalSpy editedSpy(&panel, &TableAdvancedEditorPanel::advancedPropertiesEdited);
+    splitMergeButton->click();
+    QTRY_VERIFY(editedSpy.count() >= 1);
+    QVERIFY(panel.tableProperties().mergeRegions.isEmpty());
+    QVERIFY(!splitMergeButton->isEnabled());
+
+    continueButton->click();
+    QTRY_VERIFY(editedSpy.count() >= 2);
+    QCOMPARE(panel.tableProperties().tableOverflowPolicy, TableTableOverflowPolicy::Continue);
+    QVERIFY(panel.tableProperties().repeatHeaderOnPage);
+
+    const auto beforeMaxPages = panel.tableProperties().maxPages;
+    expandPagesButton->click();
+    QTRY_VERIFY(editedSpy.count() >= 3);
+    QVERIFY(panel.tableProperties().maxPages > beforeMaxPages);
 }
 
 void AppTests::templateDesignerWindowFocusesSelectedPaginationPreview()
