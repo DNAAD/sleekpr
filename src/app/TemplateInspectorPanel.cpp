@@ -883,6 +883,13 @@ void TemplateInspectorPanel::connectPropertySignals()
             emit tablePropertiesEdited(ControlAutoApplyDelayMs);
         }
     });
+    connect(
+        m_tableAdvancedEditor,
+        &TableAdvancedEditorPanel::paginationPreviewSelected,
+        this,
+        [this](int pageNumber, int firstRowIndex) {
+            emit tablePaginationPreviewSelected(pageNumber, firstRowIndex);
+        });
     connect(m_tableDisplayNameEdit, &QLineEdit::editingFinished, this, [this] { emit tablePropertiesEditingFinished(); });
     connect(m_tableDataPathEdit, &QLineEdit::editingFinished, this, [this] { emit tablePropertiesEditingFinished(); });
     connect(m_tableColumnsEdit, &QLineEdit::editingFinished, this, [this] { emit tablePropertiesEditingFinished(); });

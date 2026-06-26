@@ -28,8 +28,16 @@ public:
 
 signals:
     void advancedPropertiesEdited();
+    void paginationPreviewSelected(int pageNumber, int firstRowIndex);
 
 private:
+    enum class PaginationPreset
+    {
+        ContinuePages,
+        StrictCheck,
+        CompactClip,
+    };
+
     void rebuildTables();
     void rebuildRowBandTable();
     void rebuildCellStyleTable();
@@ -38,6 +46,8 @@ private:
     void rebuildPaginationControls();
     void updateButtonState();
     void emitEdited();
+    void emitPaginationPreviewSelection(int row);
+    void applyPaginationPreset(PaginationPreset preset);
 
     QList<DesignerTableRowBandModel> rowBandsFromTable() const;
     QList<DesignerTableCellStyleModel> cellStylesFromTable() const;
@@ -64,6 +74,9 @@ private:
     QSpinBox* m_paginationOrphanRowsSpin = nullptr;
     QLineEdit* m_paginationGroupKeyEdit = nullptr;
     QComboBox* m_paginationOverflowCombo = nullptr;
+    QPushButton* m_paginationPresetContinueButton = nullptr;
+    QPushButton* m_paginationPresetStrictButton = nullptr;
+    QPushButton* m_paginationPresetCompactButton = nullptr;
     QPushButton* m_addRowBandButton = nullptr;
     QPushButton* m_deleteRowBandButton = nullptr;
     QPushButton* m_moveRowBandUpButton = nullptr;

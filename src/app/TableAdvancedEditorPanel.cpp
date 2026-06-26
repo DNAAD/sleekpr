@@ -396,6 +396,16 @@ TableAdvancedEditorPanel::TableAdvancedEditorPanel(QWidget* parent)
     m_paginationGroupKeyEdit->setPlaceholderText(QStringLiteral("group"));
     m_paginationOverflowCombo = tableOverflowCombo(sleekpr::core::TableTableOverflowPolicy::Error);
     m_paginationOverflowCombo->setObjectName(QStringLiteral("tablePaginationOverflowCombo"));
+    m_paginationPresetContinueButton = new QPushButton(QString::fromUtf8("跨页输出"), paginationPage);
+    m_paginationPresetContinueButton->setObjectName(QStringLiteral("tablePaginationPresetContinueButton"));
+    m_paginationPresetStrictButton = new QPushButton(QString::fromUtf8("严格校验"), paginationPage);
+    m_paginationPresetStrictButton->setObjectName(QStringLiteral("tablePaginationPresetStrictButton"));
+    m_paginationPresetCompactButton = new QPushButton(QString::fromUtf8("紧凑裁剪"), paginationPage);
+    m_paginationPresetCompactButton->setObjectName(QStringLiteral("tablePaginationPresetCompactButton"));
+    auto* paginationPresetButtons = new QHBoxLayout;
+    paginationPresetButtons->addWidget(m_paginationPresetContinueButton);
+    paginationPresetButtons->addWidget(m_paginationPresetStrictButton);
+    paginationPresetButtons->addWidget(m_paginationPresetCompactButton);
 
     paginationGrid->addWidget(m_paginationRepeatHeaderCheck, 0, 0);
     paginationGrid->addWidget(m_paginationKeepGroupTogetherCheck, 0, 1);
@@ -420,10 +430,11 @@ TableAdvancedEditorPanel::TableAdvancedEditorPanel(QWidget* parent)
     });
     configureGrid(m_paginationPreviewTable);
     m_paginationPreviewTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_paginationPreviewTable->setSelectionMode(QAbstractItemView::NoSelection);
+    m_paginationPreviewTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_paginationPreviewTable->setMinimumHeight(120);
     m_paginationPreviewTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
 
+    paginationLayout->addLayout(paginationPresetButtons);
     paginationLayout->addLayout(paginationGrid);
     paginationLayout->addWidget(m_paginationPreviewTable);
     m_tabs->addTab(mergePage, QString::fromUtf8("合并"));
@@ -445,6 +456,18 @@ TableAdvancedEditorPanel::TableAdvancedEditorPanel(QWidget* parent)
     connect(m_paginationOrphanRowsSpin, &QSpinBox::valueChanged, this, [this] { emitEdited(); });
     connect(m_paginationGroupKeyEdit, &QLineEdit::textChanged, this, [this] { emitEdited(); });
     connect(m_paginationOverflowCombo, &QComboBox::currentIndexChanged, this, [this] { emitEdited(); });
+    connect(m_paginationPreviewTable, &QTableWidget::currentCellChanged, this, [this](int currentRow, int, int, int) {
+        emitPaginationPreviewSelection(currentRow);
+    });
+    connect(m_paginationPresetContinueButton, &QPushButton::clicked, this, [this] {
+        applyPaginationPreset(PaginationPreset::ContinuePages);
+    });
+    connect(m_paginationPresetStrictButton, &QPushButton::clicked, this, [this] {
+        applyPaginationPreset(PaginationPreset::StrictCheck);
+    });
+    connect(m_paginationPresetCompactButton, &QPushButton::clicked, this, [this] {
+        applyPaginationPreset(PaginationPreset::CompactClip);
+    });
 
     connect(m_addRowBandButton, &QPushButton::clicked, this, [this] {
         m_model = tableProperties();
@@ -766,6 +789,15 @@ void TableAdvancedEditorPanel::updateButtonState()
     m_deleteCellTemplateButton->setEnabled(m_editable && cellRow >= 0 && cellRow < m_cellTemplateTable->rowCount());
     m_mergeCellButton->setEnabled(m_editable);
     m_splitCellButton->setEnabled(m_editable && mergeRow >= 0 && mergeRow < m_mergeRegionTable->rowCount());
+    if (m_paginationPresetContinueButton != nullptr) {
+        m_paginationPresetContinueButton->setEnabled(m_editable);
+    }
+    if (m_paginationPresetStrictButton != nullptr) {
+        m_paginationPresetStrictButton->setEnabled(m_editable);
+    }
+    if (m_paginationPresetCompactButton != nullptr) {
+        m_paginationPresetCompactButton->setEnabled(m_editable);
+    }
 }
 
 void TableAdvancedEditorPanel::emitEdited()
@@ -778,6 +810,64 @@ void TableAdvancedEditorPanel::emitEdited()
     m_model = tableProperties();
     updateButtonState();
     emit advancedPropertiesEdited();
+}
+
+void TableAdvancedEditorPanel::emitPaginationPreviewSelection(int row)
+{
+    if (m_updating || row < 0 || row >= m_model.pagePreviews.size()) {
+        return;
+    }
+
+    const auto& preview = m_model.pagePreviews[row];
+    // 分页预览行只对外暴露“页码 + 源数据起始行”，窗口层再决定如何定位画布。
+    emit paginationPreviewSelected(preview.pageNumber, preview.firstRowIndex);
+}
+
+void TableAdvancedEditorPanel::applyPaginationPreset(PaginationPreset preset)
+{
+    if (!m_editable) {
+        return;
+    }
+
+    const QSignalBlocker repeatBlocker(m_paginationRepeatHeaderCheck);
+    const QSignalBlocker keepGroupBlocker(m_paginationKeepGroupTogetherCheck);
+    const QSignalBlocker allowRowSplitBlocker(m_paginationAllowRowSplitCheck);
+    const QSignalBlocker orphanRowsBlocker(m_paginationOrphanRowsSpin);
+    const QSignalBlocker overflowBlocker(m_paginationOverflowCombo);
+
+    const auto setOverflowPolicy = [this](sleekpr::core::TableTableOverflowPolicy policy) {
+        if (m_paginationOverflowCombo == nullptr) {
+            return;
+        }
+        const auto index = m_paginationOverflowCombo->findData(static_cast<int>(policy));
+        if (index >= 0) {
+            m_paginationOverflowCombo->setCurrentIndex(index);
+        }
+    };
+
+    switch (preset) {
+    case PaginationPreset::ContinuePages:
+        // “跨页输出”是标签明细表最常用配置：分页继续打印、重复表头、不拆单行。
+        m_paginationRepeatHeaderCheck->setChecked(true);
+        m_paginationAllowRowSplitCheck->setChecked(false);
+        setOverflowPolicy(sleekpr::core::TableTableOverflowPolicy::Continue);
+        break;
+    case PaginationPreset::StrictCheck:
+        // “严格校验”用于正式模板验收：遇到放不下的数据直接报错，避免静默丢内容。
+        m_paginationAllowRowSplitCheck->setChecked(false);
+        setOverflowPolicy(sleekpr::core::TableTableOverflowPolicy::Error);
+        break;
+    case PaginationPreset::CompactClip:
+        // “紧凑裁剪”用于临时布局评估：关闭重复表头和保护项，优先观察首屏密度。
+        m_paginationRepeatHeaderCheck->setChecked(false);
+        m_paginationKeepGroupTogetherCheck->setChecked(false);
+        m_paginationAllowRowSplitCheck->setChecked(true);
+        m_paginationOrphanRowsSpin->setValue(0);
+        setOverflowPolicy(sleekpr::core::TableTableOverflowPolicy::Clip);
+        break;
+    }
+
+    emitEdited();
 }
 
 QList<DesignerTableRowBandModel> TableAdvancedEditorPanel::rowBandsFromTable() const

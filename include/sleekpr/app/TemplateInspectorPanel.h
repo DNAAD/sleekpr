@@ -118,6 +118,7 @@ signals:
     void tablePropertiesApplyRequested();
     void elementPropertiesEditingFinished();
     void tablePropertiesEditingFinished();
+    void tablePaginationPreviewSelected(int pageNumber, int firstRowIndex);
 
 private:
     void connectPropertySignals();

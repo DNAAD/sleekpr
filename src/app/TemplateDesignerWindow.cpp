@@ -618,6 +618,9 @@ void TemplateDesignerWindow::buildUi()
     connect(inspectorPanel, &TemplateInspectorPanel::tablePropertiesEditingFinished, this, [this] {
         applyPendingTableAutoApply();
     });
+    connect(inspectorPanel, &TemplateInspectorPanel::tablePaginationPreviewSelected, this, [this](int pageNumber, int firstRowIndex) {
+        focusTablePaginationPreview(pageNumber, firstRowIndex);
+    });
     inspectorPanel->installPropertyEditorEventFilter(this);
     connect(qApp, &QApplication::focusChanged, this, [this](QWidget* previous, QWidget*) {
         if (m_inspectorPanel != nullptr && m_inspectorPanel->isElementPropertyEditor(previous)) {
@@ -1784,7 +1787,8 @@ void TemplateDesignerWindow::refreshPreview()
                 sleekpr::core::TableElementLayout::layout(*table, renderContext));
         }
     }
-    m_previewLabel->setTablePaginationOverlays(paginationOverlays);
+    m_tablePaginationOverlays = paginationOverlays;
+    m_previewLabel->setTablePaginationOverlays(m_tablePaginationOverlays);
     const auto previewOrigin = m_previewLabel->printableImageOriginPx();
     // 预览控件尺寸包含外置标尺边距，打印图层本身仍保持渲染图原始比例，避免标签变形。
     m_previewLabel->setFixedSize(previewPixmap.width() + previewOrigin.x(), previewPixmap.height() + previewOrigin.y());
@@ -3430,6 +3434,63 @@ bool TemplateDesignerWindow::editTableCanvasColumnText(const TableCanvasHit& hit
                 : TemplateTableCanvasEditor::setColumnFieldKey(currentTable, hit.columnIndex, nextText);
         },
         editingHeader ? QString::fromUtf8("已更新表格列标题") : QString::fromUtf8("已更新表格绑定字段"));
+}
+
+void TemplateDesignerWindow::focusTablePaginationPreview(int pageNumber, int firstRowIndex)
+{
+    if (m_previewLabel == nullptr) {
+        return;
+    }
+
+    const auto* table = currentTable();
+    if (table == nullptr) {
+        return;
+    }
+
+    std::optional<QRectF> focusRect;
+    const auto pickOverlay = [this, pageNumber](TablePaginationOverlayKind kind) -> std::optional<QRectF> {
+        for (const auto& overlay : m_tablePaginationOverlays) {
+            if (overlay.pageNumber == pageNumber && overlay.kind == kind && !overlay.rectMm.isNull()) {
+                return overlay.rectMm;
+            }
+        }
+        return std::nullopt;
+    };
+
+    // 分页线是最贴近用户点击“第 N 页”的可视目标；没有分页线时再退到告警和重复表头。
+    if (pageNumber > 1) {
+        focusRect = pickOverlay(TablePaginationOverlayKind::PageBreak);
+    }
+    if (!focusRect.has_value()) {
+        focusRect = pickOverlay(TablePaginationOverlayKind::Warning);
+    }
+    if (!focusRect.has_value()) {
+        focusRect = pickOverlay(TablePaginationOverlayKind::RepeatedHeader);
+    }
+    if (!focusRect.has_value()) {
+        for (const auto& overlay : m_tablePaginationOverlays) {
+            if (overlay.pageNumber == pageNumber && !overlay.rectMm.isNull()) {
+                focusRect = overlay.rectMm;
+                break;
+            }
+        }
+    }
+
+    if (!focusRect.has_value()) {
+        const auto markerHeight = std::min(std::max(1.6, table->detailRowHeightMm), std::max(1.6, table->height));
+        const auto rowOffset = table->headerRowHeightMm + std::max(0, firstRowIndex) * std::max(1.0, table->detailRowHeightMm);
+        const auto safeOffset = std::clamp(rowOffset, 0.0, std::max(0.0, table->height - markerHeight));
+        // 没有分页 overlay 时仍给用户一个稳定焦点，位置按源数据起始行近似映射到表格内部。
+        focusRect = QRectF(table->x, table->y + safeOffset, table->width, markerHeight);
+    }
+
+    m_previewLabel->setCanvasFocusRectMm(*focusRect);
+    m_previewLabel->setCanvasFloatingActions({});
+    if (m_statusLabel != nullptr) {
+        m_statusLabel->setText(QString::fromUtf8("已定位分页预览：第%1页，第%2行起")
+                                   .arg(std::max(1, pageNumber))
+                                   .arg(std::max(0, firstRowIndex) + 1));
+    }
 }
 
 bool TemplateDesignerWindow::applyTableCanvasMutation(

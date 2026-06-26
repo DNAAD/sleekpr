@@ -212,6 +212,8 @@ private slots:
     void tableColumnEditorPanelGuardsDestructiveColumnActions();
     void tableAdvancedEditorPanelEditsComplexTableSections();
     void tableAdvancedEditorPanelEditsPaginationPolicyAndPreview();
+    void tableAdvancedEditorPanelSelectsPaginationPreviewAndAppliesPreset();
+    void templateDesignerWindowFocusesSelectedPaginationPreview();
     void templateInspectorPanelExposesTableColumnEditor();
     void templateDesignerPresenterRejectsInvalidTableColumns();
     void paperSpecManagerWindowSavesAndDeletesSpecs();
@@ -4218,6 +4220,106 @@ void AppTests::tableAdvancedEditorPanelEditsPaginationPolicyAndPreview()
     QCOMPARE(actual.orphanDetailRows, 2);
     QCOMPARE(actual.groupKeyField, QStringLiteral("category"));
     QCOMPARE(actual.tableOverflowPolicy, TableTableOverflowPolicy::Clip);
+}
+
+void AppTests::tableAdvancedEditorPanelSelectsPaginationPreviewAndAppliesPreset()
+{
+    DesignerTablePagePreviewModel firstPage;
+    firstPage.pageNumber = 1;
+    firstPage.firstRowIndex = 0;
+    firstPage.rowCount = 2;
+    firstPage.note = QString::fromUtf8("首页");
+
+    DesignerTablePagePreviewModel secondPage;
+    secondPage.pageNumber = 2;
+    secondPage.firstRowIndex = 2;
+    secondPage.rowCount = 3;
+    secondPage.note = QString::fromUtf8("孤行保护");
+
+    DesignerTablePropertyModel model;
+    model.visible = true;
+    model.canEdit = true;
+    model.repeatHeaderOnPage = false;
+    model.allowRowSplit = true;
+    model.tableOverflowPolicy = TableTableOverflowPolicy::Error;
+    model.pagePreviews = {firstPage, secondPage};
+
+    TableAdvancedEditorPanel panel;
+    panel.setProperties(model);
+
+    auto* previewGrid = panel.findChild<QTableWidget*>(QStringLiteral("tablePaginationPreviewGrid"));
+    auto* continuePreset = panel.findChild<QPushButton*>(QStringLiteral("tablePaginationPresetContinueButton"));
+    QVERIFY(previewGrid != nullptr);
+    QVERIFY(continuePreset != nullptr);
+    QCOMPARE(previewGrid->selectionMode(), QAbstractItemView::SingleSelection);
+
+    QSignalSpy selectedSpy(&panel, &TableAdvancedEditorPanel::paginationPreviewSelected);
+    previewGrid->setCurrentCell(1, 0);
+    QTRY_COMPARE(selectedSpy.count(), 1);
+    QCOMPARE(selectedSpy.first().at(0).toInt(), 2);
+    QCOMPARE(selectedSpy.first().at(1).toInt(), 2);
+
+    QSignalSpy editedSpy(&panel, &TableAdvancedEditorPanel::advancedPropertiesEdited);
+    continuePreset->click();
+    QTRY_VERIFY(editedSpy.count() >= 1);
+
+    const auto actual = panel.tableProperties();
+    QVERIFY(actual.repeatHeaderOnPage);
+    QVERIFY(!actual.allowRowSplit);
+    QCOMPARE(actual.tableOverflowPolicy, TableTableOverflowPolicy::Continue);
+}
+
+void AppTests::templateDesignerWindowFocusesSelectedPaginationPreview()
+{
+    auto document = TemplateDesignerFactory::createBlankDocument(
+        QStringLiteral("pagination-focus-template"),
+        QString::fromUtf8("分页定位模板"),
+        QStringLiteral("default"),
+        QStringLiteral("label-80x30"),
+        {});
+    auto table = TemplateDesignerFactory::createTable();
+    table.id = QStringLiteral("paged-table");
+    table.layerId = document.layers.first().id;
+    table.x = 5.0;
+    table.y = 5.0;
+    table.width = 70.0;
+    table.height = 15.0;
+    table.headerRowHeightMm = 5.0;
+    table.detailRowHeightMm = 5.0;
+    table.pagination.repeatHeaderOnPage = true;
+    table.pagination.overflowPolicy = TableTableOverflowPolicy::Continue;
+    document.layers.first().tables.append(table);
+
+    QJsonArray rows;
+    for (int index = 0; index < 5; ++index) {
+        rows.append(QJsonObject{
+            {QStringLiteral("productName"), QString::fromUtf8("商品%1").arg(index + 1)},
+            {QStringLiteral("weight"), QStringLiteral("%1g").arg(index + 1)},
+        });
+    }
+    document.sampleData.insert(QStringLiteral("items"), rows);
+
+    PrintClientSettings settings;
+    settings.templateDocuments.insert(QStringLiteral("default"), document);
+    TemplateDesignerWindow window(settings, nullptr);
+
+    auto* previewGrid = window.findChild<QTableWidget*>(QStringLiteral("tablePaginationPreviewGrid"));
+    TemplatePreviewLabel* previewLabel = nullptr;
+    for (auto* label : window.findChildren<QLabel*>(QStringLiteral("designerPreviewLabel"))) {
+        previewLabel = dynamic_cast<TemplatePreviewLabel*>(label);
+        if (previewLabel != nullptr) {
+            break;
+        }
+    }
+    QVERIFY(previewGrid != nullptr);
+    QVERIFY(previewLabel != nullptr);
+    QTRY_VERIFY(previewGrid->rowCount() >= 2);
+
+    previewGrid->setCurrentCell(1, 0);
+    QTRY_VERIFY(!previewLabel->canvasFocusRectMm().isNull());
+    QCOMPARE(previewLabel->canvasFocusRectMm().x(), table.x);
+    QCOMPARE(previewLabel->canvasFocusRectMm().width(), table.width);
+    QVERIFY(previewLabel->canvasFocusRectMm().y() >= table.y);
 }
 
 void AppTests::templateInspectorPanelExposesTableColumnEditor()

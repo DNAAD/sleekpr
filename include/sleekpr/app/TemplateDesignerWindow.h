@@ -3,6 +3,7 @@
 #include "sleekpr/app/TemplateDesignerPresenter.h"
 #include "sleekpr/app/TemplateDesignerState.h"
 #include "sleekpr/app/TemplateTableCanvasEditor.h"
+#include "sleekpr/app/TemplateTablePaginationOverlay.h"
 #include "sleekpr/core/settings/PrintClientSettings.h"
 #include "sleekpr/core/native/NativeDrawCommand.h"
 #include "sleekpr/core/native/NativePrintDrawingPlan.h"
@@ -183,6 +184,7 @@ private:
     void editTableCanvasCellAt(QPoint position);
     void showTableCanvasContextMenu(QPoint position, QPoint globalPosition);
     bool editTableCanvasColumnText(const TableCanvasHit& hit);
+    void focusTablePaginationPreview(int pageNumber, int firstRowIndex);
     bool applyTableCanvasMutation(
         const TableCanvasHit& hit,
         const std::function<bool(sleekpr::core::TableElement*)>& mutation,
@@ -229,6 +231,7 @@ private:
     QDoubleSpinBox* m_deviceCalibrationExpectedHeightSpin = nullptr;
     QDoubleSpinBox* m_deviceCalibrationActualHeightSpin = nullptr;
     QList<sleekpr::core::NativeDrawCommand> m_previewCommands;
+    QList<TablePaginationOverlay> m_tablePaginationOverlays;
     TemplateDesignerPresenter m_presenter;
     TemplateDesignerState m_state;
     QTimer* m_elementAutoApplyTimer = nullptr;
