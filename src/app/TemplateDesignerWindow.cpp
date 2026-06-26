@@ -76,6 +76,18 @@ constexpr int kSettingsChangedDelayMs = 240;
 constexpr double kDesignerInteractivePreviewDpi = 152.4;
 constexpr double kColumnResizeHandleTolerancePx = 6.0;
 constexpr double kColumnResizeMinimumWidthMm = 2.0;
+constexpr auto kTableCanvasActionMergeSelection = "tableMergeSelection";
+constexpr auto kTableCanvasActionSplitSelection = "tableSplitSelection";
+constexpr auto kTableCanvasActionBold = "tableCellBold";
+constexpr auto kTableCanvasActionWrap = "tableCellWrap";
+constexpr auto kTableCanvasActionAlignLeft = "tableCellAlignLeft";
+constexpr auto kTableCanvasActionAlignCenter = "tableCellAlignCenter";
+constexpr auto kTableCanvasActionAlignRight = "tableCellAlignRight";
+
+QString tableCanvasActionId(const char* actionId)
+{
+    return QString::fromLatin1(actionId);
+}
 
 struct JsonTextPosition
 {
@@ -651,6 +663,7 @@ void TemplateDesignerWindow::buildUi()
     connect(m_elementList, &QListWidget::currentRowChanged, this, [this] {
         if (m_previewLabel != nullptr) {
             m_previewLabel->setCanvasFocusRectMm(QRectF());
+            m_previewLabel->setCanvasFloatingActions({});
         }
         m_tableCanvasSelection.reset();
         m_tableCanvasSelectionAnchor.reset();
@@ -685,6 +698,7 @@ void TemplateDesignerWindow::buildUi()
             if (m_previewLabel != nullptr && m_tableCanvasSelection.has_value()) {
                 m_previewLabel->setCanvasFocusRectMm(m_tableCanvasSelection->rectMm);
             }
+            refreshTableCanvasFloatingActions();
             return true;
         }
 
@@ -722,6 +736,9 @@ void TemplateDesignerWindow::buildUi()
     });
     m_previewLabel->setContextMenuCallback([this](QPoint position, QPoint globalPosition) {
         showTableCanvasContextMenu(position, globalPosition);
+    });
+    m_previewLabel->setCanvasFloatingActionCallback([this](const QString& actionId) {
+        handleTableCanvasFloatingAction(actionId);
     });
     m_previewLabel->setKeyboardNudgeCallback([this](QPoint direction, Qt::KeyboardModifiers modifiers) {
         nudgeSelectedElement(direction, modifiers);
@@ -2910,8 +2927,93 @@ void TemplateDesignerWindow::updateTableCanvasSelectionAt(QPoint position)
     if (m_previewLabel != nullptr) {
         m_previewLabel->setCanvasFocusRectMm(selection->rectMm);
     }
+    refreshTableCanvasFloatingActions();
     if (m_statusLabel != nullptr && !selection->isSingleCell()) {
         m_statusLabel->setText(QString::fromUtf8("已选择表格单元格范围"));
+    }
+}
+
+void TemplateDesignerWindow::refreshTableCanvasFloatingActions()
+{
+    if (m_previewLabel == nullptr) {
+        return;
+    }
+    if (!currentSelectionIsTable() || !m_tableCanvasSelection.has_value()) {
+        m_previewLabel->setCanvasFloatingActions({});
+        return;
+    }
+
+    QList<CanvasFloatingAction> actions;
+    if (!m_tableCanvasSelection->isSingleCell()) {
+        actions.append(CanvasFloatingAction{tableCanvasActionId(kTableCanvasActionMergeSelection), QString::fromUtf8("合并")});
+    }
+    actions.append(CanvasFloatingAction{tableCanvasActionId(kTableCanvasActionSplitSelection), QString::fromUtf8("拆分")});
+    actions.append(CanvasFloatingAction{tableCanvasActionId(kTableCanvasActionBold), QStringLiteral("B")});
+    actions.append(CanvasFloatingAction{tableCanvasActionId(kTableCanvasActionWrap), QString::fromUtf8("换行")});
+    actions.append(CanvasFloatingAction{tableCanvasActionId(kTableCanvasActionAlignLeft), QString::fromUtf8("左")});
+    actions.append(CanvasFloatingAction{tableCanvasActionId(kTableCanvasActionAlignCenter), QString::fromUtf8("中")});
+    actions.append(CanvasFloatingAction{tableCanvasActionId(kTableCanvasActionAlignRight), QString::fromUtf8("右")});
+    m_previewLabel->setCanvasFloatingActions(actions);
+}
+
+void TemplateDesignerWindow::handleTableCanvasFloatingAction(const QString& actionId)
+{
+    if (!m_tableCanvasSelection.has_value()) {
+        return;
+    }
+
+    const auto selection = *m_tableCanvasSelection;
+    if (actionId == tableCanvasActionId(kTableCanvasActionMergeSelection)) {
+        applyTableCanvasSelectionMutation(
+            selection,
+            [selection](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::mergeSelection(table, selection);
+            },
+            QString::fromUtf8("已合并选区"));
+        return;
+    }
+    if (actionId == tableCanvasActionId(kTableCanvasActionSplitSelection)) {
+        applyTableCanvasSelectionMutation(
+            selection,
+            [selection](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::splitSelection(table, selection);
+            },
+            QString::fromUtf8("已拆分选区"));
+        return;
+    }
+    if (actionId == tableCanvasActionId(kTableCanvasActionBold)) {
+        applyTableCanvasSelectionMutation(
+            selection,
+            [selection](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::toggleSelectionBold(table, selection);
+            },
+            QString::fromUtf8("已切换选区加粗"));
+        return;
+    }
+    if (actionId == tableCanvasActionId(kTableCanvasActionWrap)) {
+        applyTableCanvasSelectionMutation(
+            selection,
+            [selection](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::toggleSelectionWrap(table, selection);
+            },
+            QString::fromUtf8("已切换选区换行"));
+        return;
+    }
+
+    if (actionId == tableCanvasActionId(kTableCanvasActionAlignLeft)
+        || actionId == tableCanvasActionId(kTableCanvasActionAlignCenter)
+        || actionId == tableCanvasActionId(kTableCanvasActionAlignRight)) {
+        const auto alignment = actionId == tableCanvasActionId(kTableCanvasActionAlignCenter)
+            ? sleekpr::core::TableCellAlignment::Center
+            : (actionId == tableCanvasActionId(kTableCanvasActionAlignRight)
+                    ? sleekpr::core::TableCellAlignment::Right
+                    : sleekpr::core::TableCellAlignment::Left);
+        applyTableCanvasSelectionMutation(
+            selection,
+            [selection, alignment](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::setSelectionAlignment(table, selection, alignment);
+            },
+            QString::fromUtf8("已设置选区对齐"));
     }
 }
 
@@ -2963,6 +3065,7 @@ void TemplateDesignerWindow::editTableCanvasCellAt(QPoint position)
     if (m_previewLabel != nullptr) {
         m_previewLabel->setCanvasFocusRectMm(hit->cellRectMm);
     }
+    refreshTableCanvasFloatingActions();
     editTableCanvasColumnText(*hit);
 }
 
@@ -2984,6 +3087,7 @@ void TemplateDesignerWindow::showTableCanvasContextMenu(QPoint position, QPoint 
     if (m_previewLabel != nullptr) {
         m_previewLabel->setCanvasFocusRectMm(activeSelection.has_value() ? activeSelection->rectMm : hit->cellRectMm);
     }
+    refreshTableCanvasFloatingActions();
 
     QMenu menu(this);
     auto* editTitleAction = menu.addAction(QString::fromUtf8("编辑列标题"));
@@ -3207,6 +3311,7 @@ bool TemplateDesignerWindow::applyTableCanvasMutation(
     if (m_previewLabel != nullptr && !hit.cellRectMm.isNull()) {
         m_previewLabel->setCanvasFocusRectMm(hit.cellRectMm);
     }
+    refreshTableCanvasFloatingActions();
     scheduleSelectionPropertyRefresh(kPreviewRefreshDelayMs);
     schedulePreviewRefresh(kPreviewRefreshDelayMs);
     scheduleSettingsChanged(kSettingsChangedDelayMs);
@@ -3235,6 +3340,7 @@ bool TemplateDesignerWindow::applyTableCanvasSelectionMutation(
     if (m_previewLabel != nullptr && !selection.rectMm.isNull()) {
         m_previewLabel->setCanvasFocusRectMm(selection.rectMm);
     }
+    refreshTableCanvasFloatingActions();
     scheduleSelectionPropertyRefresh(kPreviewRefreshDelayMs);
     schedulePreviewRefresh(kPreviewRefreshDelayMs);
     scheduleSettingsChanged(kSettingsChangedDelayMs);

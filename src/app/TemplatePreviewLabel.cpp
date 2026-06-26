@@ -4,6 +4,7 @@
 #include <QColor>
 #include <QContextMenuEvent>
 #include <QFont>
+#include <QFontMetrics>
 #include <QHash>
 #include <QMouseEvent>
 #include <QPainter>
@@ -69,6 +70,7 @@ TemplatePreviewLabel::TemplatePreviewLabel(QWidget* parent)
     : QLabel(parent)
 {
     setFocusPolicy(Qt::StrongFocus);
+    setMouseTracking(true);
 }
 
 void TemplatePreviewLabel::setDraggingEnabled(bool enabled)
@@ -100,6 +102,11 @@ void TemplatePreviewLabel::setContextMenuCallback(ContextMenuCallback callback)
 void TemplatePreviewLabel::setKeyboardNudgeCallback(KeyboardNudgeCallback callback)
 {
     m_keyboardNudgeCallback = std::move(callback);
+}
+
+void TemplatePreviewLabel::setCanvasFloatingActionCallback(CanvasFloatingActionCallback callback)
+{
+    m_canvasFloatingActionCallback = std::move(callback);
 }
 
 void TemplatePreviewLabel::setRulerVisible(bool visible)
@@ -194,6 +201,51 @@ QRectF TemplatePreviewLabel::canvasFocusRectMm() const
     return m_canvasFocusRectMm;
 }
 
+void TemplatePreviewLabel::setCanvasFloatingActions(QList<CanvasFloatingAction> actions)
+{
+    if (m_canvasFloatingActions.size() == actions.size()) {
+        auto sameActions = true;
+        for (auto index = 0; index < actions.size(); ++index) {
+            if (m_canvasFloatingActions[index].id != actions[index].id
+                || m_canvasFloatingActions[index].text != actions[index].text
+                || m_canvasFloatingActions[index].enabled != actions[index].enabled) {
+                sameActions = false;
+                break;
+            }
+        }
+        if (sameActions) {
+            return;
+        }
+    }
+
+    m_canvasFloatingActions = std::move(actions);
+    if (!m_hoveredCanvasFloatingActionId.isEmpty()
+        && std::none_of(
+            m_canvasFloatingActions.cbegin(),
+            m_canvasFloatingActions.cend(),
+            [this](const CanvasFloatingAction& action) {
+                return action.id == m_hoveredCanvasFloatingActionId;
+            })) {
+        m_hoveredCanvasFloatingActionId.clear();
+    }
+    update();
+}
+
+int TemplatePreviewLabel::canvasFloatingActionCount() const
+{
+    return m_canvasFloatingActions.size();
+}
+
+QRect TemplatePreviewLabel::canvasFloatingActionRect(const QString& actionId) const
+{
+    for (const auto& layout : canvasFloatingActionLayouts()) {
+        if (layout.first.id == actionId) {
+            return layout.second;
+        }
+    }
+    return QRect();
+}
+
 QPoint TemplatePreviewLabel::printableImageOriginPx() const
 {
     return m_rulerVisible ? QPoint(kVerticalRulerWidthPx, kHorizontalRulerHeightPx) : QPoint(0, 0);
@@ -272,6 +324,7 @@ void TemplatePreviewLabel::paintEvent(QPaintEvent* event)
         drawDesignAids(painter, origin, imageSize);
     }
     drawCanvasFocusRect(painter, origin, imageSize);
+    drawCanvasFloatingActions(painter, origin, imageSize);
 }
 
 QRectF TemplatePreviewLabel::commandRectPx(
@@ -414,6 +467,113 @@ void TemplatePreviewLabel::drawCanvasFocusRect(QPainter& painter, QPoint imageOr
     painter.restore();
 }
 
+QRectF TemplatePreviewLabel::canvasFocusRectPx(QPoint imageOrigin, QSize imageSize) const
+{
+    if (m_canvasFocusRectMm.isNull() || m_rulerPaperSizeMm.isEmpty() || imageSize.isEmpty()) {
+        return QRectF();
+    }
+
+    const auto scaleX = imageSize.width() / m_rulerPaperSizeMm.width();
+    const auto scaleY = imageSize.height() / m_rulerPaperSizeMm.height();
+    return QRectF(
+        imageOrigin.x() + m_canvasFocusRectMm.x() * scaleX,
+        imageOrigin.y() + m_canvasFocusRectMm.y() * scaleY,
+        m_canvasFocusRectMm.width() * scaleX,
+        m_canvasFocusRectMm.height() * scaleY)
+        .normalized();
+}
+
+QList<QPair<CanvasFloatingAction, QRect>> TemplatePreviewLabel::canvasFloatingActionLayouts() const
+{
+    QList<QPair<CanvasFloatingAction, QRect>> layouts;
+    if (m_canvasFloatingActions.isEmpty() || m_canvasFocusRectMm.isNull() || m_rulerPaperSizeMm.isEmpty()) {
+        return layouts;
+    }
+
+    const auto imageOrigin = printableImageOriginPx();
+    const auto imageSize = printableImageSizePx();
+    const auto focusRect = canvasFocusRectPx(imageOrigin, imageSize);
+    if (focusRect.isNull() || imageSize.isEmpty()) {
+        return layouts;
+    }
+
+    const QFont actionFont(QStringLiteral("Arial"), 8, QFont::DemiBold);
+    const QFontMetrics metrics(actionFont);
+    constexpr int actionHeight = 24;
+    constexpr int horizontalPadding = 10;
+    constexpr int actionSpacing = 4;
+    QList<int> actionWidths;
+    auto totalWidth = 0;
+    const auto actionCount = static_cast<int>(m_canvasFloatingActions.size());
+    for (const auto& action : m_canvasFloatingActions) {
+        const auto width = std::max(28, metrics.horizontalAdvance(action.text) + horizontalPadding * 2);
+        actionWidths.append(width);
+        totalWidth += width;
+    }
+    totalWidth += std::max(0, actionCount - 1) * actionSpacing;
+
+    const auto minX = imageOrigin.x() + 4;
+    const auto maxX = imageOrigin.x() + imageSize.width() - totalWidth - 4;
+    auto left = static_cast<int>(std::round(focusRect.center().x() - totalWidth / 2.0));
+    left = maxX >= minX ? std::clamp(left, minX, maxX) : minX;
+
+    auto top = static_cast<int>(std::round(focusRect.top() - actionHeight - 6));
+    if (top < 2) {
+        top = static_cast<int>(std::round(focusRect.bottom() + 6));
+    }
+    if (top + actionHeight > height() - 2) {
+        top = std::max(2, height() - actionHeight - 2);
+    }
+
+    auto cursorX = left;
+    for (auto index = 0; index < actionCount; ++index) {
+        const QRect rect(cursorX, top, actionWidths[index], actionHeight);
+        layouts.append(qMakePair(m_canvasFloatingActions[index], rect));
+        cursorX += actionWidths[index] + actionSpacing;
+    }
+    return layouts;
+}
+
+QString TemplatePreviewLabel::canvasFloatingActionAt(QPoint position) const
+{
+    for (const auto& layout : canvasFloatingActionLayouts()) {
+        if (layout.first.enabled && layout.second.contains(position)) {
+            return layout.first.id;
+        }
+    }
+    return QString();
+}
+
+void TemplatePreviewLabel::drawCanvasFloatingActions(QPainter& painter, QPoint imageOrigin, QSize imageSize) const
+{
+    Q_UNUSED(imageOrigin);
+    Q_UNUSED(imageSize);
+    const auto layouts = canvasFloatingActionLayouts();
+    if (layouts.isEmpty()) {
+        return;
+    }
+
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setFont(QFont(QStringLiteral("Arial"), 8, QFont::DemiBold));
+    for (const auto& layout : layouts) {
+        const auto& action = layout.first;
+        const auto rect = layout.second;
+        const auto hovered = action.id == m_hoveredCanvasFloatingActionId;
+        const QColor background = !action.enabled
+            ? QColor(105, 112, 122, 210)
+            : (hovered ? QColor(0, 120, 215, 245) : QColor(33, 43, 54, 238));
+        const QColor border = hovered ? QColor(140, 205, 255, 255) : QColor(255, 255, 255, 180);
+        painter.setPen(border);
+        painter.setBrush(background);
+        // 操作条是设计器辅助控件，不参与原生标签预览图和真实打印。
+        painter.drawRoundedRect(rect.adjusted(0, 0, -1, -1), 4, 4);
+        painter.setPen(action.enabled ? QColor(255, 255, 255) : QColor(220, 224, 230));
+        painter.drawText(rect, Qt::AlignCenter, action.text);
+    }
+    painter.restore();
+}
+
 void TemplatePreviewLabel::keyPressEvent(QKeyEvent* event)
 {
     if (!m_draggingEnabled || !m_keyboardNudgeCallback) {
@@ -448,6 +608,14 @@ void TemplatePreviewLabel::keyPressEvent(QKeyEvent* event)
 void TemplatePreviewLabel::mousePressEvent(QMouseEvent* event)
 {
     if (m_draggingEnabled && event->button() == Qt::LeftButton) {
+        const auto actionId = canvasFloatingActionAt(event->pos());
+        if (!actionId.isEmpty() && m_canvasFloatingActionCallback) {
+            setFocus(Qt::MouseFocusReason);
+            m_canvasFloatingActionCallback(actionId);
+            event->accept();
+            return;
+        }
+
         if (m_dragStartCallback && !m_dragStartCallback(event->pos())) {
             QLabel::mousePressEvent(event);
             return;
@@ -497,6 +665,18 @@ void TemplatePreviewLabel::mouseMoveEvent(QMouseEvent* event)
         event->accept();
         return;
     }
+
+    const auto hoveredActionId = canvasFloatingActionAt(event->pos());
+    if (m_hoveredCanvasFloatingActionId != hoveredActionId) {
+        m_hoveredCanvasFloatingActionId = hoveredActionId;
+        setCursor(!hoveredActionId.isEmpty() ? Qt::PointingHandCursor : (m_draggingEnabled ? Qt::OpenHandCursor : Qt::ArrowCursor));
+        update();
+    }
+    if (!hoveredActionId.isEmpty()) {
+        event->accept();
+        return;
+    }
+
     QLabel::mouseMoveEvent(event);
 }
 

@@ -176,6 +176,8 @@ private:
     void moveSelectedElementByPixels(QPoint delta);
     void resizeTableColumnByPixels(QPoint delta);
     void updateTableCanvasSelectionAt(QPoint position);
+    void refreshTableCanvasFloatingActions();
+    void handleTableCanvasFloatingAction(const QString& actionId);
     std::optional<TableCanvasHit> tableCanvasHitAt(QPoint position) const;
     std::optional<TableCanvasSelection> tableCanvasSelectionFromHits(const TableCanvasHit& anchor, const TableCanvasHit& target) const;
     void editTableCanvasCellAt(QPoint position);

@@ -126,6 +126,7 @@ private slots:
     void templatePreviewLabelRejectsDragStartOutsideEditableArea();
     void templatePreviewLabelReportsTableEditGestures();
     void templatePreviewLabelDrawsCanvasFocusRect();
+    void templatePreviewLabelShowsAndClicksCanvasFloatingActions();
     void settingsWindowShowsPreviewOnlyWithoutElementEditor();
     void settingsWindowLoadsTemplateLibraryDocuments();
     void settingsWindowEditsAllowedOrigins();
@@ -181,11 +182,13 @@ private slots:
     void templateDesignerWindowCoalescesDragPreviewRefresh();
     void templateDesignerWindowDragsTableColumnWidthOnCanvas();
     void templateDesignerWindowShiftDragsTableCellRangeOnCanvas();
+    void templateDesignerWindowCanvasToolbarTogglesSelectedCellBold();
     void templateTableCanvasEditorHitsTableCells();
     void templateTableCanvasEditorReportsCellGeometry();
     void templateTableCanvasEditorEditsColumns();
     void templateTableCanvasEditorMergesSplitsAndStylesCell();
     void templateTableCanvasEditorMergesAndSplitsCellRanges();
+    void templateTableCanvasEditorAppliesStylesToCellRanges();
     void templateDesignerWindowDragsCurrentTableWhenAnotherElementOverlaps();
     void templateDesignerWindowDraggingTableClearsPreviousRenderedPosition();
     void templateDesignerWindowSkipsNoopPropertyApply();
@@ -377,6 +380,51 @@ void AppTests::templatePreviewLabelDrawsCanvasFocusRect()
 
     QCOMPARE(label.canvasFocusRectMm(), QRectF(10.0, 5.0, 20.0, 6.0));
     QVERIFY(focusPixelCount > 0);
+}
+
+void AppTests::templatePreviewLabelShowsAndClicksCanvasFloatingActions()
+{
+    TemplatePreviewLabel label;
+    label.resize(828, 318);
+    label.setRulerVisible(true);
+    label.setRulerPaperSizeMm(QSizeF(80.0, 30.0));
+    label.setDraggingEnabled(true);
+
+    QPixmap preview(800, 300);
+    preview.fill(Qt::white);
+    label.setPixmap(preview);
+    label.setCanvasFocusRectMm(QRectF(10.0, 5.0, 20.0, 6.0));
+    label.setCanvasFloatingActions({
+        CanvasFloatingAction{QStringLiteral("merge"), QString::fromUtf8("合并")},
+        CanvasFloatingAction{QStringLiteral("bold"), QStringLiteral("B")},
+    });
+
+    QString clickedActionId;
+    label.setCanvasFloatingActionCallback([&clickedActionId](const QString& actionId) {
+        clickedActionId = actionId;
+    });
+
+    label.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&label));
+
+    const auto boldRect = label.canvasFloatingActionRect(QStringLiteral("bold"));
+    QVERIFY(!boldRect.isNull());
+    QCOMPARE(label.canvasFloatingActionCount(), 2);
+
+    const auto rendered = label.grab().toImage().convertToFormat(QImage::Format_ARGB32);
+    int toolbarPixelCount = 0;
+    for (int y = 0; y < rendered.height(); ++y) {
+        for (int x = 0; x < rendered.width(); ++x) {
+            const auto color = rendered.pixelColor(x, y);
+            if (color.red() < 80 && color.green() < 120 && color.blue() < 180) {
+                ++toolbarPixelCount;
+            }
+        }
+    }
+    QVERIFY(toolbarPixelCount > 0);
+
+    QTest::mouseClick(&label, Qt::LeftButton, Qt::NoModifier, boldRect.center());
+    QCOMPARE(clickedActionId, QStringLiteral("bold"));
 }
 
 void AppTests::settingsWindowShowsPreviewOnlyWithoutElementEditor()
@@ -2611,6 +2659,62 @@ void AppTests::templateDesignerWindowShiftDragsTableCellRangeOnCanvas()
     QVERIFY(selectedRect.height() > table.detailRowHeightMm + 0.5);
 }
 
+void AppTests::templateDesignerWindowCanvasToolbarTogglesSelectedCellBold()
+{
+    PrintClientSettings changedSettings;
+    TemplateDesignerWindow window(PrintClientSettings{}, [&changedSettings](const PrintClientSettings& nextSettings) {
+        changedSettings = nextSettings;
+    });
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* addTableButton = window.findChild<QPushButton*>(QStringLiteral("designerAddTableButton"));
+    TemplatePreviewLabel* previewLabel = nullptr;
+    for (auto* label : window.findChildren<QLabel*>(QStringLiteral("designerPreviewLabel"))) {
+        previewLabel = dynamic_cast<TemplatePreviewLabel*>(label);
+        if (previewLabel != nullptr) {
+            break;
+        }
+    }
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(addTableButton != nullptr);
+    QVERIFY(previewLabel != nullptr);
+
+    addLayerButton->click();
+    addTableButton->click();
+    QVERIFY(!previewLabel->pixmap().isNull());
+
+    const auto tableAt = [](const PrintClientSettings& settings) -> TableElement {
+        const auto document = settings.templateDocuments.value(QStringLiteral("default"));
+        return document.layers.last().tables.first();
+    };
+    const auto hasBoldCell = [&tableAt](const PrintClientSettings& settings) {
+        const auto table = tableAt(settings);
+        return std::any_of(table.cellStyles.cbegin(), table.cellStyles.cend(), [](const TableCellStyle& style) {
+            return style.bold;
+        });
+    };
+    const auto table = tableAt(changedSettings);
+
+    const auto pointAtMm = [previewLabel](double xMm, double yMm) {
+        const auto origin = previewLabel->printableImageOriginPx();
+        const auto imageSize = previewLabel->printableImageSizePx();
+        return QPoint(
+            origin.x() + static_cast<int>(std::round(xMm / 80.0 * imageSize.width())),
+            origin.y() + static_cast<int>(std::round(yMm / 30.0 * imageSize.height())));
+    };
+
+    const auto cellPoint = pointAtMm(table.x + 2.0, table.y + table.headerRowHeightMm + 1.0);
+    QTest::mousePress(previewLabel, Qt::LeftButton, Qt::ShiftModifier, cellPoint);
+    QTest::mouseRelease(previewLabel, Qt::LeftButton, Qt::ShiftModifier, cellPoint);
+
+    const auto boldRect = previewLabel->canvasFloatingActionRect(QStringLiteral("tableCellBold"));
+    QVERIFY(!boldRect.isNull());
+    QVERIFY(!hasBoldCell(changedSettings));
+
+    QTest::mouseClick(previewLabel, Qt::LeftButton, Qt::NoModifier, boldRect.center());
+    QTRY_VERIFY_WITH_TIMEOUT(hasBoldCell(changedSettings), 700);
+}
+
 void AppTests::templateTableCanvasEditorHitsTableCells()
 {
     TemplateDocument document;
@@ -2959,6 +3063,56 @@ void AppTests::templateTableCanvasEditorMergesAndSplitsCellRanges()
     QVERIFY(coveredSelection.has_value());
     QVERIFY(TemplateTableCanvasEditor::splitSelection(&table, *coveredSelection));
     QVERIFY(table.mergeRegions.isEmpty());
+}
+
+void AppTests::templateTableCanvasEditorAppliesStylesToCellRanges()
+{
+    TableElement table;
+    table.id = QStringLiteral("range-style-table");
+    table.x = 0.0;
+    table.y = 0.0;
+    table.width = 40.0;
+    table.height = 15.0;
+    table.headerRowHeightMm = 5.0;
+    table.detailRowHeightMm = 5.0;
+
+    TableColumn nameColumn;
+    nameColumn.id = QStringLiteral("name");
+    nameColumn.widthMm = 20.0;
+    table.columns.append(nameColumn);
+
+    TableColumn weightColumn;
+    weightColumn.id = QStringLiteral("weight");
+    weightColumn.widthMm = 20.0;
+    table.columns.append(weightColumn);
+
+    TableCanvasHit anchor;
+    anchor.tableId = table.id;
+    anchor.columnIndex = 0;
+    anchor.columnId = QStringLiteral("name");
+    anchor.band = TableCanvasBand::Detail;
+    anchor.rowBandId = QStringLiteral("detail");
+    anchor.rowOffset = 0;
+    anchor.cellRectMm = QRectF(0.0, 5.0, 20.0, 5.0);
+
+    auto target = anchor;
+    target.columnIndex = 1;
+    target.columnId = QStringLiteral("weight");
+    target.cellRectMm = QRectF(20.0, 5.0, 20.0, 5.0);
+
+    const auto selection = TemplateTableCanvasEditor::selectionFromHits(table, anchor, target);
+    QVERIFY(selection.has_value());
+    QVERIFY(TemplateTableCanvasEditor::toggleSelectionBold(&table, *selection));
+    QVERIFY(TemplateTableCanvasEditor::toggleSelectionWrap(&table, *selection));
+    QVERIFY(TemplateTableCanvasEditor::setSelectionAlignment(&table, *selection, TableCellAlignment::Center));
+
+    QCOMPARE(table.cellTemplates.size(), 2);
+    QCOMPARE(table.cellStyles.size(), 2);
+    for (const auto& style : table.cellStyles) {
+        QVERIFY(style.bold);
+        QVERIFY(style.wrapText);
+        QCOMPARE(style.alignment, TableCellAlignment::Center);
+    }
 }
 
 void AppTests::templateDesignerWindowDragsCurrentTableWhenAnotherElementOverlaps()

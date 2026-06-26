@@ -4,7 +4,9 @@
 
 #include <QLabel>
 #include <QList>
+#include <QPair>
 #include <QPoint>
+#include <QRect>
 #include <QRectF>
 #include <QSize>
 #include <QSizeF>
@@ -18,6 +20,13 @@ class QContextMenuEvent;
 
 namespace sleekpr::app {
 
+struct CanvasFloatingAction
+{
+    QString id;
+    QString text;
+    bool enabled = true;
+};
+
 class TemplatePreviewLabel final : public QLabel
 {
 public:
@@ -26,6 +35,7 @@ public:
     using DoubleClickCallback = std::function<void(QPoint)>;
     using ContextMenuCallback = std::function<void(QPoint, QPoint)>;
     using KeyboardNudgeCallback = std::function<void(QPoint, Qt::KeyboardModifiers)>;
+    using CanvasFloatingActionCallback = std::function<void(QString)>;
 
     explicit TemplatePreviewLabel(QWidget* parent = nullptr);
 
@@ -35,6 +45,7 @@ public:
     void setDoubleClickCallback(DoubleClickCallback callback);
     void setContextMenuCallback(ContextMenuCallback callback);
     void setKeyboardNudgeCallback(KeyboardNudgeCallback callback);
+    void setCanvasFloatingActionCallback(CanvasFloatingActionCallback callback);
     void setRulerVisible(bool visible);
     bool isRulerVisible() const;
     void setRulerPrecisionMm(double precisionMm);
@@ -48,6 +59,9 @@ public:
     QString designAidSelectedElementKey() const;
     void setCanvasFocusRectMm(QRectF rectMm);
     QRectF canvasFocusRectMm() const;
+    void setCanvasFloatingActions(QList<CanvasFloatingAction> actions);
+    int canvasFloatingActionCount() const;
+    QRect canvasFloatingActionRect(const QString& actionId) const;
     QPoint printableImageOriginPx() const;
     QSize printableImageSizePx() const;
     QPoint mapToPrintableImagePx(QPoint widgetPosition) const;
@@ -65,6 +79,10 @@ private:
     QRectF commandRectPx(const sleekpr::core::NativeDrawCommand& command, QPoint imageOrigin, QSize imageSize) const;
     void drawDesignAids(QPainter& painter, QPoint imageOrigin, QSize imageSize) const;
     void drawCanvasFocusRect(QPainter& painter, QPoint imageOrigin, QSize imageSize) const;
+    void drawCanvasFloatingActions(QPainter& painter, QPoint imageOrigin, QSize imageSize) const;
+    QRectF canvasFocusRectPx(QPoint imageOrigin, QSize imageSize) const;
+    QList<QPair<CanvasFloatingAction, QRect>> canvasFloatingActionLayouts() const;
+    QString canvasFloatingActionAt(QPoint position) const;
 
     bool m_draggingEnabled = false;
     bool m_dragging = false;
@@ -75,12 +93,15 @@ private:
     QList<sleekpr::core::NativeDrawCommand> m_designAidCommands;
     QString m_designAidSelectedElementKey;
     QRectF m_canvasFocusRectMm;
+    QList<CanvasFloatingAction> m_canvasFloatingActions;
+    QString m_hoveredCanvasFloatingActionId;
     QPoint m_lastMousePosition;
     DragStartCallback m_dragStartCallback;
     DragDeltaCallback m_dragDeltaCallback;
     DoubleClickCallback m_doubleClickCallback;
     ContextMenuCallback m_contextMenuCallback;
     KeyboardNudgeCallback m_keyboardNudgeCallback;
+    CanvasFloatingActionCallback m_canvasFloatingActionCallback;
 };
 
 } // 命名空间 sleekpr::app

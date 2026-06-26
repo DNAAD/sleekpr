@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
 namespace sleekpr::app {
 
@@ -299,6 +300,35 @@ bool mergeOverlapsSelection(
     const auto columnsOverlap = mergeStartColumn <= selection.endColumnIndex && mergeEndColumn >= selection.startColumnIndex;
     const auto rowsOverlap = merge.startRowOffset <= selection.endRowOffset && mergeEndRow >= selection.startRowOffset;
     return columnsOverlap && rowsOverlap;
+}
+
+bool forEachSelectionCell(
+    sleekpr::core::TableElement* table,
+    const TableCanvasSelection& selection,
+    const std::function<bool(const TableCanvasHit&)>& operation)
+{
+    if (table == nullptr
+        || table->id != selection.tableId
+        || !selection.isValid()
+        || selection.endColumnIndex >= table->columns.size()) {
+        return false;
+    }
+
+    bool changed = false;
+    for (auto rowOffset = selection.startRowOffset; rowOffset <= selection.endRowOffset; ++rowOffset) {
+        for (auto columnIndex = selection.startColumnIndex; columnIndex <= selection.endColumnIndex; ++columnIndex) {
+            TableCanvasHit hit;
+            hit.tableId = table->id;
+            hit.columnIndex = columnIndex;
+            hit.columnId = table->columns[columnIndex].id;
+            hit.rowBandId = selection.rowBandId;
+            hit.band = selection.rowBandId == QStringLiteral("header") ? TableCanvasBand::Header : TableCanvasBand::Detail;
+            hit.rowOffset = rowOffset;
+            // 范围样式操作只需要稳定的行带/列/行偏移，几何矩形继续由选区负责展示。
+            changed = operation(hit) || changed;
+        }
+    }
+    return changed;
 }
 
 sleekpr::core::TableCellStyle styleFromColumn(const sleekpr::core::TableColumn& column)
@@ -630,6 +660,30 @@ bool TemplateTableCanvasEditor::splitSelection(sleekpr::core::TableElement* tabl
             }),
         table->mergeRegions.end());
     return table->mergeRegions.size() != beforeSize;
+}
+
+bool TemplateTableCanvasEditor::toggleSelectionBold(sleekpr::core::TableElement* table, const TableCanvasSelection& selection)
+{
+    return forEachSelectionCell(table, selection, [table](const TableCanvasHit& hit) {
+        return toggleCellBold(table, hit);
+    });
+}
+
+bool TemplateTableCanvasEditor::toggleSelectionWrap(sleekpr::core::TableElement* table, const TableCanvasSelection& selection)
+{
+    return forEachSelectionCell(table, selection, [table](const TableCanvasHit& hit) {
+        return toggleCellWrap(table, hit);
+    });
+}
+
+bool TemplateTableCanvasEditor::setSelectionAlignment(
+    sleekpr::core::TableElement* table,
+    const TableCanvasSelection& selection,
+    sleekpr::core::TableCellAlignment alignment)
+{
+    return forEachSelectionCell(table, selection, [table, alignment](const TableCanvasHit& hit) {
+        return setCellAlignment(table, hit, alignment);
+    });
 }
 
 bool TemplateTableCanvasEditor::mergeCellRight(sleekpr::core::TableElement* table, const TableCanvasHit& hit)

@@ -66,6 +66,12 @@ public:
     static bool selectionContainsHit(const TableCanvasSelection& selection, const TableCanvasHit& hit);
     static bool mergeSelection(sleekpr::core::TableElement* table, const TableCanvasSelection& selection);
     static bool splitSelection(sleekpr::core::TableElement* table, const TableCanvasSelection& selection);
+    static bool toggleSelectionBold(sleekpr::core::TableElement* table, const TableCanvasSelection& selection);
+    static bool toggleSelectionWrap(sleekpr::core::TableElement* table, const TableCanvasSelection& selection);
+    static bool setSelectionAlignment(
+        sleekpr::core::TableElement* table,
+        const TableCanvasSelection& selection,
+        sleekpr::core::TableCellAlignment alignment);
     static bool mergeCellRight(sleekpr::core::TableElement* table, const TableCanvasHit& hit);
     static bool splitCell(sleekpr::core::TableElement* table, const TableCanvasHit& hit);
     static bool toggleCellBold(sleekpr::core::TableElement* table, const TableCanvasHit& hit);
