@@ -108,6 +108,9 @@ add_executable(sleekpr
     src/app/TemplateLayerPanel.cpp
     src/app/TemplateLibraryPanel.cpp
     src/app/TemplatePreviewLabel.cpp
+    include/sleekpr/app/TemplateTablePaginationOverlay.h
+    src/app/TemplateTablePaginationOverlayPlanner.cpp
+    include/sleekpr/app/TemplateTablePaginationOverlayPlanner.h
     src/app/TemplateTableCanvasEditor.cpp
     include/sleekpr/app/TemplateTableCanvasEditor.h
     src/app/TemplateWorkspacePanel.cpp

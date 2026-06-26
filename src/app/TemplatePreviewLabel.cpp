@@ -246,6 +246,32 @@ QRect TemplatePreviewLabel::canvasFloatingActionRect(const QString& actionId) co
     return QRect();
 }
 
+void TemplatePreviewLabel::setTablePaginationOverlays(QList<TablePaginationOverlay> overlays)
+{
+    auto sameOverlays = m_tablePaginationOverlays.size() == overlays.size();
+    for (auto index = 0; sameOverlays && index < overlays.size(); ++index) {
+        const auto& current = m_tablePaginationOverlays[index];
+        const auto& next = overlays[index];
+        sameOverlays = current.tableId == next.tableId
+            && current.kind == next.kind
+            && current.rectMm == next.rectMm
+            && current.text == next.text
+            && current.pageNumber == next.pageNumber
+            && current.severe == next.severe;
+    }
+    if (sameOverlays) {
+        return;
+    }
+
+    m_tablePaginationOverlays = std::move(overlays);
+    update();
+}
+
+int TemplatePreviewLabel::tablePaginationOverlayCount() const
+{
+    return m_tablePaginationOverlays.size();
+}
+
 QPoint TemplatePreviewLabel::printableImageOriginPx() const
 {
     return m_rulerVisible ? QPoint(kVerticalRulerWidthPx, kHorizontalRulerHeightPx) : QPoint(0, 0);
@@ -323,6 +349,7 @@ void TemplatePreviewLabel::paintEvent(QPaintEvent* event)
     if (m_designAidVisible && !m_designAidCommands.isEmpty()) {
         drawDesignAids(painter, origin, imageSize);
     }
+    drawTablePaginationOverlays(painter, origin, imageSize);
     drawCanvasFocusRect(painter, origin, imageSize);
     drawCanvasFloatingActions(painter, origin, imageSize);
 }
@@ -438,6 +465,97 @@ void TemplatePreviewLabel::drawDesignAids(QPainter& painter, QPoint imageOrigin,
         painter.drawRect(textRect);
         painter.drawText(textRect, Qt::AlignCenter, sizeText);
     }
+    painter.restore();
+}
+
+void TemplatePreviewLabel::drawTablePaginationOverlays(QPainter& painter, QPoint imageOrigin, QSize imageSize) const
+{
+    if (m_tablePaginationOverlays.isEmpty() || m_rulerPaperSizeMm.isEmpty() || imageSize.isEmpty()) {
+        return;
+    }
+
+    const auto scaleX = imageSize.width() / m_rulerPaperSizeMm.width();
+    const auto scaleY = imageSize.height() / m_rulerPaperSizeMm.height();
+    const auto paperRect = QRectF(imageOrigin, imageSize);
+
+    auto overlayRectPx = [imageOrigin, scaleX, scaleY](const QRectF& rectMm) {
+        return QRectF(
+            imageOrigin.x() + rectMm.x() * scaleX,
+            imageOrigin.y() + rectMm.y() * scaleY,
+            rectMm.width() * scaleX,
+            rectMm.height() * scaleY)
+            .normalized();
+    };
+
+    auto drawBadge = [&painter, &paperRect](QRectF anchorRect, const QString& text, const QColor& background, const QColor& foreground) {
+        if (text.trimmed().isEmpty()) {
+            return;
+        }
+        const QFontMetrics metrics(painter.font());
+        const auto maxTextWidth = std::max(24, static_cast<int>(paperRect.width()) - 16);
+        const auto labelText = metrics.elidedText(text, Qt::ElideRight, maxTextWidth);
+        QRectF labelRect = QRectF(metrics.boundingRect(labelText)).adjusted(-6, -3, 6, 3);
+        labelRect.moveTopLeft(QPointF(anchorRect.left() + 4.0, anchorRect.top() + 2.0));
+        if (labelRect.right() > paperRect.right() - 4.0) {
+            labelRect.moveRight(paperRect.right() - 4.0);
+        }
+        if (labelRect.bottom() > paperRect.bottom() - 4.0) {
+            labelRect.moveBottom(paperRect.bottom() - 4.0);
+        }
+        labelRect.moveLeft(std::max(paperRect.left() + 4.0, labelRect.left()));
+        labelRect.moveTop(std::max(paperRect.top() + 4.0, labelRect.top()));
+
+        painter.setPen(QColor(255, 255, 255, 180));
+        painter.setBrush(background);
+        painter.drawRoundedRect(labelRect, 3, 3);
+        painter.setPen(foreground);
+        painter.drawText(labelRect, Qt::AlignCenter, labelText);
+    };
+
+    painter.save();
+    painter.setClipRect(paperRect);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setFont(QFont(QStringLiteral("Microsoft YaHei"), 7, QFont::DemiBold));
+
+    for (const auto& overlay : m_tablePaginationOverlays) {
+        const auto rectPx = overlayRectPx(overlay.rectMm).adjusted(0.5, 0.5, -0.5, -0.5);
+        if (rectPx.isEmpty()) {
+            continue;
+        }
+
+        if (overlay.kind == TablePaginationOverlayKind::PageBreak) {
+            // 分页线只提示表格跨页边界，不改变真实标签预览和打印内容。
+            painter.fillRect(rectPx, QColor(255, 152, 0, 40));
+            QPen pageBreakPen(QColor(245, 124, 0, 230));
+            pageBreakPen.setStyle(Qt::DashLine);
+            pageBreakPen.setWidth(2);
+            painter.setPen(pageBreakPen);
+            painter.drawLine(QPointF(rectPx.left(), rectPx.center().y()), QPointF(rectPx.right(), rectPx.center().y()));
+            drawBadge(rectPx, overlay.text, QColor(245, 124, 0, 230), QColor(255, 255, 255));
+            continue;
+        }
+
+        if (overlay.kind == TablePaginationOverlayKind::RepeatedHeader) {
+            painter.fillRect(rectPx, QColor(0, 150, 136, 45));
+            QPen headerPen(QColor(0, 121, 107, 210));
+            headerPen.setStyle(Qt::DashLine);
+            headerPen.setWidth(1);
+            painter.setPen(headerPen);
+            painter.drawRect(rectPx);
+            drawBadge(rectPx, overlay.text, QColor(0, 121, 107, 220), QColor(255, 255, 255));
+            continue;
+        }
+
+        const auto warningColor = overlay.severe ? QColor(198, 40, 40, 230) : QColor(251, 140, 0, 230);
+        const auto fillColor = overlay.severe ? QColor(198, 40, 40, 45) : QColor(251, 140, 0, 45);
+        painter.fillRect(rectPx, fillColor);
+        QPen warningPen(warningColor);
+        warningPen.setWidth(2);
+        painter.setPen(warningPen);
+        painter.drawRoundedRect(rectPx, 2, 2);
+        drawBadge(rectPx, overlay.text, warningColor, QColor(255, 255, 255));
+    }
+
     painter.restore();
 }
 

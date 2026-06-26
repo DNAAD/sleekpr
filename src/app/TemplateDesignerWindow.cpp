@@ -6,6 +6,7 @@
 #include "sleekpr/app/TemplateInspectorPanel.h"
 #include "sleekpr/app/TemplateLayerPanel.h"
 #include "sleekpr/app/TemplatePreviewLabel.h"
+#include "sleekpr/app/TemplateTablePaginationOverlayPlanner.h"
 #include "sleekpr/app/TemplateTableCanvasEditor.h"
 #include "sleekpr/app/TemplateWorkspacePanel.h"
 #include "sleekpr/core/labels/LabelRenderPlanner.h"
@@ -1775,6 +1776,15 @@ void TemplateDesignerWindow::refreshPreview()
     m_previewLabel->setRulerPaperSizeMm(paperSize);
     m_previewLabel->setDesignAidCommands(m_previewCommands);
     m_previewLabel->setDesignAidSelectedElementKey(currentElementId());
+    QList<TablePaginationOverlay> paginationOverlays;
+    if (sampleDataOk) {
+        if (const auto* table = currentTable()) {
+            paginationOverlays = TemplateTablePaginationOverlayPlanner::planForTable(
+                *table,
+                sleekpr::core::TableElementLayout::layout(*table, renderContext));
+        }
+    }
+    m_previewLabel->setTablePaginationOverlays(paginationOverlays);
     const auto previewOrigin = m_previewLabel->printableImageOriginPx();
     // 预览控件尺寸包含外置标尺边距，打印图层本身仍保持渲染图原始比例，避免标签变形。
     m_previewLabel->setFixedSize(previewPixmap.width() + previewOrigin.x(), previewPixmap.height() + previewOrigin.y());

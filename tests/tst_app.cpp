@@ -13,6 +13,7 @@
 #include <QFocusEvent>
 #include <QGridLayout>
 #include <QImage>
+#include <QJsonArray>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
@@ -38,6 +39,7 @@
 #include "sleekpr/app/TableColumnTextCodec.h"
 #include "sleekpr/app/TemplateInspectorPanel.h"
 #include "sleekpr/app/TemplateElementHitTester.h"
+#include "sleekpr/app/TemplateTablePaginationOverlayPlanner.h"
 #include "sleekpr/app/TemplateTableCanvasEditor.h"
 #include "sleekpr/app/AppTheme.h"
 #include "sleekpr/app/FieldPresetManagerWindow.h"
@@ -126,6 +128,7 @@ private slots:
     void templatePreviewLabelRejectsDragStartOutsideEditableArea();
     void templatePreviewLabelReportsTableEditGestures();
     void templatePreviewLabelDrawsCanvasFocusRect();
+    void templatePreviewLabelDrawsTablePaginationGuides();
     void templatePreviewLabelShowsAndClicksCanvasFloatingActions();
     void settingsWindowShowsPreviewOnlyWithoutElementEditor();
     void settingsWindowLoadsTemplateLibraryDocuments();
@@ -191,6 +194,7 @@ private slots:
     void templateTableCanvasEditorMergesAndSplitsCellRanges();
     void templateTableCanvasEditorAppliesStylesToCellRanges();
     void templateTableCanvasEditorEditsRowBandsOnCanvas();
+    void templateTablePaginationOverlayPlannerBuildsPageAndWarningGuides();
     void templateDesignerWindowDragsCurrentTableWhenAnotherElementOverlaps();
     void templateDesignerWindowDraggingTableClearsPreviousRenderedPosition();
     void templateDesignerWindowSkipsNoopPropertyApply();
@@ -382,6 +386,53 @@ void AppTests::templatePreviewLabelDrawsCanvasFocusRect()
 
     QCOMPARE(label.canvasFocusRectMm(), QRectF(10.0, 5.0, 20.0, 6.0));
     QVERIFY(focusPixelCount > 0);
+}
+
+void AppTests::templatePreviewLabelDrawsTablePaginationGuides()
+{
+    TemplatePreviewLabel label;
+    label.resize(828, 318);
+    label.setRulerVisible(true);
+    label.setRulerPaperSizeMm(QSizeF(80.0, 30.0));
+
+    QPixmap preview(800, 300);
+    preview.fill(Qt::white);
+    label.setPixmap(preview);
+    label.setTablePaginationOverlays({
+        TablePaginationOverlay{
+            QStringLiteral("detail-table"),
+            TablePaginationOverlayKind::PageBreak,
+            QRectF(10.0, 25.0, 60.0, 2.0),
+            QString::fromUtf8("分页到第2页"),
+            2,
+            false,
+        },
+        TablePaginationOverlay{
+            QStringLiteral("detail-table"),
+            TablePaginationOverlayKind::Warning,
+            QRectF(10.0, 10.0, 60.0, 3.0),
+            QString::fromUtf8("跨页合并"),
+            1,
+            true,
+        },
+    });
+
+    label.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&label));
+
+    const auto rendered = label.grab().toImage().convertToFormat(QImage::Format_ARGB32);
+    int guidePixelCount = 0;
+    for (int y = 0; y < rendered.height(); ++y) {
+        for (int x = 0; x < rendered.width(); ++x) {
+            const auto color = rendered.pixelColor(x, y);
+            if (color.red() > 180 && color.green() > 70 && color.green() < 190 && color.blue() < 120) {
+                ++guidePixelCount;
+            }
+        }
+    }
+
+    QCOMPARE(label.tablePaginationOverlayCount(), 2);
+    QVERIFY(guidePixelCount > 0);
 }
 
 void AppTests::templatePreviewLabelShowsAndClicksCanvasFloatingActions()
@@ -3268,6 +3319,93 @@ void AppTests::templateTableCanvasEditorEditsRowBandsOnCanvas()
     }));
     QVERIFY(std::none_of(editableTable.mergeRegions.cbegin(), editableTable.mergeRegions.cend(), [subtotalId](const TableMergeRegion& merge) {
         return merge.rowBandId == subtotalId;
+    }));
+}
+
+void AppTests::templateTablePaginationOverlayPlannerBuildsPageAndWarningGuides()
+{
+    TemplateDocument document;
+    TemplateLayer layer;
+    layer.id = QStringLiteral("base");
+
+    TableElement pagedTable;
+    pagedTable.id = QStringLiteral("paged-table");
+    pagedTable.layerId = layer.id;
+    pagedTable.x = 10.0;
+    pagedTable.y = 5.0;
+    pagedTable.width = 60.0;
+    pagedTable.height = 15.0;
+    pagedTable.dataPath = QStringLiteral("items");
+    pagedTable.headerRowHeightMm = 5.0;
+    pagedTable.detailRowHeightMm = 5.0;
+    pagedTable.pagination.repeatHeaderOnPage = true;
+    pagedTable.pagination.orphanDetailRows = 1;
+
+    TableColumn nameColumn;
+    nameColumn.id = QStringLiteral("name");
+    nameColumn.title = QString::fromUtf8("品名");
+    nameColumn.fieldKey = QStringLiteral("name");
+    nameColumn.widthMm = 30.0;
+    pagedTable.columns.append(nameColumn);
+
+    TableColumn amountColumn;
+    amountColumn.id = QStringLiteral("amount");
+    amountColumn.title = QString::fromUtf8("重量");
+    amountColumn.fieldKey = QStringLiteral("amount");
+    amountColumn.widthMm = 30.0;
+    pagedTable.columns.append(amountColumn);
+    layer.tables.append(pagedTable);
+
+    TableElement mergeTable = pagedTable;
+    mergeTable.id = QStringLiteral("merge-table");
+    mergeTable.y = 22.0;
+    mergeTable.height = 8.0;
+    mergeTable.dataPath = QStringLiteral("mergeItems");
+    mergeTable.headerRowHeightMm = 2.0;
+    mergeTable.detailRowHeightMm = 5.0;
+    mergeTable.pagination.overflowPolicy = TableTableOverflowPolicy::Clip;
+    mergeTable.pagination.orphanDetailRows = 0;
+
+    TableMergeRegion merge;
+    merge.id = QStringLiteral("merge-large");
+    merge.rowBandId = QStringLiteral("detail");
+    merge.startColumnId = QStringLiteral("name");
+    merge.rowSpan = 2;
+    merge.colSpan = 1;
+    mergeTable.mergeRegions.append(merge);
+    layer.tables.append(mergeTable);
+
+    document.layers.append(layer);
+
+    QJsonArray rows;
+    for (int index = 0; index < 5; ++index) {
+        rows.append(QJsonObject{
+            {QStringLiteral("name"), QStringLiteral("item-%1").arg(index)},
+            {QStringLiteral("amount"), QStringLiteral("1g")},
+        });
+    }
+    QJsonArray mergeRows;
+    mergeRows.append(QJsonObject{{QStringLiteral("name"), QStringLiteral("merged-0")}, {QStringLiteral("amount"), QStringLiteral("1g")}});
+    mergeRows.append(QJsonObject{{QStringLiteral("name"), QStringLiteral("merged-1")}, {QStringLiteral("amount"), QStringLiteral("2g")}});
+
+    TemplateRenderContext context;
+    context.values.insert(QStringLiteral("items"), rows);
+    context.values.insert(QStringLiteral("mergeItems"), mergeRows);
+
+    const auto overlays = TemplateTablePaginationOverlayPlanner::plan(document, context);
+    const auto hasOverlay = [&overlays](TablePaginationOverlayKind kind, const QString& textPart) {
+        return std::any_of(overlays.cbegin(), overlays.cend(), [kind, &textPart](const TablePaginationOverlay& overlay) {
+            return overlay.kind == kind && overlay.text.contains(textPart);
+        });
+    };
+
+    QVERIFY(hasOverlay(TablePaginationOverlayKind::PageBreak, QString::fromUtf8("第2页")));
+    QVERIFY(hasOverlay(TablePaginationOverlayKind::RepeatedHeader, QString::fromUtf8("重复表头")));
+    QVERIFY(hasOverlay(TablePaginationOverlayKind::Warning, QString::fromUtf8("孤行保护")));
+    QVERIFY(std::any_of(overlays.cbegin(), overlays.cend(), [](const TablePaginationOverlay& overlay) {
+        return overlay.kind == TablePaginationOverlayKind::Warning
+            && overlay.severe
+            && overlay.text.contains(QString::fromUtf8("跨页合并"));
     }));
 }
 

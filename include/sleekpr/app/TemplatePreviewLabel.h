@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sleekpr/app/TemplateTablePaginationOverlay.h"
 #include "sleekpr/core/native/NativeDrawCommand.h"
 
 #include <QLabel>
@@ -62,6 +63,8 @@ public:
     void setCanvasFloatingActions(QList<CanvasFloatingAction> actions);
     int canvasFloatingActionCount() const;
     QRect canvasFloatingActionRect(const QString& actionId) const;
+    void setTablePaginationOverlays(QList<TablePaginationOverlay> overlays);
+    int tablePaginationOverlayCount() const;
     QPoint printableImageOriginPx() const;
     QSize printableImageSizePx() const;
     QPoint mapToPrintableImagePx(QPoint widgetPosition) const;
@@ -78,6 +81,7 @@ protected:
 private:
     QRectF commandRectPx(const sleekpr::core::NativeDrawCommand& command, QPoint imageOrigin, QSize imageSize) const;
     void drawDesignAids(QPainter& painter, QPoint imageOrigin, QSize imageSize) const;
+    void drawTablePaginationOverlays(QPainter& painter, QPoint imageOrigin, QSize imageSize) const;
     void drawCanvasFocusRect(QPainter& painter, QPoint imageOrigin, QSize imageSize) const;
     void drawCanvasFloatingActions(QPainter& painter, QPoint imageOrigin, QSize imageSize) const;
     QRectF canvasFocusRectPx(QPoint imageOrigin, QSize imageSize) const;
@@ -94,6 +98,7 @@ private:
     QString m_designAidSelectedElementKey;
     QRectF m_canvasFocusRectMm;
     QList<CanvasFloatingAction> m_canvasFloatingActions;
+    QList<TablePaginationOverlay> m_tablePaginationOverlays;
     QString m_hoveredCanvasFloatingActionId;
     QPoint m_lastMousePosition;
     DragStartCallback m_dragStartCallback;
