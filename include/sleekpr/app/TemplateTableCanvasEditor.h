@@ -29,6 +29,20 @@ struct TableCanvasHit
     QRectF cellRectMm;
 };
 
+struct TableCanvasSelection
+{
+    QString tableId;
+    int startColumnIndex = -1;
+    int endColumnIndex = -1;
+    QString rowBandId;
+    int startRowOffset = 0;
+    int endRowOffset = 0;
+    QRectF rectMm;
+
+    bool isValid() const;
+    bool isSingleCell() const;
+};
+
 class TemplateTableCanvasEditor final
 {
 public:
@@ -45,6 +59,13 @@ public:
     static bool deleteColumn(sleekpr::core::TableElement* table, int columnIndex);
     static bool moveColumnLeft(sleekpr::core::TableElement* table, int columnIndex);
     static bool moveColumnRight(sleekpr::core::TableElement* table, int columnIndex);
+    static std::optional<TableCanvasSelection> selectionFromHits(
+        const sleekpr::core::TableElement& table,
+        const TableCanvasHit& anchor,
+        const TableCanvasHit& target);
+    static bool selectionContainsHit(const TableCanvasSelection& selection, const TableCanvasHit& hit);
+    static bool mergeSelection(sleekpr::core::TableElement* table, const TableCanvasSelection& selection);
+    static bool splitSelection(sleekpr::core::TableElement* table, const TableCanvasSelection& selection);
     static bool mergeCellRight(sleekpr::core::TableElement* table, const TableCanvasHit& hit);
     static bool splitCell(sleekpr::core::TableElement* table, const TableCanvasHit& hit);
     static bool toggleCellBold(sleekpr::core::TableElement* table, const TableCanvasHit& hit);

@@ -255,6 +255,52 @@ bool mergeCoversHit(const sleekpr::core::TableElement& table, const sleekpr::cor
     return rowCovered && columnCovered;
 }
 
+QRectF selectionRectMm(
+    const sleekpr::core::TableElement& table,
+    const QString& rowBandId,
+    int startColumnIndex,
+    int endColumnIndex,
+    int startRowOffset,
+    int endRowOffset)
+{
+    const auto left = columnLeftAt(table, startColumnIndex);
+    const auto right = columnLeftAt(table, endColumnIndex) + columnWidthAt(table, endColumnIndex);
+    const auto headerRowHeight = std::max(kMinimumCanvasRowHeightMm, table.headerRowHeightMm);
+    const auto detailRowHeight = std::max(kMinimumCanvasRowHeightMm, table.detailRowHeightMm);
+
+    // 画布选区只描述当前可见的表头/明细网格，用于编辑反馈，不参与真实打印排版。
+    if (rowBandId == QStringLiteral("header")) {
+        return QRectF(left, table.y, right - left, headerRowHeight);
+    }
+
+    const auto top = table.y + headerRowHeight + std::max(0, startRowOffset) * detailRowHeight;
+    const auto bottom = std::min(
+        table.y + table.height,
+        table.y + headerRowHeight + (std::max(startRowOffset, endRowOffset) + 1) * detailRowHeight);
+    return QRectF(left, top, right - left, std::max(kMinimumCanvasRowHeightMm, bottom - top));
+}
+
+bool mergeOverlapsSelection(
+    const sleekpr::core::TableElement& table,
+    const sleekpr::core::TableMergeRegion& merge,
+    const TableCanvasSelection& selection)
+{
+    if (merge.rowBandId != selection.rowBandId) {
+        return false;
+    }
+
+    const auto mergeStartColumn = currentColumnIndexById(table, merge.startColumnId);
+    if (mergeStartColumn < 0) {
+        return false;
+    }
+
+    const auto mergeEndColumn = mergeStartColumn + std::max(1, merge.colSpan) - 1;
+    const auto mergeEndRow = merge.startRowOffset + std::max(1, merge.rowSpan) - 1;
+    const auto columnsOverlap = mergeStartColumn <= selection.endColumnIndex && mergeEndColumn >= selection.startColumnIndex;
+    const auto rowsOverlap = merge.startRowOffset <= selection.endRowOffset && mergeEndRow >= selection.startRowOffset;
+    return columnsOverlap && rowsOverlap;
+}
+
 sleekpr::core::TableCellStyle styleFromColumn(const sleekpr::core::TableColumn& column)
 {
     sleekpr::core::TableCellStyle style;
@@ -330,6 +376,22 @@ sleekpr::core::TableCellStyle* ensureCellStyle(sleekpr::core::TableElement* tabl
 }
 
 } // namespace
+
+bool TableCanvasSelection::isValid() const
+{
+    return !tableId.trimmed().isEmpty()
+        && !rowBandId.trimmed().isEmpty()
+        && startColumnIndex >= 0
+        && endColumnIndex >= startColumnIndex
+        && startRowOffset >= 0
+        && endRowOffset >= startRowOffset
+        && !rectMm.isNull();
+}
+
+bool TableCanvasSelection::isSingleCell() const
+{
+    return isValid() && startColumnIndex == endColumnIndex && startRowOffset == endRowOffset;
+}
 
 std::optional<TableCanvasHit> TemplateTableCanvasEditor::hitTest(
     const sleekpr::core::TemplateDocument& document,
@@ -476,6 +538,98 @@ bool TemplateTableCanvasEditor::moveColumnRight(sleekpr::core::TableElement* tab
 
     table->columns.swapItemsAt(columnIndex, columnIndex + 1);
     return true;
+}
+
+std::optional<TableCanvasSelection> TemplateTableCanvasEditor::selectionFromHits(
+    const sleekpr::core::TableElement& table,
+    const TableCanvasHit& anchor,
+    const TableCanvasHit& target)
+{
+    if (!validCellHit(&table, anchor) || !validCellHit(&table, target)) {
+        return std::nullopt;
+    }
+    if (anchor.tableId != table.id || target.tableId != table.id || anchor.tableId != target.tableId) {
+        return std::nullopt;
+    }
+
+    const auto rowBandId = rowBandIdForHit(anchor);
+    if (rowBandId != rowBandIdForHit(target)) {
+        return std::nullopt;
+    }
+
+    TableCanvasSelection selection;
+    selection.tableId = table.id;
+    selection.startColumnIndex = std::min(anchor.columnIndex, target.columnIndex);
+    selection.endColumnIndex = std::max(anchor.columnIndex, target.columnIndex);
+    selection.rowBandId = rowBandId;
+    selection.startRowOffset = std::min(anchor.rowOffset, target.rowOffset);
+    selection.endRowOffset = std::max(anchor.rowOffset, target.rowOffset);
+    selection.rectMm = selectionRectMm(
+        table,
+        rowBandId,
+        selection.startColumnIndex,
+        selection.endColumnIndex,
+        selection.startRowOffset,
+        selection.endRowOffset);
+    return selection.isValid() ? std::make_optional(selection) : std::nullopt;
+}
+
+bool TemplateTableCanvasEditor::selectionContainsHit(const TableCanvasSelection& selection, const TableCanvasHit& hit)
+{
+    if (!selection.isValid() || hit.tableId != selection.tableId || rowBandIdForHit(hit) != selection.rowBandId) {
+        return false;
+    }
+    return hit.columnIndex >= selection.startColumnIndex
+        && hit.columnIndex <= selection.endColumnIndex
+        && hit.rowOffset >= selection.startRowOffset
+        && hit.rowOffset <= selection.endRowOffset;
+}
+
+bool TemplateTableCanvasEditor::mergeSelection(sleekpr::core::TableElement* table, const TableCanvasSelection& selection)
+{
+    if (table == nullptr
+        || table->id != selection.tableId
+        || !selection.isValid()
+        || selection.isSingleCell()
+        || selection.endColumnIndex >= table->columns.size()) {
+        return false;
+    }
+
+    for (const auto& merge : table->mergeRegions) {
+        // 新合并区不能与已有合并区交叠，否则渲染阶段会出现同一单元格被多个区域覆盖。
+        if (mergeOverlapsSelection(*table, merge, selection)) {
+            return false;
+        }
+    }
+
+    const auto startColumnId = table->columns[selection.startColumnIndex].id;
+    sleekpr::core::TableMergeRegion merge;
+    merge.id = uniqueMergeRegionId(*table, selection.rowBandId, startColumnId, selection.startRowOffset);
+    merge.rowBandId = selection.rowBandId;
+    merge.startRowOffset = selection.startRowOffset;
+    merge.startColumnId = startColumnId;
+    merge.rowSpan = selection.endRowOffset - selection.startRowOffset + 1;
+    merge.colSpan = selection.endColumnIndex - selection.startColumnIndex + 1;
+    table->mergeRegions.append(merge);
+    return true;
+}
+
+bool TemplateTableCanvasEditor::splitSelection(sleekpr::core::TableElement* table, const TableCanvasSelection& selection)
+{
+    if (table == nullptr || table->id != selection.tableId || !selection.isValid()) {
+        return false;
+    }
+
+    const auto beforeSize = table->mergeRegions.size();
+    table->mergeRegions.erase(
+        std::remove_if(
+            table->mergeRegions.begin(),
+            table->mergeRegions.end(),
+            [table, selection](const sleekpr::core::TableMergeRegion& merge) {
+                return mergeOverlapsSelection(*table, merge, selection);
+            }),
+        table->mergeRegions.end());
+    return table->mergeRegions.size() != beforeSize;
 }
 
 bool TemplateTableCanvasEditor::mergeCellRight(sleekpr::core::TableElement* table, const TableCanvasHit& hit)

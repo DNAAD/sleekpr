@@ -175,12 +175,18 @@ private:
     void updateHistoryButtons();
     void moveSelectedElementByPixels(QPoint delta);
     void resizeTableColumnByPixels(QPoint delta);
+    void updateTableCanvasSelectionAt(QPoint position);
     std::optional<TableCanvasHit> tableCanvasHitAt(QPoint position) const;
+    std::optional<TableCanvasSelection> tableCanvasSelectionFromHits(const TableCanvasHit& anchor, const TableCanvasHit& target) const;
     void editTableCanvasCellAt(QPoint position);
     void showTableCanvasContextMenu(QPoint position, QPoint globalPosition);
     bool editTableCanvasColumnText(const TableCanvasHit& hit);
     bool applyTableCanvasMutation(
         const TableCanvasHit& hit,
+        const std::function<bool(sleekpr::core::TableElement*)>& mutation,
+        const QString& statusText);
+    bool applyTableCanvasSelectionMutation(
+        const TableCanvasSelection& selection,
         const std::function<bool(sleekpr::core::TableElement*)>& mutation,
         const QString& statusText);
     void nudgeSelectedElement(QPoint direction, Qt::KeyboardModifiers modifiers);
@@ -232,6 +238,9 @@ private:
     bool m_updatingPropertyEditors = false;
     bool m_applyingElementListOrder = false;
     std::optional<TableColumnResizeDrag> m_tableColumnResizeDrag;
+    std::optional<TableCanvasHit> m_tableCanvasSelectionAnchor;
+    std::optional<TableCanvasSelection> m_tableCanvasSelection;
+    QPoint m_tableCanvasSelectionDragPosition;
 };
 
 } // 命名空间 sleekpr::app
