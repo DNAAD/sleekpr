@@ -183,12 +183,14 @@ private slots:
     void templateDesignerWindowDragsTableColumnWidthOnCanvas();
     void templateDesignerWindowShiftDragsTableCellRangeOnCanvas();
     void templateDesignerWindowCanvasToolbarTogglesSelectedCellBold();
+    void templateDesignerWindowCanvasToolbarAddsSubtotalRowBand();
     void templateTableCanvasEditorHitsTableCells();
     void templateTableCanvasEditorReportsCellGeometry();
     void templateTableCanvasEditorEditsColumns();
     void templateTableCanvasEditorMergesSplitsAndStylesCell();
     void templateTableCanvasEditorMergesAndSplitsCellRanges();
     void templateTableCanvasEditorAppliesStylesToCellRanges();
+    void templateTableCanvasEditorEditsRowBandsOnCanvas();
     void templateDesignerWindowDragsCurrentTableWhenAnotherElementOverlaps();
     void templateDesignerWindowDraggingTableClearsPreviousRenderedPosition();
     void templateDesignerWindowSkipsNoopPropertyApply();
@@ -2715,6 +2717,62 @@ void AppTests::templateDesignerWindowCanvasToolbarTogglesSelectedCellBold()
     QTRY_VERIFY_WITH_TIMEOUT(hasBoldCell(changedSettings), 700);
 }
 
+void AppTests::templateDesignerWindowCanvasToolbarAddsSubtotalRowBand()
+{
+    PrintClientSettings changedSettings;
+    TemplateDesignerWindow window(PrintClientSettings{}, [&changedSettings](const PrintClientSettings& nextSettings) {
+        changedSettings = nextSettings;
+    });
+
+    auto* addLayerButton = window.findChild<QPushButton*>(QStringLiteral("addLayerButton"));
+    auto* addTableButton = window.findChild<QPushButton*>(QStringLiteral("designerAddTableButton"));
+    TemplatePreviewLabel* previewLabel = nullptr;
+    for (auto* label : window.findChildren<QLabel*>(QStringLiteral("designerPreviewLabel"))) {
+        previewLabel = dynamic_cast<TemplatePreviewLabel*>(label);
+        if (previewLabel != nullptr) {
+            break;
+        }
+    }
+    QVERIFY(addLayerButton != nullptr);
+    QVERIFY(addTableButton != nullptr);
+    QVERIFY(previewLabel != nullptr);
+
+    addLayerButton->click();
+    addTableButton->click();
+    QVERIFY(!previewLabel->pixmap().isNull());
+
+    const auto tableAt = [](const PrintClientSettings& settings) -> TableElement {
+        const auto document = settings.templateDocuments.value(QStringLiteral("default"));
+        return document.layers.last().tables.first();
+    };
+    const auto hasSubtotalBand = [&tableAt](const PrintClientSettings& settings) {
+        const auto table = tableAt(settings);
+        return std::any_of(table.rowBands.cbegin(), table.rowBands.cend(), [](const TableRowBand& rowBand) {
+            return rowBand.kind == TableRowBandKind::Subtotal;
+        });
+    };
+    const auto table = tableAt(changedSettings);
+
+    const auto pointAtMm = [previewLabel](double xMm, double yMm) {
+        const auto origin = previewLabel->printableImageOriginPx();
+        const auto imageSize = previewLabel->printableImageSizePx();
+        return QPoint(
+            origin.x() + static_cast<int>(std::round(xMm / 80.0 * imageSize.width())),
+            origin.y() + static_cast<int>(std::round(yMm / 30.0 * imageSize.height())));
+    };
+
+    const auto cellPoint = pointAtMm(table.x + 2.0, table.y + table.headerRowHeightMm + 1.0);
+    QTest::mousePress(previewLabel, Qt::LeftButton, Qt::ShiftModifier, cellPoint);
+    QTest::mouseRelease(previewLabel, Qt::LeftButton, Qt::ShiftModifier, cellPoint);
+
+    const auto addSubtotalRect = previewLabel->canvasFloatingActionRect(QStringLiteral("tableRowBandAddSubtotal"));
+    QVERIFY(!addSubtotalRect.isNull());
+    QVERIFY(!hasSubtotalBand(changedSettings));
+
+    QTest::mouseClick(previewLabel, Qt::LeftButton, Qt::NoModifier, addSubtotalRect.center());
+    QTRY_VERIFY_WITH_TIMEOUT(hasSubtotalBand(changedSettings), 700);
+}
+
 void AppTests::templateTableCanvasEditorHitsTableCells()
 {
     TemplateDocument document;
@@ -3113,6 +3171,104 @@ void AppTests::templateTableCanvasEditorAppliesStylesToCellRanges()
         QVERIFY(style.wrapText);
         QCOMPARE(style.alignment, TableCellAlignment::Center);
     }
+}
+
+void AppTests::templateTableCanvasEditorEditsRowBandsOnCanvas()
+{
+    TemplateDocument document;
+    TemplateLayer layer;
+    layer.id = QStringLiteral("base");
+
+    TableElement table;
+    table.id = QStringLiteral("row-band-table");
+    table.layerId = layer.id;
+    table.x = 10.0;
+    table.y = 5.0;
+    table.width = 60.0;
+    table.height = 25.0;
+
+    TableColumn nameColumn;
+    nameColumn.id = QStringLiteral("name");
+    nameColumn.widthMm = 30.0;
+    table.columns.append(nameColumn);
+
+    TableColumn amountColumn;
+    amountColumn.id = QStringLiteral("amount");
+    amountColumn.widthMm = 30.0;
+    table.columns.append(amountColumn);
+
+    TableRowBand headerBand;
+    headerBand.id = QStringLiteral("header");
+    headerBand.kind = TableRowBandKind::Header;
+    headerBand.heightMm = 4.0;
+    table.rowBands.append(headerBand);
+
+    TableRowBand detailBand;
+    detailBand.id = QStringLiteral("detail");
+    detailBand.kind = TableRowBandKind::Detail;
+    detailBand.heightMm = 5.0;
+    table.rowBands.append(detailBand);
+
+    TableRowBand summaryBand;
+    summaryBand.id = QStringLiteral("summary");
+    summaryBand.kind = TableRowBandKind::Summary;
+    summaryBand.heightMm = 6.0;
+    table.rowBands.append(summaryBand);
+
+    layer.tables.append(table);
+    document.layers.append(layer);
+
+    const auto pointAtMm = [](double xMm, double yMm) {
+        return QPoint(
+            static_cast<int>(std::round(xMm / 80.0 * 800.0)),
+            static_cast<int>(std::round(yMm / 30.0 * 300.0)));
+    };
+    const auto hit = TemplateTableCanvasEditor::hitTest(
+        document,
+        QSizeF(80.0, 30.0),
+        QSize(800, 300),
+        pointAtMm(42.0, 15.0));
+    QVERIFY(hit.has_value());
+    QCOMPARE(hit->rowBandId, QStringLiteral("summary"));
+    QCOMPARE(hit->columnId, QStringLiteral("amount"));
+    QCOMPARE(hit->cellRectMm.y(), 14.0);
+    QCOMPARE(hit->cellRectMm.height(), 6.0);
+
+    auto editableTable = table;
+    QVERIFY(TemplateTableCanvasEditor::adjustRowBandHeight(&editableTable, QStringLiteral("summary"), 1.5));
+    QCOMPARE(editableTable.rowBands[2].heightMm, 7.5);
+
+    QVERIFY(TemplateTableCanvasEditor::insertRowBandAfter(&editableTable, QStringLiteral("detail"), TableRowBandKind::Subtotal));
+    QCOMPARE(editableTable.rowBands.size(), 4);
+    QCOMPARE(editableTable.rowBands[2].kind, TableRowBandKind::Subtotal);
+    QCOMPARE(editableTable.rowBands[2].title, QString::fromUtf8("小计"));
+    const auto subtotalId = editableTable.rowBands[2].id;
+
+    QVERIFY(TemplateTableCanvasEditor::moveRowBandUp(&editableTable, subtotalId));
+    QCOMPARE(editableTable.rowBands[1].id, subtotalId);
+
+    TableCellTemplate subtotalCell;
+    subtotalCell.id = QStringLiteral("subtotal-cell");
+    subtotalCell.rowBandId = subtotalId;
+    subtotalCell.columnId = QStringLiteral("amount");
+    editableTable.cellTemplates.append(subtotalCell);
+
+    TableMergeRegion subtotalMerge;
+    subtotalMerge.id = QStringLiteral("subtotal-merge");
+    subtotalMerge.rowBandId = subtotalId;
+    subtotalMerge.startColumnId = QStringLiteral("name");
+    editableTable.mergeRegions.append(subtotalMerge);
+
+    QVERIFY(TemplateTableCanvasEditor::deleteRowBand(&editableTable, subtotalId));
+    QVERIFY(std::none_of(editableTable.rowBands.cbegin(), editableTable.rowBands.cend(), [subtotalId](const TableRowBand& rowBand) {
+        return rowBand.id == subtotalId;
+    }));
+    QVERIFY(std::none_of(editableTable.cellTemplates.cbegin(), editableTable.cellTemplates.cend(), [subtotalId](const TableCellTemplate& cell) {
+        return cell.rowBandId == subtotalId;
+    }));
+    QVERIFY(std::none_of(editableTable.mergeRegions.cbegin(), editableTable.mergeRegions.cend(), [subtotalId](const TableMergeRegion& merge) {
+        return merge.rowBandId == subtotalId;
+    }));
 }
 
 void AppTests::templateDesignerWindowDragsCurrentTableWhenAnotherElementOverlaps()

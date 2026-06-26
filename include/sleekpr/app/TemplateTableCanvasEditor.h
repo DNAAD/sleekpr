@@ -72,6 +72,14 @@ public:
         sleekpr::core::TableElement* table,
         const TableCanvasSelection& selection,
         sleekpr::core::TableCellAlignment alignment);
+    static bool insertRowBandAfter(
+        sleekpr::core::TableElement* table,
+        const QString& anchorRowBandId,
+        sleekpr::core::TableRowBandKind kind);
+    static bool deleteRowBand(sleekpr::core::TableElement* table, const QString& rowBandId);
+    static bool moveRowBandUp(sleekpr::core::TableElement* table, const QString& rowBandId);
+    static bool moveRowBandDown(sleekpr::core::TableElement* table, const QString& rowBandId);
+    static bool adjustRowBandHeight(sleekpr::core::TableElement* table, const QString& rowBandId, double deltaMm);
     static bool mergeCellRight(sleekpr::core::TableElement* table, const TableCanvasHit& hit);
     static bool splitCell(sleekpr::core::TableElement* table, const TableCanvasHit& hit);
     static bool toggleCellBold(sleekpr::core::TableElement* table, const TableCanvasHit& hit);

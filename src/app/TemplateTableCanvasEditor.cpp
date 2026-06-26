@@ -16,6 +16,14 @@ namespace {
 constexpr double kDefaultCanvasColumnWidthMm = 20.0;
 constexpr double kMinimumCanvasRowHeightMm = 0.1;
 
+QString uniqueId(QString base, const QSet<QString>& usedIds);
+
+struct CanvasRowBandGeometry
+{
+    sleekpr::core::TableRowBand band;
+    QRectF rectMm;
+};
+
 double columnFlexWeight(const sleekpr::core::TableColumn& column)
 {
     return column.flexWeight > 0.0 ? column.flexWeight : 1.0;
@@ -88,6 +96,189 @@ QString rowBandIdFor(TableCanvasBand band)
 QString rowBandIdForHit(const TableCanvasHit& hit)
 {
     return hit.rowBandId.trimmed().isEmpty() ? rowBandIdFor(hit.band) : hit.rowBandId.trimmed();
+}
+
+QString rowBandTitleForKind(sleekpr::core::TableRowBandKind kind)
+{
+    switch (kind) {
+    case sleekpr::core::TableRowBandKind::Header:
+        return QString::fromUtf8("表头");
+    case sleekpr::core::TableRowBandKind::Detail:
+        return QString::fromUtf8("明细");
+    case sleekpr::core::TableRowBandKind::Summary:
+        return QString::fromUtf8("汇总");
+    case sleekpr::core::TableRowBandKind::Subtotal:
+        return QString::fromUtf8("小计");
+    case sleekpr::core::TableRowBandKind::GroupHeader:
+        return QString::fromUtf8("分组头");
+    case sleekpr::core::TableRowBandKind::GroupFooter:
+        return QString::fromUtf8("分组脚");
+    case sleekpr::core::TableRowBandKind::Footer:
+        return QString::fromUtf8("页脚");
+    }
+    return QString::fromUtf8("行带");
+}
+
+QString rowBandBaseIdForKind(sleekpr::core::TableRowBandKind kind)
+{
+    switch (kind) {
+    case sleekpr::core::TableRowBandKind::Header:
+        return QStringLiteral("header");
+    case sleekpr::core::TableRowBandKind::Detail:
+        return QStringLiteral("detail");
+    case sleekpr::core::TableRowBandKind::Summary:
+        return QStringLiteral("summary");
+    case sleekpr::core::TableRowBandKind::Subtotal:
+        return QStringLiteral("subtotal");
+    case sleekpr::core::TableRowBandKind::GroupHeader:
+        return QStringLiteral("groupHeader");
+    case sleekpr::core::TableRowBandKind::GroupFooter:
+        return QStringLiteral("groupFooter");
+    case sleekpr::core::TableRowBandKind::Footer:
+        return QStringLiteral("footer");
+    }
+    return QStringLiteral("band");
+}
+
+double rowBandHeightMm(const sleekpr::core::TableRowBand& rowBand)
+{
+    const auto configuredHeight = rowBand.heightMode == sleekpr::core::TableRowHeightMode::Auto
+        ? std::max(rowBand.heightMm, rowBand.minHeightMm)
+        : rowBand.heightMm;
+    return std::max(kMinimumCanvasRowHeightMm, configuredHeight);
+}
+
+QList<sleekpr::core::TableRowBand> legacyCanvasRowBands(const sleekpr::core::TableElement& table)
+{
+    sleekpr::core::TableRowBand header;
+    header.id = QStringLiteral("header");
+    header.kind = sleekpr::core::TableRowBandKind::Header;
+    header.title = rowBandTitleForKind(header.kind);
+    header.heightMm = std::max(kMinimumCanvasRowHeightMm, table.headerRowHeightMm);
+    header.minHeightMm = header.heightMm;
+    header.repeatOnPage = table.repeatHeaderOnPage || table.pagination.repeatHeaderOnPage;
+
+    sleekpr::core::TableRowBand detail;
+    detail.id = QStringLiteral("detail");
+    detail.kind = sleekpr::core::TableRowBandKind::Detail;
+    detail.title = rowBandTitleForKind(detail.kind);
+    detail.dataPath = table.dataPath;
+    detail.heightMm = std::max(kMinimumCanvasRowHeightMm, table.detailRowHeightMm);
+    detail.minHeightMm = detail.heightMm;
+
+    return {header, detail};
+}
+
+QList<sleekpr::core::TableRowBand> canvasRowBands(const sleekpr::core::TableElement& table)
+{
+    return table.rowBands.isEmpty() ? legacyCanvasRowBands(table) : table.rowBands;
+}
+
+void ensureEditableRowBands(sleekpr::core::TableElement* table)
+{
+    if (table == nullptr || !table->rowBands.isEmpty()) {
+        return;
+    }
+    // 旧模板首次在画布上编辑行带时升级为复杂行带模型，避免只改临时预览几何。
+    table->rowBands = legacyCanvasRowBands(*table);
+}
+
+int rowBandIndexById(const sleekpr::core::TableElement& table, const QString& rowBandId)
+{
+    const auto normalized = rowBandId.trimmed();
+    for (int index = 0; index < table.rowBands.size(); ++index) {
+        if (table.rowBands[index].id == normalized) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+QString uniqueRowBandId(const sleekpr::core::TableElement& table, sleekpr::core::TableRowBandKind kind)
+{
+    QSet<QString> usedIds;
+    for (const auto& rowBand : table.rowBands) {
+        usedIds.insert(rowBand.id);
+    }
+    return uniqueId(rowBandBaseIdForKind(kind), usedIds);
+}
+
+sleekpr::core::TableRowBand createRowBandAfter(const sleekpr::core::TableElement& table, sleekpr::core::TableRowBandKind kind)
+{
+    sleekpr::core::TableRowBand rowBand;
+    rowBand.id = uniqueRowBandId(table, kind);
+    rowBand.kind = kind;
+    rowBand.title = rowBandTitleForKind(kind);
+    rowBand.heightMm = kind == sleekpr::core::TableRowBandKind::Header
+        ? std::max(kMinimumCanvasRowHeightMm, table.headerRowHeightMm)
+        : std::max(kMinimumCanvasRowHeightMm, table.detailRowHeightMm);
+    rowBand.minHeightMm = std::min(rowBand.heightMm, 4.0);
+    rowBand.dataPath = kind == sleekpr::core::TableRowBandKind::Detail ? table.dataPath : QString();
+    rowBand.repeatOnPage = kind == sleekpr::core::TableRowBandKind::Header && table.pagination.repeatHeaderOnPage;
+    rowBand.printOn = kind == sleekpr::core::TableRowBandKind::Footer
+        ? sleekpr::core::TableRowPrintScope::LastPage
+        : sleekpr::core::TableRowPrintScope::EveryPage;
+    return rowBand;
+}
+
+void syncLegacyRowHeightsFromBand(sleekpr::core::TableElement* table, const sleekpr::core::TableRowBand& rowBand)
+{
+    if (table == nullptr) {
+        return;
+    }
+    if (rowBand.kind == sleekpr::core::TableRowBandKind::Header || rowBand.id == QStringLiteral("header")) {
+        table->headerRowHeightMm = rowBand.heightMm;
+    }
+    if (rowBand.kind == sleekpr::core::TableRowBandKind::Detail || rowBand.id == QStringLiteral("detail")) {
+        table->detailRowHeightMm = rowBand.heightMm;
+    }
+}
+
+void removeRowBandReferences(sleekpr::core::TableElement* table, const QString& rowBandId)
+{
+    if (table == nullptr || rowBandId.trimmed().isEmpty()) {
+        return;
+    }
+    table->cellTemplates.erase(
+        std::remove_if(table->cellTemplates.begin(), table->cellTemplates.end(), [&rowBandId](const sleekpr::core::TableCellTemplate& cell) {
+            return cell.rowBandId == rowBandId;
+        }),
+        table->cellTemplates.end());
+    table->mergeRegions.erase(
+        std::remove_if(table->mergeRegions.begin(), table->mergeRegions.end(), [&rowBandId](const sleekpr::core::TableMergeRegion& merge) {
+            return merge.rowBandId == rowBandId;
+        }),
+        table->mergeRegions.end());
+}
+
+QList<CanvasRowBandGeometry> canvasRowBandGeometries(const sleekpr::core::TableElement& table)
+{
+    QList<CanvasRowBandGeometry> geometries;
+    auto top = table.y;
+    const auto bottom = table.y + table.height;
+    for (const auto& rowBand : canvasRowBands(table)) {
+        if (top >= bottom) {
+            break;
+        }
+        const auto height = std::min(rowBandHeightMm(rowBand), bottom - top);
+        if (height <= 0.0) {
+            continue;
+        }
+        geometries.append(CanvasRowBandGeometry{rowBand, QRectF(table.x, top, table.width, height)});
+        top += height;
+    }
+    return geometries;
+}
+
+std::optional<CanvasRowBandGeometry> canvasRowBandGeometryById(const sleekpr::core::TableElement& table, const QString& rowBandId)
+{
+    const auto normalized = rowBandId.trimmed();
+    for (const auto& geometry : canvasRowBandGeometries(table)) {
+        if (geometry.band.id == normalized) {
+            return geometry;
+        }
+    }
+    return std::nullopt;
 }
 
 bool hasColumnId(const sleekpr::core::TableElement& table, const QString& columnId)
@@ -266,6 +457,16 @@ QRectF selectionRectMm(
 {
     const auto left = columnLeftAt(table, startColumnIndex);
     const auto right = columnLeftAt(table, endColumnIndex) + columnWidthAt(table, endColumnIndex);
+    if (!table.rowBands.isEmpty()) {
+        if (const auto rowBandGeometry = canvasRowBandGeometryById(table, rowBandId); rowBandGeometry.has_value()) {
+            return QRectF(
+                left,
+                rowBandGeometry->rectMm.y(),
+                right - left,
+                rowBandGeometry->rectMm.height());
+        }
+    }
+
     const auto headerRowHeight = std::max(kMinimumCanvasRowHeightMm, table.headerRowHeightMm);
     const auto detailRowHeight = std::max(kMinimumCanvasRowHeightMm, table.detailRowHeightMm);
 
@@ -460,24 +661,41 @@ std::optional<TableCanvasHit> TemplateTableCanvasEditor::hitTest(
             hit.tableId = table.id;
             hit.columnIndex = columnIndex;
             hit.columnId = table.columns[columnIndex].id;
-            const auto headerRowHeight = std::max(kMinimumCanvasRowHeightMm, table.headerRowHeightMm);
-            const auto detailRowHeight = std::max(kMinimumCanvasRowHeightMm, table.detailRowHeightMm);
             const auto columnLeft = columnLeftAt(table, columnIndex);
             const auto columnWidth = columnWidthAt(table, columnIndex);
+            if (!table.rowBands.isEmpty()) {
+                for (const auto& rowBandGeometry : canvasRowBandGeometries(table)) {
+                    if (!rowBandGeometry.rectMm.contains(positionMm)) {
+                        continue;
+                    }
+                    hit.band = rowBandGeometry.band.kind == sleekpr::core::TableRowBandKind::Header
+                        ? TableCanvasBand::Header
+                        : TableCanvasBand::Detail;
+                    hit.rowBandId = rowBandGeometry.band.id;
+                    hit.rowOffset = 0;
+                    hit.cellRectMm = QRectF(columnLeft, rowBandGeometry.rectMm.y(), columnWidth, rowBandGeometry.rectMm.height());
+                    return hit;
+                }
+                continue;
+            }
+
+            const auto headerRowHeight = std::max(kMinimumCanvasRowHeightMm, table.headerRowHeightMm);
+            const auto detailRowHeight = std::max(kMinimumCanvasRowHeightMm, table.detailRowHeightMm);
             if (positionMm.y() <= table.y + headerRowHeight) {
                 hit.band = TableCanvasBand::Header;
                 hit.rowBandId = QStringLiteral("header");
                 hit.rowOffset = 0;
                 hit.cellRectMm = QRectF(columnLeft, table.y, columnWidth, headerRowHeight);
-            } else {
-                const auto detailY = table.y + headerRowHeight;
-                hit.band = TableCanvasBand::Detail;
-                hit.rowBandId = QStringLiteral("detail");
-                hit.rowOffset = std::max(0, static_cast<int>(std::floor((positionMm.y() - detailY) / detailRowHeight)));
-                const auto rowTop = detailY + hit.rowOffset * detailRowHeight;
-                const auto rowHeight = std::min(detailRowHeight, std::max(kMinimumCanvasRowHeightMm, table.y + table.height - rowTop));
-                hit.cellRectMm = QRectF(columnLeft, rowTop, columnWidth, rowHeight);
+                return hit;
             }
+
+            const auto detailY = table.y + headerRowHeight;
+            hit.band = TableCanvasBand::Detail;
+            hit.rowBandId = QStringLiteral("detail");
+            hit.rowOffset = std::max(0, static_cast<int>(std::floor((positionMm.y() - detailY) / detailRowHeight)));
+            const auto rowTop = detailY + hit.rowOffset * detailRowHeight;
+            const auto rowHeight = std::min(detailRowHeight, std::max(kMinimumCanvasRowHeightMm, table.y + table.height - rowTop));
+            hit.cellRectMm = QRectF(columnLeft, rowTop, columnWidth, rowHeight);
             return hit;
         }
     }
@@ -684,6 +902,99 @@ bool TemplateTableCanvasEditor::setSelectionAlignment(
     return forEachSelectionCell(table, selection, [table, alignment](const TableCanvasHit& hit) {
         return setCellAlignment(table, hit, alignment);
     });
+}
+
+bool TemplateTableCanvasEditor::insertRowBandAfter(
+    sleekpr::core::TableElement* table,
+    const QString& anchorRowBandId,
+    sleekpr::core::TableRowBandKind kind)
+{
+    if (table == nullptr) {
+        return false;
+    }
+
+    ensureEditableRowBands(table);
+    const auto anchorIndex = rowBandIndexById(*table, anchorRowBandId);
+    const auto insertIndex = anchorIndex >= 0 ? anchorIndex + 1 : table->rowBands.size();
+    table->rowBands.insert(insertIndex, createRowBandAfter(*table, kind));
+    return true;
+}
+
+bool TemplateTableCanvasEditor::deleteRowBand(sleekpr::core::TableElement* table, const QString& rowBandId)
+{
+    if (table == nullptr) {
+        return false;
+    }
+
+    ensureEditableRowBands(table);
+    const auto rowBandIndex = rowBandIndexById(*table, rowBandId);
+    if (rowBandIndex < 0 || table->rowBands.size() <= 1) {
+        return false;
+    }
+
+    const auto removedRowBandId = table->rowBands[rowBandIndex].id;
+    removeRowBandReferences(table, removedRowBandId);
+    table->rowBands.removeAt(rowBandIndex);
+    return true;
+}
+
+bool TemplateTableCanvasEditor::moveRowBandUp(sleekpr::core::TableElement* table, const QString& rowBandId)
+{
+    if (table == nullptr) {
+        return false;
+    }
+
+    ensureEditableRowBands(table);
+    const auto rowBandIndex = rowBandIndexById(*table, rowBandId);
+    if (rowBandIndex <= 0) {
+        return false;
+    }
+
+    table->rowBands.swapItemsAt(rowBandIndex, rowBandIndex - 1);
+    return true;
+}
+
+bool TemplateTableCanvasEditor::moveRowBandDown(sleekpr::core::TableElement* table, const QString& rowBandId)
+{
+    if (table == nullptr) {
+        return false;
+    }
+
+    ensureEditableRowBands(table);
+    const auto rowBandIndex = rowBandIndexById(*table, rowBandId);
+    if (rowBandIndex < 0 || rowBandIndex >= table->rowBands.size() - 1) {
+        return false;
+    }
+
+    table->rowBands.swapItemsAt(rowBandIndex, rowBandIndex + 1);
+    return true;
+}
+
+bool TemplateTableCanvasEditor::adjustRowBandHeight(
+    sleekpr::core::TableElement* table,
+    const QString& rowBandId,
+    double deltaMm)
+{
+    if (table == nullptr || std::abs(deltaMm) < 0.0001) {
+        return false;
+    }
+
+    ensureEditableRowBands(table);
+    const auto rowBandIndex = rowBandIndexById(*table, rowBandId);
+    if (rowBandIndex < 0) {
+        return false;
+    }
+
+    auto& rowBand = table->rowBands[rowBandIndex];
+    const auto nextHeight = std::max(kMinimumCanvasRowHeightMm, rowBand.heightMm + deltaMm);
+    if (std::abs(rowBand.heightMm - nextHeight) < 0.0001) {
+        return false;
+    }
+
+    rowBand.heightMm = nextHeight;
+    rowBand.minHeightMm = std::min(rowBand.minHeightMm, rowBand.heightMm);
+    syncLegacyRowHeightsFromBand(table, rowBand);
+    return true;
 }
 
 bool TemplateTableCanvasEditor::mergeCellRight(sleekpr::core::TableElement* table, const TableCanvasHit& hit)

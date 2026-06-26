@@ -83,6 +83,11 @@ constexpr auto kTableCanvasActionWrap = "tableCellWrap";
 constexpr auto kTableCanvasActionAlignLeft = "tableCellAlignLeft";
 constexpr auto kTableCanvasActionAlignCenter = "tableCellAlignCenter";
 constexpr auto kTableCanvasActionAlignRight = "tableCellAlignRight";
+constexpr auto kTableCanvasActionAddSubtotalBand = "tableRowBandAddSubtotal";
+constexpr auto kTableCanvasActionAddSummaryBand = "tableRowBandAddSummary";
+constexpr auto kTableCanvasActionAddFooterBand = "tableRowBandAddFooter";
+constexpr auto kTableCanvasActionGrowRowBand = "tableRowBandGrow";
+constexpr auto kTableCanvasActionShrinkRowBand = "tableRowBandShrink";
 
 QString tableCanvasActionId(const char* actionId)
 {
@@ -2953,6 +2958,11 @@ void TemplateDesignerWindow::refreshTableCanvasFloatingActions()
     actions.append(CanvasFloatingAction{tableCanvasActionId(kTableCanvasActionAlignLeft), QString::fromUtf8("左")});
     actions.append(CanvasFloatingAction{tableCanvasActionId(kTableCanvasActionAlignCenter), QString::fromUtf8("中")});
     actions.append(CanvasFloatingAction{tableCanvasActionId(kTableCanvasActionAlignRight), QString::fromUtf8("右")});
+    actions.append(CanvasFloatingAction{tableCanvasActionId(kTableCanvasActionAddSubtotalBand), QString::fromUtf8("小计+")});
+    actions.append(CanvasFloatingAction{tableCanvasActionId(kTableCanvasActionAddSummaryBand), QString::fromUtf8("汇总+")});
+    actions.append(CanvasFloatingAction{tableCanvasActionId(kTableCanvasActionAddFooterBand), QString::fromUtf8("页脚+")});
+    actions.append(CanvasFloatingAction{tableCanvasActionId(kTableCanvasActionGrowRowBand), QString::fromUtf8("行高+")});
+    actions.append(CanvasFloatingAction{tableCanvasActionId(kTableCanvasActionShrinkRowBand), QString::fromUtf8("行高-")});
     m_previewLabel->setCanvasFloatingActions(actions);
 }
 
@@ -3014,6 +3024,40 @@ void TemplateDesignerWindow::handleTableCanvasFloatingAction(const QString& acti
                 return TemplateTableCanvasEditor::setSelectionAlignment(table, selection, alignment);
             },
             QString::fromUtf8("已设置选区对齐"));
+        return;
+    }
+
+    if (actionId == tableCanvasActionId(kTableCanvasActionAddSubtotalBand)
+        || actionId == tableCanvasActionId(kTableCanvasActionAddSummaryBand)
+        || actionId == tableCanvasActionId(kTableCanvasActionAddFooterBand)) {
+        const auto kind = actionId == tableCanvasActionId(kTableCanvasActionAddSummaryBand)
+            ? sleekpr::core::TableRowBandKind::Summary
+            : (actionId == tableCanvasActionId(kTableCanvasActionAddFooterBand)
+                    ? sleekpr::core::TableRowBandKind::Footer
+                    : sleekpr::core::TableRowBandKind::Subtotal);
+        const auto statusText = actionId == tableCanvasActionId(kTableCanvasActionAddSummaryBand)
+            ? QString::fromUtf8("已新增汇总行带")
+            : (actionId == tableCanvasActionId(kTableCanvasActionAddFooterBand)
+                    ? QString::fromUtf8("已新增页脚行带")
+                    : QString::fromUtf8("已新增小计行带"));
+        applyTableCanvasSelectionMutation(
+            selection,
+            [selection, kind](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::insertRowBandAfter(table, selection.rowBandId, kind);
+            },
+            statusText);
+        return;
+    }
+
+    if (actionId == tableCanvasActionId(kTableCanvasActionGrowRowBand)
+        || actionId == tableCanvasActionId(kTableCanvasActionShrinkRowBand)) {
+        const auto deltaMm = actionId == tableCanvasActionId(kTableCanvasActionGrowRowBand) ? 1.0 : -1.0;
+        applyTableCanvasSelectionMutation(
+            selection,
+            [selection, deltaMm](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::adjustRowBandHeight(table, selection.rowBandId, deltaMm);
+            },
+            deltaMm > 0.0 ? QString::fromUtf8("已增大行带高度") : QString::fromUtf8("已减小行带高度"));
     }
 }
 
@@ -3106,6 +3150,13 @@ void TemplateDesignerWindow::showTableCanvasContextMenu(QPoint position, QPoint 
     auto* alignCenterAction = alignMenu->addAction(QString::fromUtf8("居中"));
     auto* alignRightAction = alignMenu->addAction(QString::fromUtf8("右对齐"));
     menu.addSeparator();
+    auto* addSubtotalBandAction = menu.addAction(QString::fromUtf8("在当前行带后新增小计"));
+    auto* addSummaryBandAction = menu.addAction(QString::fromUtf8("在当前行带后新增汇总"));
+    auto* addFooterBandAction = menu.addAction(QString::fromUtf8("在当前行带后新增页脚"));
+    auto* deleteRowBandAction = menu.addAction(QString::fromUtf8("删除当前行带"));
+    auto* moveRowBandUpAction = menu.addAction(QString::fromUtf8("上移当前行带"));
+    auto* moveRowBandDownAction = menu.addAction(QString::fromUtf8("下移当前行带"));
+    menu.addSeparator();
     auto* insertAction = menu.addAction(QString::fromUtf8("在右侧新增列"));
     auto* duplicateAction = menu.addAction(QString::fromUtf8("复制当前列"));
     auto* deleteAction = menu.addAction(QString::fromUtf8("删除当前列"));
@@ -3117,6 +3168,9 @@ void TemplateDesignerWindow::showTableCanvasContextMenu(QPoint position, QPoint 
     const auto columnCount = table != nullptr ? table->columns.size() : 0;
     mergeSelectionAction->setEnabled(activeSelection.has_value() && !activeSelection->isSingleCell());
     splitSelectionAction->setEnabled(activeSelection.has_value());
+    deleteRowBandAction->setEnabled(activeSelection.has_value());
+    moveRowBandUpAction->setEnabled(activeSelection.has_value());
+    moveRowBandDownAction->setEnabled(activeSelection.has_value());
     mergeRightAction->setEnabled(hit->columnIndex >= 0 && hit->columnIndex < columnCount - 1);
     deleteAction->setEnabled(columnCount > 1);
     moveLeftAction->setEnabled(hit->columnIndex > 0);
@@ -3209,6 +3263,81 @@ void TemplateDesignerWindow::showTableCanvasContextMenu(QPoint position, QPoint 
                 return TemplateTableCanvasEditor::setCellAlignment(table, *hit, sleekpr::core::TableCellAlignment::Right);
             },
             QString::fromUtf8("已设置单元格右对齐"));
+    });
+    connect(addSubtotalBandAction, &QAction::triggered, this, [this, activeSelection] {
+        if (!activeSelection.has_value()) {
+            return;
+        }
+        applyTableCanvasSelectionMutation(
+            *activeSelection,
+            [activeSelection](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::insertRowBandAfter(
+                    table,
+                    activeSelection->rowBandId,
+                    sleekpr::core::TableRowBandKind::Subtotal);
+            },
+            QString::fromUtf8("已新增小计行带"));
+    });
+    connect(addSummaryBandAction, &QAction::triggered, this, [this, activeSelection] {
+        if (!activeSelection.has_value()) {
+            return;
+        }
+        applyTableCanvasSelectionMutation(
+            *activeSelection,
+            [activeSelection](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::insertRowBandAfter(
+                    table,
+                    activeSelection->rowBandId,
+                    sleekpr::core::TableRowBandKind::Summary);
+            },
+            QString::fromUtf8("已新增汇总行带"));
+    });
+    connect(addFooterBandAction, &QAction::triggered, this, [this, activeSelection] {
+        if (!activeSelection.has_value()) {
+            return;
+        }
+        applyTableCanvasSelectionMutation(
+            *activeSelection,
+            [activeSelection](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::insertRowBandAfter(
+                    table,
+                    activeSelection->rowBandId,
+                    sleekpr::core::TableRowBandKind::Footer);
+            },
+            QString::fromUtf8("已新增页脚行带"));
+    });
+    connect(deleteRowBandAction, &QAction::triggered, this, [this, activeSelection] {
+        if (!activeSelection.has_value()) {
+            return;
+        }
+        applyTableCanvasSelectionMutation(
+            *activeSelection,
+            [activeSelection](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::deleteRowBand(table, activeSelection->rowBandId);
+            },
+            QString::fromUtf8("已删除当前行带"));
+    });
+    connect(moveRowBandUpAction, &QAction::triggered, this, [this, activeSelection] {
+        if (!activeSelection.has_value()) {
+            return;
+        }
+        applyTableCanvasSelectionMutation(
+            *activeSelection,
+            [activeSelection](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::moveRowBandUp(table, activeSelection->rowBandId);
+            },
+            QString::fromUtf8("已上移当前行带"));
+    });
+    connect(moveRowBandDownAction, &QAction::triggered, this, [this, activeSelection] {
+        if (!activeSelection.has_value()) {
+            return;
+        }
+        applyTableCanvasSelectionMutation(
+            *activeSelection,
+            [activeSelection](sleekpr::core::TableElement* table) {
+                return TemplateTableCanvasEditor::moveRowBandDown(table, activeSelection->rowBandId);
+            },
+            QString::fromUtf8("已下移当前行带"));
     });
     connect(insertAction, &QAction::triggered, this, [this, hit] {
         applyTableCanvasMutation(
