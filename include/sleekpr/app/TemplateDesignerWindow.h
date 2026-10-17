@@ -33,6 +33,8 @@ class QObject;
 class QPlainTextEdit;
 class QPushButton;
 class QTimer;
+class QShowEvent;
+class QResizeEvent;
 
 namespace sleekpr::core {
 struct TemplateElement;
@@ -44,6 +46,7 @@ namespace sleekpr::app {
 
 class TemplatePreviewLabel;
 class TemplateInspectorPanel;
+class TemplateWorkspacePanel;
 
 class TemplateDesignerWindow final : public QWidget
 {
@@ -74,6 +77,8 @@ public:
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
+    void showEvent(QShowEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
 
 private:
     struct TableColumnResizeDrag
@@ -126,6 +131,9 @@ private:
     void refreshElementPropertyEditor();
     void refreshTablePropertyEditor();
     void refreshPreview();
+    void fitPreviewToCanvas();
+    void scheduleCanvasFit();
+    void flushPendingPropertyEdits();
     void schedulePreviewRefresh(int delayMs);
     void scheduleSelectionPropertyRefresh(int delayMs);
     void scheduleSettingsChanged(int delayMs);
@@ -141,6 +149,8 @@ private:
     bool selectElementInCurrentList(const QString& elementId);
     bool selectTemplateInLibraryList(const QString& templateId);
     bool canEditElement(const QString& elementId) const;
+    bool elementIdIsTable(const QString& elementId) const;
+    bool canvasElementOverridesTable(const QString& elementId, const QString& tableId) const;
     bool currentSelectionIsTable() const;
     void renameElementFromListItem(QListWidgetItem* item);
     void beginRenameCurrentElement();
@@ -179,8 +189,18 @@ private:
     void updateTableCanvasSelectionAt(QPoint position);
     void refreshTableCanvasFloatingActions();
     void handleTableCanvasFloatingAction(const QString& actionId);
+    void handleCanvasClick(QPoint position, Qt::KeyboardModifiers modifiers);
+    bool handleTableCanvasShortcut(int key, Qt::KeyboardModifiers modifiers);
+    std::optional<QString> canvasElementHitAt(QPoint position) const;
     std::optional<TableCanvasHit> tableCanvasHitAt(QPoint position) const;
     std::optional<TableCanvasSelection> tableCanvasSelectionFromHits(const TableCanvasHit& anchor, const TableCanvasHit& target) const;
+    bool selectTableCanvasCell(const TableCanvasHit& hit);
+    bool selectCurrentTableCanvasRows();
+    bool selectCurrentTableCanvasColumns();
+    bool mergeCurrentTableCanvasSelection();
+    bool splitCurrentTableCanvasSelection();
+    bool setTableCanvasSelection(const TableCanvasSelection& selection, const QString& statusText);
+    std::optional<TableCanvasSelection> expandedTableCanvasSelection(bool expandColumns, bool expandRows) const;
     void editTableCanvasCellAt(QPoint position);
     void showTableCanvasContextMenu(QPoint position, QPoint globalPosition);
     bool editTableCanvasColumnText(const TableCanvasHit& hit);
@@ -216,6 +236,7 @@ private:
     QListWidget* m_layerList = nullptr;
     QListWidget* m_elementList = nullptr;
     TemplateInspectorPanel* m_inspectorPanel = nullptr;
+    TemplateWorkspacePanel* m_workspacePanel = nullptr;
     TemplatePreviewLabel* m_previewLabel = nullptr;
     QLabel* m_statusLabel = nullptr;
     QLabel* m_sampleDataErrorLabel = nullptr;
@@ -240,6 +261,11 @@ private:
     QTimer* m_propertyRefreshTimer = nullptr;
     QTimer* m_settingsChangedTimer = nullptr;
     double m_previewZoomFactor = 1.0;
+    double m_previewBaseDpi = 0.0;
+    bool m_fitToCanvas = true;
+    bool m_updatingCanvasZoom = false;
+    bool m_canvasFitQueued = false;
+    int m_fitZoomIndex = -1;
     bool m_updatingPropertyEditors = false;
     bool m_applyingElementListOrder = false;
     std::optional<TableColumnResizeDrag> m_tableColumnResizeDrag;

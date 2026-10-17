@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(SLEEKPR_ENABLE_RELEASE_ORCHESTRATOR "Enable the release packaging orchestrator target" ON)
+option(SLEEKPR_ENABLE_TABLE_DESIGNER "启用延后的复杂表格设计器" OFF)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Network Gui Widgets PrintSupport Test)
 qt_standard_project_setup()
@@ -86,6 +87,7 @@ target_link_libraries(sleekpr_http
 )
 
 add_executable(sleekpr
+    resources/sleekpr-ui.qrc
     src/app/AppTheme.cpp
     src/app/TableAdvancedEditorPanel.cpp
     include/sleekpr/app/TableAdvancedEditorPanel.h
@@ -121,6 +123,10 @@ add_executable(sleekpr
 
 # 桌面客户端使用 Windows GUI 子系统，双击 exe 时不弹出控制台黑框。
 set_target_properties(sleekpr PROPERTIES WIN32_EXECUTABLE TRUE)
+set_target_properties(sleekpr PROPERTIES AUTORCC ON)
+target_compile_definitions(sleekpr PRIVATE
+    SLEEKPR_ENABLE_TABLE_DESIGNER=$<BOOL:${SLEEKPR_ENABLE_TABLE_DESIGNER}>
+)
 
 target_link_libraries(sleekpr
     PRIVATE
@@ -164,6 +170,7 @@ if(WIN32)
             "-DCMAKE_BUILD_TYPE=Release"
             "-DCMAKE_PREFIX_PATH=${SLEEKPR_QT_PREFIX}"
             "-DSLEEKPR_ENABLE_RELEASE_ORCHESTRATOR=OFF"
+            "-DSLEEKPR_ENABLE_TABLE_DESIGNER=OFF"
         )
         if(CMAKE_GENERATOR_PLATFORM)
             list(APPEND SLEEKPR_RELEASE_CONFIGURE_ARGS -A "${CMAKE_GENERATOR_PLATFORM}")

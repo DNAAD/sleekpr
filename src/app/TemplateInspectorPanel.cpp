@@ -1,5 +1,7 @@
 #include "sleekpr/app/TemplateInspectorPanel.h"
 
+#include "sleekpr/app/AppTheme.h"
+#include "sleekpr/app/DesignerFeatures.h"
 #include "sleekpr/app/TableAdvancedEditorPanel.h"
 #include "sleekpr/app/TableColumnEditorPanel.h"
 #include "sleekpr/app/TableColumnTextCodec.h"
@@ -9,9 +11,11 @@
 #include <QCheckBox>
 #include <QDoubleSpinBox>
 #include <QGridLayout>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScopedValueRollback>
@@ -45,6 +49,9 @@ QDoubleSpinBox* createProfileSpinBox(
     spinBox->setRange(minimum, maximum);
     spinBox->setDecimals(3);
     spinBox->setSingleStep(0.01);
+    spinBox->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    spinBox->setMinimumWidth(0);
+    spinBox->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     spinBox->setValue(value);
     return spinBox;
 }
@@ -61,6 +68,9 @@ QDoubleSpinBox* createInspectorSpinBox(
     spinBox->setRange(minimum, maximum);
     spinBox->setDecimals(2);
     spinBox->setSingleStep(0.5);
+    spinBox->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    spinBox->setMinimumWidth(0);
+    spinBox->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     spinBox->setValue(value);
     return spinBox;
 }
@@ -70,6 +80,7 @@ QSpinBox* createGridSpinBox(const QString& objectName, int minimum, int maximum,
     auto* spinBox = new QSpinBox(parent);
     spinBox->setObjectName(objectName);
     spinBox->setRange(minimum, maximum);
+    spinBox->setButtonSymbols(QAbstractSpinBox::NoButtons);
     spinBox->setValue(value);
     return spinBox;
 }
@@ -93,6 +104,7 @@ void installEditorFilter(QObject* filterTarget, QWidget* editor)
     }
 }
 
+#if SLEEKPR_ENABLE_TABLE_DESIGNER
 QList<sleekpr::core::TableColumn> tableColumnsFromDesignerModels(const QList<DesignerTableColumnModel>& models)
 {
     QList<sleekpr::core::TableColumn> columns;
@@ -114,6 +126,7 @@ QList<sleekpr::core::TableColumn> tableColumnsFromDesignerModels(const QList<Des
     }
     return columns;
 }
+#endif
 
 } // 命名空间
 
@@ -122,17 +135,27 @@ TemplateInspectorPanel::TemplateInspectorPanel(QWidget* parent)
 {
     setObjectName(QStringLiteral("designerInspectorScrollArea"));
     setWidgetResizable(true);
-    setMinimumWidth(320);
+    setMinimumWidth(260);
+    setMaximumWidth(340);
+    setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
     auto* elementPanel = new QWidget(this);
     elementPanel->setObjectName(QStringLiteral("designerInspectorPanel"));
     auto* elementLayout = new QVBoxLayout(elementPanel);
-    elementLayout->setContentsMargins(10, 10, 10, 10);
+    elementLayout->setContentsMargins(8, 8, 8, 8);
     elementLayout->setSpacing(8);
 
-    auto* elementTitleLabel = new QLabel(QString::fromUtf8("元素"), elementPanel);
+    m_elementListSection = new QWidget(elementPanel);
+    m_elementListSection->setObjectName(QStringLiteral("designerObjectSection"));
+    auto* objectLayout = new QVBoxLayout(m_elementListSection);
+    objectLayout->setContentsMargins(8, 0, 8, 8);
+    objectLayout->setSpacing(6);
+    auto* objectHeader = new QHBoxLayout();
+    objectHeader->setContentsMargins(0, 0, 0, 0);
+    objectHeader->setSpacing(4);
+    auto* elementTitleLabel = new QLabel(QString::fromUtf8("对象"), m_elementListSection);
     elementTitleLabel->setObjectName(QStringLiteral("designerPanelTitle"));
-    m_elementList = new QListWidget(elementPanel);
+    m_elementList = new QListWidget(m_elementListSection);
     m_elementList->setObjectName(QStringLiteral("templateElementList"));
     m_elementList->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
     m_elementList->setDragDropMode(QAbstractItemView::InternalMove);
@@ -159,19 +182,57 @@ TemplateInspectorPanel::TemplateInspectorPanel(QWidget* parent)
     m_elementList->addAction(m_moveElementUpAction);
     m_elementList->addAction(m_moveElementDownAction);
 
-    m_addFixedTextButton = createInspectorButton(QString::fromUtf8("固定文本"), QStringLiteral("designerAddFixedTextButton"), elementPanel);
-    m_addBoundFieldButton = createInspectorButton(QString::fromUtf8("绑定字段"), QStringLiteral("designerAddBoundFieldButton"), elementPanel);
-    m_addQrCodeButton = createInspectorButton(QString::fromUtf8("二维码"), QStringLiteral("designerAddQrCodeButton"), elementPanel);
-    m_addRectangleButton = createInspectorButton(QString::fromUtf8("矩形"), QStringLiteral("designerAddRectangleButton"), elementPanel);
-    m_addTableButton = createInspectorButton(QString::fromUtf8("表格"), QStringLiteral("designerAddTableButton"), elementPanel);
-    m_addArrayGridButton = createInspectorButton(QString::fromUtf8("数组网格"), QStringLiteral("designerAddArrayGridButton"), elementPanel);
-    m_deleteElementButton = createInspectorButton(QString::fromUtf8("删除元素"), QStringLiteral("deleteElementButton"), elementPanel);
-    m_deleteElementButton->setProperty("buttonRole", QStringLiteral("danger"));
-    m_lockElementButton = createInspectorButton(QString::fromUtf8("锁定元素"), QStringLiteral("lockElementButton"), elementPanel);
-    m_hideElementButton = createInspectorButton(QString::fromUtf8("隐藏元素"), QStringLiteral("hideElementButton"), elementPanel);
-    m_moveElementUpButton = createInspectorButton(QString::fromUtf8("上移元素"), QStringLiteral("moveElementUpButton"), elementPanel);
-    m_moveElementDownButton = createInspectorButton(QString::fromUtf8("下移元素"), QStringLiteral("moveElementDownButton"), elementPanel);
+    m_insertionTools = new QWidget(elementPanel);
+    m_insertionTools->setObjectName(QStringLiteral("designerInsertionTools"));
+    auto* insertionLayout = new QHBoxLayout(m_insertionTools);
+    insertionLayout->setContentsMargins(0, 0, 0, 0);
+    insertionLayout->setSpacing(2);
+    const auto addInsertionButton = [this, insertionLayout](const QString& text, const QString& name, const QString& tooltip) {
+        auto* button = createInspectorButton(text, name, m_insertionTools);
+        button->setToolTip(tooltip);
+        button->setProperty("buttonRole", QStringLiteral("tool"));
+        insertionLayout->addWidget(button);
+        return button;
+    };
+    m_addFixedTextButton = addInsertionButton(QString::fromUtf8("文本"), QStringLiteral("designerAddFixedTextButton"), QString::fromUtf8("插入固定文本"));
+    m_addBoundFieldButton = addInsertionButton(QString::fromUtf8("字段"), QStringLiteral("designerAddBoundFieldButton"), QString::fromUtf8("插入绑定字段"));
+    m_addQrCodeButton = addInsertionButton(QString::fromUtf8("二维码"), QStringLiteral("designerAddQrCodeButton"), QString::fromUtf8("插入二维码"));
+    m_addRectangleButton = addInsertionButton(QString::fromUtf8("矩形"), QStringLiteral("designerAddRectangleButton"), QString::fromUtf8("插入矩形"));
+#if SLEEKPR_ENABLE_TABLE_DESIGNER
+    m_addTableButton = addInsertionButton(QString::fromUtf8("表格"), QStringLiteral("designerAddTableButton"), QString::fromUtf8("插入表格"));
+#endif
+    m_addArrayGridButton = addInsertionButton(QString::fromUtf8("网格"), QStringLiteral("designerAddArrayGridButton"), QString::fromUtf8("插入数组网格"));
+    m_deleteElementButton = createInspectorButton(QString::fromUtf8("删除元素"), QStringLiteral("deleteElementButton"), m_elementListSection);
+    configureIconButton(m_deleteElementButton, QStyle::SP_TrashIcon, QString::fromUtf8("删除对象"));
+    m_deleteElementButton->setProperty("destructive", true);
+    m_lockElementButton = createInspectorButton(QString::fromUtf8("锁定元素"), QStringLiteral("lockElementButton"), m_elementListSection);
+    m_hideElementButton = createInspectorButton(QString::fromUtf8("隐藏元素"), QStringLiteral("hideElementButton"), m_elementListSection);
+    m_moveElementUpButton = createInspectorButton(QString::fromUtf8("上移元素"), QStringLiteral("moveElementUpButton"), m_elementListSection);
+    m_moveElementDownButton = createInspectorButton(QString::fromUtf8("下移元素"), QStringLiteral("moveElementDownButton"), m_elementListSection);
+    // 旧按钮保留供已有调用方使用，菜单复用主窗口已绑定的 QAction，避免重复执行命令。
+    m_lockElementButton->hide();
+    m_hideElementButton->hide();
+    m_moveElementUpButton->hide();
+    m_moveElementDownButton->hide();
+    auto* moreButton = createInspectorButton({}, QStringLiteral("designerObjectMoreButton"), m_elementListSection);
+    configureIconButton(moreButton, QStyle::SP_TitleBarMenuButton, QString::fromUtf8("更多对象操作"));
+    auto* objectMenu = new QMenu(moreButton);
+    objectMenu->addAction(m_renameElementAction);
+    objectMenu->addAction(m_lockElementAction);
+    objectMenu->addAction(m_hideElementAction);
+    objectMenu->addSeparator();
+    objectMenu->addAction(m_moveElementUpAction);
+    objectMenu->addAction(m_moveElementDownAction);
+    moreButton->setMenu(objectMenu);
+    objectHeader->addWidget(elementTitleLabel);
+    objectHeader->addStretch(1);
+    objectHeader->addWidget(m_deleteElementButton);
+    objectHeader->addWidget(moreButton);
+    objectLayout->addLayout(objectHeader);
+    objectLayout->addWidget(m_elementList, 1);
 
+#if SLEEKPR_ENABLE_TABLE_DESIGNER
+    // 标签版本不构造表格专属控件，避免隐藏控件仍被发现或触发编辑。
     auto* tablePropertyTitleLabel = new QLabel(QString::fromUtf8("表格属性"), elementPanel);
     m_tableDisplayNameEdit = new QLineEdit(elementPanel);
     m_tableDisplayNameEdit->setObjectName(QStringLiteral("tableDisplayNameEdit"));
@@ -198,6 +259,7 @@ TemplateInspectorPanel::TemplateInspectorPanel(QWidget* parent)
         QStringLiteral("applyTablePropertiesButton"),
         elementPanel);
     m_applyTablePropertiesButton->setProperty("buttonRole", QStringLiteral("primary"));
+#endif
 
     auto* deviceProfileTitleLabel = new QLabel(QString::fromUtf8("设备校准"), elementPanel);
     m_deviceProfilePrinterEdit = new QLineEdit(elementPanel);
@@ -219,41 +281,41 @@ TemplateInspectorPanel::TemplateInspectorPanel(QWidget* parent)
     m_saveDeviceProfileButton = createInspectorButton(QString::fromUtf8("保存校准"), QStringLiteral("saveDeviceProfileButton"), elementPanel);
     m_saveDeviceProfileButton->setProperty("buttonRole", QStringLiteral("primary"));
 
-    auto* addElementGrid = new QGridLayout();
-    addElementGrid->setContentsMargins(0, 0, 0, 0);
-    addElementGrid->addWidget(m_addFixedTextButton, 0, 0);
-    addElementGrid->addWidget(m_addBoundFieldButton, 0, 1);
-    addElementGrid->addWidget(m_addQrCodeButton, 1, 0);
-    addElementGrid->addWidget(m_addRectangleButton, 1, 1);
-    addElementGrid->addWidget(m_addTableButton, 2, 0);
-    addElementGrid->addWidget(m_addArrayGridButton, 2, 1);
-
-    auto* editElementGrid = new QGridLayout();
-    editElementGrid->setContentsMargins(0, 0, 0, 0);
-    editElementGrid->addWidget(m_deleteElementButton, 0, 0);
-    editElementGrid->addWidget(m_lockElementButton, 0, 1);
-    editElementGrid->addWidget(m_hideElementButton, 1, 0);
-    editElementGrid->addWidget(m_moveElementUpButton, 1, 1);
-    editElementGrid->addWidget(m_moveElementDownButton, 2, 0, 1, 2);
-
-    auto* elementPropertyTitleLabel = new QLabel(QString::fromUtf8("元素属性"), elementPanel);
-    auto* elementValueLabel = new QLabel(QString::fromUtf8("内容（可用 ${fieldKey} 占位）"), elementPanel);
-    m_elementValueEdit = new QPlainTextEdit(elementPanel);
+    m_emptySelectionLabel = new QLabel(QString::fromUtf8("未选择对象"), elementPanel);
+    m_emptySelectionLabel->setObjectName(QStringLiteral("designerEmptySelectionLabel"));
+    m_elementContentSection = new QWidget(elementPanel);
+    m_elementContentSection->setObjectName(QStringLiteral("designerContentSection"));
+    auto* contentLayout = new QVBoxLayout(m_elementContentSection);
+    contentLayout->setContentsMargins(0, 0, 0, 0);
+    contentLayout->setSpacing(6);
+    m_elementValueLabel = new QLabel(QString::fromUtf8("文本内容"), m_elementContentSection);
+    m_elementValueLabel->setObjectName(QStringLiteral("designerContentLabel"));
+    m_elementValueEdit = new QPlainTextEdit(m_elementContentSection);
     m_elementValueEdit->setObjectName(QStringLiteral("elementValueEdit"));
     m_elementValueEdit->setFixedHeight(72);
     m_elementValueEdit->setPlaceholderText(QString::fromUtf8("例如：地址:${address}"));
+    contentLayout->addWidget(m_elementValueLabel);
+    contentLayout->addWidget(m_elementValueEdit);
     m_elementXSpin = createInspectorSpinBox(QStringLiteral("elementXSpin"), 0.0, 1000.0, 5.0, elementPanel);
     m_elementYSpin = createInspectorSpinBox(QStringLiteral("elementYSpin"), 0.0, 1000.0, 5.0, elementPanel);
     m_elementWidthSpin = createInspectorSpinBox(QStringLiteral("elementWidthSpin"), 0.1, 1000.0, 10.0, elementPanel);
     m_elementHeightSpin = createInspectorSpinBox(QStringLiteral("elementHeightSpin"), 0.1, 1000.0, 3.0, elementPanel);
     m_elementFontSizeSpin = createInspectorSpinBox(QStringLiteral("elementFontSizeSpin"), 1.0, 96.0, 4.0, elementPanel);
     m_elementRotationSpin = createInspectorSpinBox(QStringLiteral("elementRotationSpin"), -360.0, 360.0, 0.0, elementPanel);
+    m_elementXSpin->setSuffix(QStringLiteral(" mm"));
+    m_elementYSpin->setSuffix(QStringLiteral(" mm"));
+    m_elementWidthSpin->setSuffix(QStringLiteral(" mm"));
+    m_elementHeightSpin->setSuffix(QStringLiteral(" mm"));
+    m_elementFontSizeSpin->setSuffix(QStringLiteral(" pt"));
+    m_elementRotationSpin->setSuffix(QString::fromUtf8("°"));
     m_elementBoldCheck = new QCheckBox(QString::fromUtf8("加粗"), elementPanel);
     m_elementBoldCheck->setObjectName(QStringLiteral("elementBoldCheck"));
     m_elementAutoFitFontCheck = new QCheckBox(QString::fromUtf8("自动适配字号"), elementPanel);
     m_elementAutoFitFontCheck->setObjectName(QStringLiteral("elementAutoFitFontCheck"));
     m_elementAutoFitMinFontSizeSpin = createInspectorSpinBox(QStringLiteral("elementAutoFitMinFontSizeSpin"), 1.0, 96.0, 3.0, elementPanel);
     m_elementAutoFitMaxFontSizeSpin = createInspectorSpinBox(QStringLiteral("elementAutoFitMaxFontSizeSpin"), 1.0, 96.0, 12.0, elementPanel);
+    m_elementAutoFitMinFontSizeSpin->setSuffix(QStringLiteral(" pt"));
+    m_elementAutoFitMaxFontSizeSpin->setSuffix(QStringLiteral(" pt"));
     m_elementVerticalTextCheck = new QCheckBox(QString::fromUtf8("竖排文本"), elementPanel);
     m_elementVerticalTextCheck->setObjectName(QStringLiteral("elementVerticalTextCheck"));
 
@@ -264,6 +326,8 @@ TemplateInspectorPanel::TemplateInspectorPanel(QWidget* parent)
     m_arrayGridRowsSpin = createGridSpinBox(QStringLiteral("arrayGridRowsSpin"), 1, 20, 2, elementPanel);
     m_arrayGridColumnsSpin = createGridSpinBox(QStringLiteral("arrayGridColumnsSpin"), 1, 20, 3, elementPanel);
     m_arrayGridRowHeightSpin = createInspectorSpinBox(QStringLiteral("arrayGridRowHeightSpin"), 0.0, 100.0, 0.0, elementPanel);
+    m_arrayGridRowHeightSpin->setSuffix(QStringLiteral(" mm"));
+    m_arrayGridRowHeightSpin->setSpecialValueText(QString::fromUtf8("自动"));
     m_arrayGridCellTemplateEdit = new QPlainTextEdit(elementPanel);
     m_arrayGridCellTemplateEdit->setObjectName(QStringLiteral("arrayGridCellTemplateEdit"));
     m_arrayGridCellTemplateEdit->setFixedHeight(56);
@@ -280,7 +344,11 @@ TemplateInspectorPanel::TemplateInspectorPanel(QWidget* parent)
         QStringLiteral("applyArrayGridPropertiesButton"),
         elementPanel);
     m_applyArrayGridPropertiesButton->setProperty("buttonRole", QStringLiteral("primary"));
+    // 自动应用已接管编辑流程，保留隐藏按钮兼容旧调用方直接 click()。
+    m_applyElementPropertiesButton->hide();
+    m_applyArrayGridPropertiesButton->hide();
 
+#if SLEEKPR_ENABLE_TABLE_DESIGNER
     auto* tablePropertyGrid = new QGridLayout();
     tablePropertyGrid->setContentsMargins(0, 0, 0, 0);
     tablePropertyGrid->addWidget(new QLabel(QString::fromUtf8("名称"), elementPanel), 0, 0);
@@ -303,28 +371,68 @@ TemplateInspectorPanel::TemplateInspectorPanel(QWidget* parent)
     tablePropertyGrid->addWidget(m_tableDrawBordersCheck, 9, 0, 1, 2);
     tablePropertyGrid->addWidget(new QLabel(QString::fromUtf8("列"), elementPanel), 10, 0);
     tablePropertyGrid->addWidget(m_tableColumnsEdit, 10, 1);
+#endif
 
+    m_elementCommonSection = new QWidget(elementPanel);
+    m_elementCommonSection->setObjectName(QStringLiteral("designerElementCommonSection"));
+    auto* commonLayout = new QVBoxLayout(m_elementCommonSection);
+    commonLayout->setContentsMargins(0, 0, 0, 0);
+    commonLayout->setSpacing(12);
+    auto* geometrySection = new QWidget(m_elementCommonSection);
+    geometrySection->setObjectName(QStringLiteral("designerLayoutSection"));
+    auto* geometryLayout = new QVBoxLayout(geometrySection);
+    geometryLayout->setContentsMargins(0, 0, 0, 0);
+    geometryLayout->setSpacing(6);
+    auto* geometryTitle = new QLabel(QString::fromUtf8("布局"), geometrySection);
+    geometryTitle->setObjectName(QStringLiteral("designerSectionTitle"));
+    geometryLayout->addWidget(geometryTitle);
     auto* elementGeometryGrid = new QGridLayout();
     elementGeometryGrid->setContentsMargins(0, 0, 0, 0);
-    elementGeometryGrid->addWidget(new QLabel(QStringLiteral("X"), elementPanel), 0, 0);
+    elementGeometryGrid->setHorizontalSpacing(6);
+    elementGeometryGrid->setVerticalSpacing(6);
+    elementGeometryGrid->setColumnStretch(1, 1);
+    elementGeometryGrid->setColumnStretch(3, 1);
+    elementGeometryGrid->addWidget(new QLabel(QStringLiteral("X"), geometrySection), 0, 0);
     elementGeometryGrid->addWidget(m_elementXSpin, 0, 1);
-    elementGeometryGrid->addWidget(new QLabel(QStringLiteral("Y"), elementPanel), 1, 0);
-    elementGeometryGrid->addWidget(m_elementYSpin, 1, 1);
-    elementGeometryGrid->addWidget(new QLabel(QString::fromUtf8("宽"), elementPanel), 2, 0);
-    elementGeometryGrid->addWidget(m_elementWidthSpin, 2, 1);
-    elementGeometryGrid->addWidget(new QLabel(QString::fromUtf8("高"), elementPanel), 3, 0);
-    elementGeometryGrid->addWidget(m_elementHeightSpin, 3, 1);
-    elementGeometryGrid->addWidget(new QLabel(QString::fromUtf8("字号"), elementPanel), 4, 0);
-    elementGeometryGrid->addWidget(m_elementFontSizeSpin, 4, 1);
-    elementGeometryGrid->addWidget(new QLabel(QString::fromUtf8("旋转"), elementPanel), 5, 0);
-    elementGeometryGrid->addWidget(m_elementRotationSpin, 5, 1);
-    elementGeometryGrid->addWidget(m_elementBoldCheck, 6, 0, 1, 2);
-    elementGeometryGrid->addWidget(m_elementAutoFitFontCheck, 7, 0, 1, 2);
-    elementGeometryGrid->addWidget(new QLabel(QString::fromUtf8("最小字号"), elementPanel), 8, 0);
-    elementGeometryGrid->addWidget(m_elementAutoFitMinFontSizeSpin, 8, 1);
-    elementGeometryGrid->addWidget(new QLabel(QString::fromUtf8("最大字号"), elementPanel), 9, 0);
-    elementGeometryGrid->addWidget(m_elementAutoFitMaxFontSizeSpin, 9, 1);
-    elementGeometryGrid->addWidget(m_elementVerticalTextCheck, 10, 0, 1, 2);
+    elementGeometryGrid->addWidget(new QLabel(QStringLiteral("Y"), geometrySection), 0, 2);
+    elementGeometryGrid->addWidget(m_elementYSpin, 0, 3);
+    elementGeometryGrid->addWidget(new QLabel(QString::fromUtf8("宽"), geometrySection), 1, 0);
+    elementGeometryGrid->addWidget(m_elementWidthSpin, 1, 1);
+    elementGeometryGrid->addWidget(new QLabel(QString::fromUtf8("高"), geometrySection), 1, 2);
+    elementGeometryGrid->addWidget(m_elementHeightSpin, 1, 3);
+    elementGeometryGrid->addWidget(new QLabel(QString::fromUtf8("旋转"), geometrySection), 2, 0);
+    elementGeometryGrid->addWidget(m_elementRotationSpin, 2, 1, 1, 3);
+    geometryLayout->addLayout(elementGeometryGrid);
+    commonLayout->addWidget(geometrySection);
+
+    m_textStyleSection = new QWidget(m_elementCommonSection);
+    m_textStyleSection->setObjectName(QStringLiteral("designerTextStyleSection"));
+    auto* textStyleLayout = new QVBoxLayout(m_textStyleSection);
+    textStyleLayout->setContentsMargins(0, 0, 0, 0);
+    textStyleLayout->setSpacing(6);
+    auto* textStyleTitle = new QLabel(QString::fromUtf8("文字样式"), m_textStyleSection);
+    textStyleTitle->setObjectName(QStringLiteral("designerSectionTitle"));
+    textStyleLayout->addWidget(textStyleTitle);
+    auto* fontSizeRow = new QHBoxLayout();
+    fontSizeRow->addWidget(new QLabel(QString::fromUtf8("字号"), m_textStyleSection));
+    fontSizeRow->addWidget(m_elementFontSizeSpin, 1);
+    fontSizeRow->addWidget(m_elementBoldCheck);
+    textStyleLayout->addLayout(fontSizeRow);
+    textStyleLayout->addWidget(m_elementVerticalTextCheck);
+    textStyleLayout->addWidget(m_elementAutoFitFontCheck);
+    m_autoFitRangeSection = new QWidget(m_textStyleSection);
+    m_autoFitRangeSection->setObjectName(QStringLiteral("designerAutoFitRangeSection"));
+    auto* autoFitRangeLayout = new QGridLayout(m_autoFitRangeSection);
+    autoFitRangeLayout->setContentsMargins(0, 0, 0, 0);
+    autoFitRangeLayout->setHorizontalSpacing(6);
+    autoFitRangeLayout->setColumnStretch(1, 1);
+    autoFitRangeLayout->setColumnStretch(3, 1);
+    autoFitRangeLayout->addWidget(new QLabel(QString::fromUtf8("最小"), m_autoFitRangeSection), 0, 0);
+    autoFitRangeLayout->addWidget(m_elementAutoFitMinFontSizeSpin, 0, 1);
+    autoFitRangeLayout->addWidget(new QLabel(QString::fromUtf8("最大"), m_autoFitRangeSection), 0, 2);
+    autoFitRangeLayout->addWidget(m_elementAutoFitMaxFontSizeSpin, 0, 3);
+    textStyleLayout->addWidget(m_autoFitRangeSection);
+    commonLayout->addWidget(m_textStyleSection);
 
     auto* arrayGridPropertyGrid = new QGridLayout();
     arrayGridPropertyGrid->setContentsMargins(0, 0, 0, 0);
@@ -363,23 +471,23 @@ TemplateInspectorPanel::TemplateInspectorPanel(QWidget* parent)
     deviceProfileGrid->addWidget(new QLabel(QString::fromUtf8("实际高度"), elementPanel), 9, 0);
     deviceProfileGrid->addWidget(m_deviceCalibrationActualHeightSpin, 9, 1);
 
-    auto* inspectorTabs = new QTabWidget(elementPanel);
+    m_inspectorTabs = new QTabWidget(elementPanel);
+    auto* inspectorTabs = m_inspectorTabs;
     inspectorTabs->setObjectName(QStringLiteral("designerInspectorTabs"));
-    auto* elementTab = new QWidget(inspectorTabs);
+    inspectorTabs->setUsesScrollButtons(true);
+    m_elementTab = new QWidget(inspectorTabs);
+    auto* elementTab = m_elementTab;
     elementTab->setObjectName(QStringLiteral("designerElementInspectorTab"));
     auto* elementTabLayout = new QVBoxLayout(elementTab);
     elementTabLayout->setContentsMargins(8, 8, 8, 8);
     elementTabLayout->setSpacing(8);
-    elementTabLayout->addWidget(elementTitleLabel);
-    elementTabLayout->addWidget(m_elementList, 1);
-    elementTabLayout->addLayout(addElementGrid);
-    elementTabLayout->addLayout(editElementGrid);
-    elementTabLayout->addWidget(elementPropertyTitleLabel);
-    elementTabLayout->addWidget(elementValueLabel);
-    elementTabLayout->addWidget(m_elementValueEdit);
-    elementTabLayout->addLayout(elementGeometryGrid);
+    elementTabLayout->addWidget(m_emptySelectionLabel);
+    elementTabLayout->addWidget(m_elementContentSection);
+    elementTabLayout->addWidget(m_elementCommonSection);
     elementTabLayout->addWidget(m_applyElementPropertiesButton);
+    elementTabLayout->addStretch(1);
 
+#if SLEEKPR_ENABLE_TABLE_DESIGNER
     auto* tableTab = new QWidget(inspectorTabs);
     tableTab->setObjectName(QStringLiteral("designerTableInspectorTab"));
     auto* tableTabLayout = new QVBoxLayout(tableTab);
@@ -391,8 +499,10 @@ TemplateInspectorPanel::TemplateInspectorPanel(QWidget* parent)
     tableTabLayout->addWidget(m_tableAdvancedEditor);
     tableTabLayout->addWidget(m_applyTablePropertiesButton);
     tableTabLayout->addStretch(1);
+#endif
 
-    auto* arrayGridTab = new QWidget(inspectorTabs);
+    m_arrayGridTab = new QWidget(inspectorTabs);
+    auto* arrayGridTab = m_arrayGridTab;
     arrayGridTab->setObjectName(QStringLiteral("designerArrayGridInspectorTab"));
     auto* arrayGridTabLayout = new QVBoxLayout(arrayGridTab);
     arrayGridTabLayout->setContentsMargins(8, 8, 8, 8);
@@ -413,10 +523,15 @@ TemplateInspectorPanel::TemplateInspectorPanel(QWidget* parent)
     deviceTabLayout->addWidget(m_saveDeviceProfileButton);
     deviceTabLayout->addStretch(1);
 
-    inspectorTabs->addTab(elementTab, QString::fromUtf8("元素"));
+    inspectorTabs->addTab(elementTab, QString::fromUtf8("属性"));
+#if SLEEKPR_ENABLE_TABLE_DESIGNER
     inspectorTabs->addTab(tableTab, QString::fromUtf8("表格"));
+#endif
     inspectorTabs->addTab(arrayGridTab, QString::fromUtf8("数组网格"));
-    inspectorTabs->addTab(deviceTab, QString::fromUtf8("设备校准"));
+    inspectorTabs->addTab(deviceTab, QString::fromUtf8("高级"));
+    // 独立检查器先收纳两个区域；主窗口可把整个 host 移入左栏和画布工具栏。
+    elementLayout->addWidget(m_elementListSection);
+    elementLayout->addWidget(m_insertionTools);
     elementLayout->addWidget(inspectorTabs, 1);
     setWidget(elementPanel);
     connectPropertySignals();
@@ -427,13 +542,47 @@ TemplateInspectorPanel::TemplateInspectorPanel(QWidget* parent)
 void TemplateInspectorPanel::setElementProperties(const DesignerElementPropertyModel& model)
 {
     QScopedValueRollback<bool> setting(m_settingElementProperties, true);
+    const auto wasArrayGrid = m_elementModel.visible && m_elementModel.isArrayGrid;
     m_elementModel = model;
 
     const auto hasElement = model.visible;
     const auto canEdit = hasElement && model.canEdit;
+    const auto isArrayGrid = hasElement && model.isArrayGrid;
     const auto valuePlaceholder = hasElement
         ? model.valuePlaceholder
         : QString::fromUtf8("请选择固定文本或绑定字段");
+
+    m_emptySelectionLabel->setVisible(!hasElement);
+    m_elementContentSection->setVisible(hasElement && model.canEditValue);
+    m_elementCommonSection->setVisible(hasElement);
+    m_textStyleSection->setVisible(hasElement && model.supportsTextStyle);
+    m_elementAutoFitFontCheck->setVisible(hasElement && model.supportsAutoFitFont);
+    m_autoFitRangeSection->setVisible(hasElement && model.supportsAutoFitFont);
+    m_elementVerticalTextCheck->setVisible(hasElement && model.supportsVerticalText);
+    switch (model.type) {
+    case sleekpr::core::TemplateElementType::BoundField:
+        m_elementValueLabel->setText(QString::fromUtf8("绑定字段"));
+        break;
+    case sleekpr::core::TemplateElementType::QrCode:
+        m_elementValueLabel->setText(QString::fromUtf8("二维码内容"));
+        break;
+    default:
+        m_elementValueLabel->setText(QString::fromUtf8("文本内容"));
+        break;
+    }
+    // 共用原布局与文字控件，数组选中时随参数页迁移，避免重复表单和信号映射。
+    auto* propertyTab = isArrayGrid ? m_arrayGridTab : m_elementTab;
+    if (m_elementCommonSection->parentWidget() != propertyTab) {
+        auto* propertyLayout = qobject_cast<QVBoxLayout*>(propertyTab->layout());
+        propertyLayout->insertWidget(2, m_elementCommonSection);
+        m_elementCommonSection->setVisible(hasElement);
+    }
+    m_inspectorTabs->setTabVisible(m_inspectorTabs->indexOf(propertyTab), true);
+    auto* otherTab = isArrayGrid ? m_elementTab : m_arrayGridTab;
+    m_inspectorTabs->setTabVisible(m_inspectorTabs->indexOf(otherTab), false);
+    if (isArrayGrid != wasArrayGrid) {
+        m_inspectorTabs->setCurrentWidget(propertyTab);
+    }
 
     if (m_elementValueEdit != nullptr) {
         const QSignalBlocker blocker(m_elementValueEdit);
@@ -812,6 +961,7 @@ void TemplateInspectorPanel::connectPropertySignals()
             emit elementPropertiesEdited(ControlAutoApplyDelayMs);
         }
     };
+#if SLEEKPR_ENABLE_TABLE_DESIGNER
     const auto emitTableTextEdited = [this] {
         if (!m_settingTableProperties) {
             emit tablePropertiesEdited(TextAutoApplyDelayMs);
@@ -822,10 +972,13 @@ void TemplateInspectorPanel::connectPropertySignals()
             emit tablePropertiesEdited(ControlAutoApplyDelayMs);
         }
     };
+#endif
 
     connect(m_applyElementPropertiesButton, &QPushButton::clicked, this, [this] { emit elementPropertiesApplyRequested(); });
     connect(m_applyArrayGridPropertiesButton, &QPushButton::clicked, this, [this] { emit elementPropertiesApplyRequested(); });
+#if SLEEKPR_ENABLE_TABLE_DESIGNER
     connect(m_applyTablePropertiesButton, &QPushButton::clicked, this, [this] { emit tablePropertiesApplyRequested(); });
+#endif
 
     connect(m_elementValueEdit, &QPlainTextEdit::textChanged, this, emitElementTextEdited);
     connect(m_elementXSpin, &QDoubleSpinBox::valueChanged, this, emitElementControlEdited);
@@ -847,6 +1000,7 @@ void TemplateInspectorPanel::connectPropertySignals()
     connect(m_arrayGridDrawBordersCheck, &QCheckBox::toggled, this, emitElementControlEdited);
     connect(m_arrayGridDataPathEdit, &QLineEdit::editingFinished, this, [this] { emit elementPropertiesEditingFinished(); });
 
+#if SLEEKPR_ENABLE_TABLE_DESIGNER
     connect(m_tableDisplayNameEdit, &QLineEdit::textChanged, this, emitTableTextEdited);
     connect(m_tableDataPathEdit, &QLineEdit::textChanged, this, emitTableTextEdited);
     connect(m_tableXSpin, &QDoubleSpinBox::valueChanged, this, emitTableControlEdited);
@@ -893,10 +1047,15 @@ void TemplateInspectorPanel::connectPropertySignals()
     connect(m_tableDisplayNameEdit, &QLineEdit::editingFinished, this, [this] { emit tablePropertiesEditingFinished(); });
     connect(m_tableDataPathEdit, &QLineEdit::editingFinished, this, [this] { emit tablePropertiesEditingFinished(); });
     connect(m_tableColumnsEdit, &QLineEdit::editingFinished, this, [this] { emit tablePropertiesEditingFinished(); });
+#endif
 }
 
 void TemplateInspectorPanel::updateAutoFitRangeEnabled()
 {
+    if (m_autoFitRangeSection != nullptr) {
+        m_autoFitRangeSection->setVisible(m_elementModel.visible && m_elementModel.supportsAutoFitFont
+            && m_elementAutoFitFontCheck != nullptr && m_elementAutoFitFontCheck->isChecked());
+    }
     const auto canEdit = m_elementModel.visible && m_elementModel.canEdit && m_elementModel.supportsAutoFitFont;
     const auto enabled = canEdit && m_elementAutoFitFontCheck != nullptr && m_elementAutoFitFontCheck->isChecked();
     if (m_elementAutoFitMinFontSizeSpin != nullptr) {
@@ -908,6 +1067,8 @@ void TemplateInspectorPanel::updateAutoFitRangeEnabled()
 }
 
 QListWidget* TemplateInspectorPanel::elementList() const { return m_elementList; }
+QWidget* TemplateInspectorPanel::elementListSection() const { return m_elementListSection; }
+QWidget* TemplateInspectorPanel::insertionTools() const { return m_insertionTools; }
 QAction* TemplateInspectorPanel::renameElementAction() const { return m_renameElementAction; }
 QAction* TemplateInspectorPanel::deleteElementAction() const { return m_deleteElementAction; }
 QAction* TemplateInspectorPanel::lockElementAction() const { return m_lockElementAction; }

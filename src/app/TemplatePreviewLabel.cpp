@@ -1,5 +1,7 @@
 #include "sleekpr/app/TemplatePreviewLabel.h"
+#include "sleekpr/app/DesignerFeatures.h"
 
+#include <QApplication>
 #include <QKeyEvent>
 #include <QColor>
 #include <QContextMenuEvent>
@@ -19,7 +21,8 @@ namespace sleekpr::app {
 
 namespace {
 
-constexpr int kHorizontalRulerHeightPx = 18;
+// 标签版使用紧凑标尺；显式启用表格设计器时再为浮动工具条预留空间。
+constexpr int kHorizontalRulerHeightPx = kTableDesignerEnabled ? 44 : 18;
 constexpr int kVerticalRulerWidthPx = 28;
 
 struct DesignAidItem
@@ -89,6 +92,11 @@ void TemplatePreviewLabel::setDragDeltaCallback(DragDeltaCallback callback)
     m_dragDeltaCallback = std::move(callback);
 }
 
+void TemplatePreviewLabel::setCanvasClickCallback(CanvasClickCallback callback)
+{
+    m_canvasClickCallback = std::move(callback);
+}
+
 void TemplatePreviewLabel::setDoubleClickCallback(DoubleClickCallback callback)
 {
     m_doubleClickCallback = std::move(callback);
@@ -102,6 +110,11 @@ void TemplatePreviewLabel::setContextMenuCallback(ContextMenuCallback callback)
 void TemplatePreviewLabel::setKeyboardNudgeCallback(KeyboardNudgeCallback callback)
 {
     m_keyboardNudgeCallback = std::move(callback);
+}
+
+void TemplatePreviewLabel::setCanvasShortcutCallback(CanvasShortcutCallback callback)
+{
+    m_canvasShortcutCallback = std::move(callback);
 }
 
 void TemplatePreviewLabel::setCanvasFloatingActionCallback(CanvasFloatingActionCallback callback)
@@ -280,7 +293,7 @@ QPoint TemplatePreviewLabel::printableImageOriginPx() const
 QSize TemplatePreviewLabel::printableImageSizePx() const
 {
     if (!pixmap().isNull()) {
-        return pixmap().size();
+        return pixmap().deviceIndependentSize().toSize();
     }
     const auto origin = printableImageOriginPx();
     return QSize(std::max(0, width() - origin.x()), std::max(0, height() - origin.y()));
@@ -348,6 +361,20 @@ void TemplatePreviewLabel::paintEvent(QPaintEvent* event)
     }
     if (m_designAidVisible && !m_designAidCommands.isEmpty()) {
         drawDesignAids(painter, origin, imageSize);
+    } else if (!m_designAidSelectedElementKey.isEmpty()) {
+        QRectF selection;
+        for (const auto& command : m_designAidCommands) {
+            if (designAidElementKey(command.elementKey) == m_designAidSelectedElementKey) {
+                selection = selection.united(commandRectPx(command, origin, imageSize));
+            }
+        }
+        if (!selection.isEmpty()) {
+            // 常规编辑仅描出选中对象，辅助尺寸关闭时也能明确当前操作目标。
+            QPen selectionPen(palette().highlight().color(), 1, Qt::DashLine);
+            painter.setPen(selectionPen);
+            painter.setBrush(Qt::NoBrush);
+            painter.drawRect(selection);
+        }
     }
     drawTablePaginationOverlays(painter, origin, imageSize);
     drawCanvasFocusRect(painter, origin, imageSize);
@@ -635,12 +662,18 @@ QList<QPair<CanvasFloatingAction, QRect>> TemplatePreviewLabel::canvasFloatingAc
     auto left = static_cast<int>(std::round(focusRect.center().x() - totalWidth / 2.0));
     left = maxX >= minX ? std::clamp(left, minX, maxX) : minX;
 
-    auto top = static_cast<int>(std::round(focusRect.top() - actionHeight - 6));
-    if (top < 2) {
-        top = static_cast<int>(std::round(focusRect.bottom() + 6));
-    }
-    if (top + actionHeight > height() - 2) {
-        top = std::max(2, height() - actionHeight - 2);
+    int top = 2;
+    if (m_rulerVisible && imageOrigin.y() >= actionHeight) {
+        // 有顶部标尺时把画布工具条放在标尺带里，避免遮住表格单元格导致难以继续点选。
+        top = std::max(2, imageOrigin.y() - actionHeight);
+    } else {
+        top = static_cast<int>(std::round(focusRect.top() - actionHeight - 6));
+        if (top < 2) {
+            top = static_cast<int>(std::round(focusRect.bottom() + 6));
+        }
+        if (top + actionHeight > height() - 2) {
+            top = std::max(2, height() - actionHeight - 2);
+        }
     }
 
     auto cursorX = left;
@@ -694,6 +727,11 @@ void TemplatePreviewLabel::drawCanvasFloatingActions(QPainter& painter, QPoint i
 
 void TemplatePreviewLabel::keyPressEvent(QKeyEvent* event)
 {
+    if (m_draggingEnabled && m_canvasShortcutCallback && m_canvasShortcutCallback(event->key(), event->modifiers())) {
+        event->accept();
+        return;
+    }
+
     if (!m_draggingEnabled || !m_keyboardNudgeCallback) {
         QLabel::keyPressEvent(event);
         return;
@@ -734,13 +772,15 @@ void TemplatePreviewLabel::mousePressEvent(QMouseEvent* event)
             return;
         }
 
-        if (m_dragStartCallback && !m_dragStartCallback(event->pos())) {
+        if (m_dragStartCallback && !m_dragStartCallback(event->pos(), event->modifiers())) {
             QLabel::mousePressEvent(event);
             return;
         }
         setFocus(Qt::MouseFocusReason);
         // 这里只记录像素起点，毫米换算由设置窗口结合当前纸张和元素尺寸完成。
         m_dragging = true;
+        m_dragMoved = false;
+        m_dragStartPosition = event->pos();
         m_lastMousePosition = event->pos();
         setCursor(Qt::ClosedHandCursor);
         event->accept();
@@ -775,8 +815,17 @@ void TemplatePreviewLabel::contextMenuEvent(QContextMenuEvent* event)
 void TemplatePreviewLabel::mouseMoveEvent(QMouseEvent* event)
 {
     if (m_dragging && (event->buttons() & Qt::LeftButton)) {
+        if (!m_dragMoved
+            && (event->pos() - m_dragStartPosition).manhattanLength() < QApplication::startDragDistance()) {
+            event->accept();
+            return;
+        }
+
         const QPoint delta = event->pos() - m_lastMousePosition;
         m_lastMousePosition = event->pos();
+        if (!delta.isNull()) {
+            m_dragMoved = true;
+        }
         if (!delta.isNull() && m_dragDeltaCallback) {
             m_dragDeltaCallback(delta);
         }
@@ -801,8 +850,15 @@ void TemplatePreviewLabel::mouseMoveEvent(QMouseEvent* event)
 void TemplatePreviewLabel::mouseReleaseEvent(QMouseEvent* event)
 {
     if (m_dragging && event->button() == Qt::LeftButton) {
+        const auto wasClick = !m_dragMoved;
+        const auto clickPosition = event->pos();
         m_dragging = false;
+        m_dragMoved = false;
         setCursor(m_draggingEnabled ? Qt::OpenHandCursor : Qt::ArrowCursor);
+        if (wasClick && m_canvasClickCallback) {
+            // 单击在释放时处理，避免按下阶段抢走表格拖拽的旧行为。
+            m_canvasClickCallback(clickPosition, event->modifiers());
+        }
         event->accept();
         return;
     }

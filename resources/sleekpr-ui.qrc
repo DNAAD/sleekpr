@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/sleekpr/ui">
+        <file alias="caret-down.png">icons/caret-down.png</file>
+        <file alias="caret-up.png">icons/caret-up.png</file>
+        <file alias="check.png">icons/check.png</file>
+    </qresource>
+</RCC>

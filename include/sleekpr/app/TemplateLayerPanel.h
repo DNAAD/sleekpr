@@ -5,6 +5,7 @@
 class QLineEdit;
 class QListWidget;
 class QPushButton;
+class QVBoxLayout;
 
 namespace sleekpr::app {
 
@@ -12,6 +13,7 @@ class TemplateLayerPanel final : public QWidget
 {
 public:
     explicit TemplateLayerPanel(QWidget* parent = nullptr);
+    void setElementSection(QWidget* section);
 
     QLineEdit* templateLibrarySearchEdit() const;
     QLineEdit* templateLibraryNameEdit() const;
@@ -35,6 +37,8 @@ public:
     QPushButton* restoreVersionButton() const;
 
 private:
+    QVBoxLayout* m_objectLayout = nullptr;
+    QWidget* m_elementSection = nullptr;
     QLineEdit* m_templateLibrarySearchEdit = nullptr;
     QLineEdit* m_templateLibraryNameEdit = nullptr;
     QListWidget* m_templateLibraryList = nullptr;

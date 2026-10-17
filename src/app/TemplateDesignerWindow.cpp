@@ -1,4 +1,5 @@
 #include "sleekpr/app/TemplateDesignerWindow.h"
+#include "sleekpr/app/DesignerFeatures.h"
 
 #include "sleekpr/app/TemplateDesignerFactory.h"
 #include "sleekpr/app/TemplateDragCoordinateMapper.h"
@@ -77,6 +78,7 @@ constexpr int kSettingsChangedDelayMs = 240;
 constexpr double kDesignerInteractivePreviewDpi = 152.4;
 constexpr double kColumnResizeHandleTolerancePx = 6.0;
 constexpr double kColumnResizeMinimumWidthMm = 2.0;
+constexpr double kMinimumCanvasRowHeightMm = 0.1;
 constexpr auto kTableCanvasActionMergeSelection = "tableMergeSelection";
 constexpr auto kTableCanvasActionSplitSelection = "tableSplitSelection";
 constexpr auto kTableCanvasActionBold = "tableCellBold";
@@ -93,6 +95,19 @@ constexpr auto kTableCanvasActionShrinkRowBand = "tableRowBandShrink";
 QString tableCanvasActionId(const char* actionId)
 {
     return QString::fromLatin1(actionId);
+}
+
+Qt::KeyboardModifiers normalizedShortcutModifiers(Qt::KeyboardModifiers modifiers)
+{
+    return modifiers & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+}
+
+int visibleLegacyDetailRowCount(const sleekpr::core::TableElement& table)
+{
+    const auto headerRowHeight = std::max(kMinimumCanvasRowHeightMm, table.headerRowHeightMm);
+    const auto detailRowHeight = std::max(kMinimumCanvasRowHeightMm, table.detailRowHeightMm);
+    const auto detailHeight = std::max(0.0, table.height - headerRowHeight);
+    return std::max(1, static_cast<int>(std::ceil(detailHeight / detailRowHeight)));
 }
 
 struct JsonTextPosition
@@ -239,12 +254,7 @@ QList<DesignerTablePagePreviewModel> tablePagePreviews(
 
 QString paperSpecDisplayName(const sleekpr::core::PaperSpec& spec)
 {
-    const auto name = spec.name.trimmed().isEmpty() ? spec.id : spec.name.trimmed();
-    return QString::fromUtf8("%1 (%2, %3x%4 mm)")
-        .arg(name)
-        .arg(spec.id)
-        .arg(spec.widthMm, 0, 'f', 1)
-        .arg(spec.heightMm, 0, 'f', 1);
+    return spec.name.trimmed().isEmpty() ? spec.id : spec.name.trimmed();
 }
 
 QString elementDisplayName(const sleekpr::core::TemplateElement& element, int index)
@@ -327,8 +337,11 @@ TemplateDesignerWindow::TemplateDesignerWindow(
     , m_prePrintCallback(std::move(prePrintCallback))
     , m_templateLibraryDirectoryPath(std::move(templateLibraryDirectoryPath))
 {
-    setWindowTitle(QString::fromUtf8("sleekpr 模板设计器"));
-    resize(1180, 680);
+    setWindowTitle(kTableDesignerEnabled
+            ? QString::fromUtf8("sleekpr 模板设计器")
+            : QString::fromUtf8("sleekpr 标签设计器"));
+    setMinimumSize(980, 640);
+    resize(1280, 800);
     buildUi();
     ensureCurrentTemplateDocument();
     refreshSampleDataEditor();
@@ -342,6 +355,10 @@ TemplateDesignerWindow::TemplateDesignerWindow(
 
 bool TemplateDesignerWindow::eventFilter(QObject* watched, QEvent* event)
 {
+    if (event != nullptr && event->type() == QEvent::Resize && m_workspacePanel != nullptr
+        && watched == m_workspacePanel->previewViewportWidget()) {
+        scheduleCanvasFit();
+    }
     if (event != nullptr && event->type() == QEvent::FocusOut) {
         // 属性编辑控件失焦时立即提交，避免用户切换目标后还要等待防抖计时器。
         if (isElementAutoApplyEditor(watched)) {
@@ -352,6 +369,69 @@ bool TemplateDesignerWindow::eventFilter(QObject* watched, QEvent* event)
     }
 
     return QWidget::eventFilter(watched, event);
+}
+
+void TemplateDesignerWindow::showEvent(QShowEvent* event)
+{
+    QWidget::showEvent(event);
+    if (m_fitToCanvas) {
+        fitPreviewToCanvas();
+    }
+}
+
+void TemplateDesignerWindow::resizeEvent(QResizeEvent* event)
+{
+    QWidget::resizeEvent(event);
+    scheduleCanvasFit();
+}
+
+void TemplateDesignerWindow::scheduleCanvasFit()
+{
+    if (!m_fitToCanvas || m_canvasFitQueued || !isVisible() || m_workspacePanel == nullptr) {
+        return;
+    }
+    m_canvasFitQueued = true;
+    QTimer::singleShot(0, this, [this] {
+        m_canvasFitQueued = false;
+        if (m_fitToCanvas) {
+            fitPreviewToCanvas();
+        }
+    });
+}
+
+void TemplateDesignerWindow::fitPreviewToCanvas()
+{
+    if (m_workspacePanel == nullptr || m_zoomCombo == nullptr) {
+        return;
+    }
+    const auto viewport = m_workspacePanel->previewViewportSize();
+    const auto paper = currentPaperSizeMm();
+    if (viewport.isEmpty() || paper.isEmpty()) {
+        return;
+    }
+    const auto dpi = m_previewBaseDpi > 0.0 ? m_previewBaseDpi : kDesignerInteractivePreviewDpi;
+    const auto scale = std::clamp(std::min(
+        (viewport.width() - 80.0) / (paper.width() * dpi / 25.4),
+        (viewport.height() - 60.0) / (paper.height() * dpi / 25.4)), 0.25, 4.0);
+    auto index = m_zoomCombo->findData(scale);
+    if (index < 0) {
+        // 自动适配只维护一个动态倍率，避免拖动窗口时往下拉列表累积大量选项。
+        if (m_fitZoomIndex < 0) {
+            m_zoomCombo->addItem(QString(), scale);
+            m_fitZoomIndex = m_zoomCombo->count() - 1;
+        }
+        index = m_fitZoomIndex;
+        m_zoomCombo->setItemText(index, QStringLiteral("%1%").arg(qRound(scale * 100.0)));
+        m_zoomCombo->setItemData(index, scale);
+    }
+    ScopedBoolFlag updating(m_updatingCanvasZoom);
+    const auto indexChanged = m_zoomCombo->currentIndex() != index;
+    m_zoomCombo->setCurrentIndex(index);
+    if (!indexChanged && std::abs(m_previewZoomFactor - scale) > 0.0001) {
+        m_previewZoomFactor = scale;
+        refreshPreview();
+    }
+    m_workspacePanel->fitCanvasButton()->setChecked(true);
 }
 
 bool TemplateDesignerWindow::exportTemplateToFile(const QString& path) const
@@ -418,8 +498,8 @@ void TemplateDesignerWindow::buildUi()
     auto* shell = new QWidget(this);
     shell->setObjectName(QStringLiteral("designerWorkbenchShell"));
     auto* shellLayout = new QHBoxLayout(shell);
-    shellLayout->setContentsMargins(12, 12, 12, 12);
-    shellLayout->setSpacing(12);
+    shellLayout->setContentsMargins(0, 0, 0, 0);
+    shellLayout->setSpacing(0);
 
     auto* layerPanel = new TemplateLayerPanel(this);
     m_templateLibrarySearchEdit = layerPanel->templateLibrarySearchEdit();
@@ -443,6 +523,9 @@ void TemplateDesignerWindow::buildUi()
     auto* restoreVersionButton = layerPanel->restoreVersionButton();
 
     auto* workspacePanel = new TemplateWorkspacePanel(defaultSampleDataJson(), this);
+    m_workspacePanel = workspacePanel;
+    workspacePanel->previewViewportWidget()->installEventFilter(this);
+    connect(workspacePanel, &QWidget::destroyed, this, [this] { m_workspacePanel = nullptr; });
     auto* saveToLibraryButton = workspacePanel->saveToLibraryButton();
     auto* prePrintTemplateButton = workspacePanel->prePrintTemplateButton();
     auto* importTemplateButton = workspacePanel->importTemplateButton();
@@ -517,6 +600,10 @@ void TemplateDesignerWindow::buildUi()
     auto* calculateDeviceCalibrationButton = inspectorPanel->calculateDeviceCalibrationButton();
     auto* saveDeviceProfileButton = inspectorPanel->saveDeviceProfileButton();
 
+    // 对象管理归入左侧资源栏，插入命令归入画布工具条，右侧只呈现当前对象属性。
+    layerPanel->setElementSection(inspectorPanel->elementListSection());
+    workspacePanel->setInsertionTools(inspectorPanel->insertionTools());
+
     auto* mainSplitter = new QSplitter(Qt::Horizontal, shell);
     mainSplitter->setObjectName(QStringLiteral("designerMainSplitter"));
     mainSplitter->setChildrenCollapsible(false);
@@ -526,8 +613,9 @@ void TemplateDesignerWindow::buildUi()
     mainSplitter->setStretchFactor(0, 0);
     mainSplitter->setStretchFactor(1, 1);
     mainSplitter->setStretchFactor(2, 0);
-    mainSplitter->setSizes({260, 760, 340});
+    mainSplitter->setSizes({230, 750, 300});
     shellLayout->addWidget(mainSplitter, 1);
+    rootLayout->addWidget(workspacePanel->toolbarWidget());
     rootLayout->addWidget(shell, 1);
 
     connect(addLayerButton, &QPushButton::clicked, this, [this] { addLayer(); });
@@ -573,7 +661,9 @@ void TemplateDesignerWindow::buildUi()
     connect(addBoundFieldButton, &QPushButton::clicked, this, [this] { addBoundFieldElement(); });
     connect(addQrCodeButton, &QPushButton::clicked, this, [this] { addQrCodeElement(); });
     connect(addRectangleButton, &QPushButton::clicked, this, [this] { addRectangleElement(); });
-    connect(addTableButton, &QPushButton::clicked, this, [this] { addTableElement(); });
+    if constexpr (kTableDesignerEnabled) {
+        connect(addTableButton, &QPushButton::clicked, this, [this] { addTableElement(); });
+    }
     connect(addArrayGridButton, &QPushButton::clicked, this, [this] { addArrayGridElement(); });
     connect(deleteElementButton, &QPushButton::clicked, this, [this] { deleteCurrentElement(); });
     connect(lockElementButton, &QPushButton::clicked, this, [this] { toggleCurrentElementLocked(); });
@@ -596,10 +686,12 @@ void TemplateDesignerWindow::buildUi()
     m_elementAutoApplyTimer->setSingleShot(true);
     m_elementAutoApplyTimer->setInterval(kControlAutoApplyDelayMs);
     connect(m_elementAutoApplyTimer, &QTimer::timeout, this, [this] { applyCurrentElementProperties(true); });
-    m_tableAutoApplyTimer = new QTimer(this);
-    m_tableAutoApplyTimer->setSingleShot(true);
-    m_tableAutoApplyTimer->setInterval(kControlAutoApplyDelayMs);
-    connect(m_tableAutoApplyTimer, &QTimer::timeout, this, [this] { applyCurrentTableProperties(true); });
+    if constexpr (kTableDesignerEnabled) {
+        m_tableAutoApplyTimer = new QTimer(this);
+        m_tableAutoApplyTimer->setSingleShot(true);
+        m_tableAutoApplyTimer->setInterval(kControlAutoApplyDelayMs);
+        connect(m_tableAutoApplyTimer, &QTimer::timeout, this, [this] { applyCurrentTableProperties(true); });
+    }
     connect(inspectorPanel, &TemplateInspectorPanel::elementPropertiesEdited, this, [this](int delayMs) {
         scheduleElementAutoApply(delayMs);
     });
@@ -641,8 +733,19 @@ void TemplateDesignerWindow::buildUi()
         if (m_zoomCombo == nullptr || index < 0) {
             return;
         }
+        if (!m_updatingCanvasZoom) {
+            m_fitToCanvas = false;
+            if (m_workspacePanel != nullptr) {
+                m_workspacePanel->fitCanvasButton()->setChecked(false);
+            }
+        }
         m_previewZoomFactor = std::max(0.1, m_zoomCombo->itemData(index).toDouble());
         refreshPreview();
+    });
+    // 适合画布仅改变视图倍率，不修改模板毫米坐标或真实打印尺寸。
+    connect(workspacePanel->fitCanvasButton(), &QPushButton::clicked, this, [this] {
+        m_fitToCanvas = true;
+        fitPreviewToCanvas();
     });
     connect(m_rulerPrecisionCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
         if (m_previewLabel == nullptr || m_rulerPrecisionCombo == nullptr || index < 0) {
@@ -682,7 +785,8 @@ void TemplateDesignerWindow::buildUi()
         refreshPreview();
     });
     connect(m_previewLabel, &TemplatePreviewLabel::destroyed, this, [this] { m_previewLabel = nullptr; });
-    m_previewLabel->setDragStartCallback([this](QPoint position) {
+    m_previewLabel->setDragStartCallback([this](QPoint position, Qt::KeyboardModifiers modifiers) {
+#if SLEEKPR_ENABLE_TABLE_DESIGNER
         m_tableColumnResizeDrag.reset();
         m_tableCanvasSelectionAnchor.reset();
         if (auto resizeDrag = tableColumnResizeDragAt(position); resizeDrag.has_value()) {
@@ -694,7 +798,7 @@ void TemplateDesignerWindow::buildUi()
             return true;
         }
 
-        if (QApplication::keyboardModifiers().testFlag(Qt::ShiftModifier)) {
+        if (modifiers.testFlag(Qt::ShiftModifier)) {
             // Shift 拖拽只进入表格单元格选区模式，普通拖拽仍保留为移动元素。
             const auto hit = tableCanvasHitAt(position);
             if (!hit.has_value() || !canEditElement(hit->tableId)) {
@@ -710,6 +814,13 @@ void TemplateDesignerWindow::buildUi()
             refreshTableCanvasFloatingActions();
             return true;
         }
+
+        if (const auto hit = tableCanvasHitAt(position); hit.has_value() && canEditElement(hit->tableId)) {
+            // 普通点击表格时先给出单元格焦点；若随后发生拖动，仍由拖拽回调移动整张表格。
+            selectTableCanvasCell(*hit);
+            return true;
+        }
+#endif
 
         // 已选元素内部的拖拽优先作用在当前选中项，避免重叠元素抢占命中导致用户误以为拖出了副本。
         if (currentSelectionContainsCanvasPosition(position)) {
@@ -729,6 +840,7 @@ void TemplateDesignerWindow::buildUi()
         return true;
     });
     m_previewLabel->setDragDeltaCallback([this](QPoint delta) {
+#if SLEEKPR_ENABLE_TABLE_DESIGNER
         if (m_tableColumnResizeDrag.has_value()) {
             resizeTableColumnByPixels(delta);
             return;
@@ -738,17 +850,28 @@ void TemplateDesignerWindow::buildUi()
             updateTableCanvasSelectionAt(m_tableCanvasSelectionDragPosition);
             return;
         }
+#endif
         moveSelectedElementByPixels(delta);
     });
+#if SLEEKPR_ENABLE_TABLE_DESIGNER
     m_previewLabel->setDoubleClickCallback([this](QPoint position) {
         editTableCanvasCellAt(position);
     });
+#endif
+    m_previewLabel->setCanvasClickCallback([this](QPoint position, Qt::KeyboardModifiers modifiers) {
+        handleCanvasClick(position, modifiers);
+    });
+#if SLEEKPR_ENABLE_TABLE_DESIGNER
     m_previewLabel->setContextMenuCallback([this](QPoint position, QPoint globalPosition) {
         showTableCanvasContextMenu(position, globalPosition);
     });
     m_previewLabel->setCanvasFloatingActionCallback([this](const QString& actionId) {
         handleTableCanvasFloatingAction(actionId);
     });
+    m_previewLabel->setCanvasShortcutCallback([this](int key, Qt::KeyboardModifiers modifiers) {
+        return handleTableCanvasShortcut(key, modifiers);
+    });
+#endif
     m_previewLabel->setKeyboardNudgeCallback([this](QPoint direction, Qt::KeyboardModifiers modifiers) {
         nudgeSelectedElement(direction, modifiers);
     });
@@ -1008,6 +1131,7 @@ void TemplateDesignerWindow::moveCurrentElementDown()
 
 void TemplateDesignerWindow::saveTemplateVersion()
 {
+    flushPendingPropertyEdits();
     ensureCurrentTemplateDocument();
     auto& document = m_settings.templateDocuments[m_templateKey];
     const auto now = QDateTime::currentDateTime();
@@ -1051,6 +1175,7 @@ void TemplateDesignerWindow::restoreActiveTemplateVersion()
 
 void TemplateDesignerWindow::saveCurrentTemplateToLibrary()
 {
+    flushPendingPropertyEdits();
     ensureCurrentTemplateDocument();
     if (m_templateLibraryDirectoryPath.trimmed().isEmpty()) {
         m_statusLabel->setText(QString::fromUtf8("未配置模板库目录"));
@@ -1334,6 +1459,7 @@ void TemplateDesignerWindow::refreshTemplateLibraryList()
 
 void TemplateDesignerWindow::importTemplateWithDialog()
 {
+    flushPendingPropertyEdits();
     QFileDialog dialog(this, QString::fromUtf8("导入模板"));
     dialog.setAcceptMode(QFileDialog::AcceptOpen);
     dialog.setFileMode(QFileDialog::ExistingFile);
@@ -1365,6 +1491,7 @@ void TemplateDesignerWindow::importTemplateWithDialog()
 
 void TemplateDesignerWindow::exportTemplateWithDialog()
 {
+    flushPendingPropertyEdits();
     ensureCurrentTemplateDocument();
     QFileDialog dialog(this, QString::fromUtf8("导出模板"));
     dialog.setAcceptMode(QFileDialog::AcceptSave);
@@ -1386,6 +1513,7 @@ void TemplateDesignerWindow::exportTemplateWithDialog()
 
 void TemplateDesignerWindow::prePrintCurrentTemplate()
 {
+    flushPendingPropertyEdits();
     ensureCurrentTemplateDocument();
 
     bool sampleDataOk = true;
@@ -1625,7 +1753,10 @@ void TemplateDesignerWindow::refreshElementList()
         item->setFlags(item->flags() | Qt::ItemIsEditable | Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
     }
 
-    QList<sleekpr::core::TableElement> tables = layer->tables;
+    QList<sleekpr::core::TableElement> tables;
+    if constexpr (kTableDesignerEnabled) {
+        tables = layer->tables;
+    }
     std::stable_sort(tables.begin(), tables.end(), [](const auto& left, const auto& right) {
         return left.zIndex < right.zIndex;
     });
@@ -1665,6 +1796,10 @@ void TemplateDesignerWindow::refreshElementPropertyEditor()
 
 void TemplateDesignerWindow::refreshTablePropertyEditor()
 {
+    if constexpr (!kTableDesignerEnabled) {
+        // 标签版本不执行表格属性与分页布局，旧模板数据仅由原生预览和打印链路读取。
+        return;
+    }
     if (m_inspectorPanel == nullptr) {
         return;
     }
@@ -1767,20 +1902,25 @@ void TemplateDesignerWindow::refreshPreview()
     const auto previewDpi = drawingPlan.renderDpi > 0.0
         ? std::min(drawingPlan.renderDpi, kDesignerInteractivePreviewDpi)
         : kDesignerInteractivePreviewDpi;
-    const auto image = sleekpr::infrastructure::LabelPreviewImageRenderer().renderImage(drawingPlan, previewDpi);
+    m_previewBaseDpi = previewDpi;
+    // 按显示比例和屏幕像素比重新生成 Qt 图像，放大时不再放大低分辨率位图。
+    const auto deviceRatio = std::max(1.0, m_previewLabel->devicePixelRatioF());
+    const auto rasterDpi = previewDpi * std::max(1.0, m_previewZoomFactor) * deviceRatio;
+    const auto image = sleekpr::infrastructure::LabelPreviewImageRenderer().renderImage(drawingPlan, rasterDpi);
     auto previewPixmap = QPixmap::fromImage(image);
-    if (std::abs(m_previewZoomFactor - 1.0) > 0.0001) {
-        const auto scaledSize = QSize(
-            std::max(1, static_cast<int>(std::round(image.width() * m_previewZoomFactor))),
-            std::max(1, static_cast<int>(std::round(image.height() * m_previewZoomFactor))));
-        previewPixmap = previewPixmap.scaled(scaledSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    const auto displayPixels = QSize(
+        std::max(1, qRound(paperSize.width() * previewDpi / 25.4 * m_previewZoomFactor * deviceRatio)),
+        std::max(1, qRound(paperSize.height() * previewDpi / 25.4 * m_previewZoomFactor * deviceRatio)));
+    if (previewPixmap.size() != displayPixels && !previewPixmap.isNull()) {
+        previewPixmap = previewPixmap.scaled(displayPixels, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
     }
+    previewPixmap.setDevicePixelRatio(deviceRatio);
     m_previewLabel->setPixmap(previewPixmap);
     m_previewLabel->setRulerPaperSizeMm(paperSize);
     m_previewLabel->setDesignAidCommands(m_previewCommands);
     m_previewLabel->setDesignAidSelectedElementKey(currentElementId());
     QList<TablePaginationOverlay> paginationOverlays;
-    if (sampleDataOk) {
+    if (kTableDesignerEnabled && sampleDataOk) {
         if (const auto* table = currentTable()) {
             paginationOverlays = TemplateTablePaginationOverlayPlanner::planForTable(
                 *table,
@@ -1791,7 +1931,11 @@ void TemplateDesignerWindow::refreshPreview()
     m_previewLabel->setTablePaginationOverlays(m_tablePaginationOverlays);
     const auto previewOrigin = m_previewLabel->printableImageOriginPx();
     // 预览控件尺寸包含外置标尺边距，打印图层本身仍保持渲染图原始比例，避免标签变形。
-    m_previewLabel->setFixedSize(previewPixmap.width() + previewOrigin.x(), previewPixmap.height() + previewOrigin.y());
+    const auto logicalSize = previewPixmap.deviceIndependentSize().toSize();
+    m_previewLabel->setFixedSize(logicalSize.width() + previewOrigin.x(), logicalSize.height() + previewOrigin.y());
+    if (m_workspacePanel != nullptr) {
+        m_workspacePanel->setPaperSummary(paperSize);
+    }
 
     const auto validation = sleekpr::core::TemplateDocumentValidator().validate(document, paperSize);
     if (!sampleDataOk && m_statusLabel != nullptr) {
@@ -1816,6 +1960,7 @@ void TemplateDesignerWindow::refreshAll()
     refreshElementList();
     selectElement(elementId);
     refreshPreview();
+    scheduleCanvasFit();
 }
 
 void TemplateDesignerWindow::schedulePreviewRefresh(int delayMs)
@@ -1874,6 +2019,8 @@ void TemplateDesignerWindow::applySelectedPaperSpec()
 
     document.paperSpecId = paperSpecId;
     refreshPreview();
+    // 纸张比例变化不一定引起视口尺寸变化，适配模式仍需重新计算倍率。
+    scheduleCanvasFit();
     if (m_statusLabel != nullptr) {
         m_statusLabel->setText(QString::fromUtf8("已切换纸张规格"));
     }
@@ -2228,15 +2375,77 @@ bool TemplateDesignerWindow::canEditElement(const QString& elementId) const
         }
         for (const auto& table : layer.tables) {
             if (table.id == elementId) {
-                return layer.visible && !layer.locked && table.visible && !table.locked;
+                return kTableDesignerEnabled && layer.visible && !layer.locked && table.visible && !table.locked;
             }
         }
     }
     return false;
 }
 
+bool TemplateDesignerWindow::elementIdIsTable(const QString& elementId) const
+{
+    if (elementId.trimmed().isEmpty()) {
+        return false;
+    }
+
+    const_cast<TemplateDesignerWindow*>(this)->ensureCurrentTemplateDocument();
+    const auto& document = m_settings.templateDocuments[m_templateKey];
+    for (const auto& layer : document.layers) {
+        for (const auto& table : layer.tables) {
+            if (table.id == elementId) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool TemplateDesignerWindow::canvasElementOverridesTable(const QString& elementId, const QString& tableId) const
+{
+    if (elementId.trimmed().isEmpty() || tableId.trimmed().isEmpty()) {
+        return false;
+    }
+
+    const_cast<TemplateDesignerWindow*>(this)->ensureCurrentTemplateDocument();
+    const auto& document = m_settings.templateDocuments[m_templateKey];
+    int elementLayerIndex = -1;
+    int tableLayerIndex = -1;
+    int elementZIndex = 0;
+    int tableZIndex = 0;
+
+    for (int layerIndex = 0; layerIndex < document.layers.size(); ++layerIndex) {
+        const auto& layer = document.layers[layerIndex];
+        for (const auto& element : layer.elements) {
+            if (element.id == elementId) {
+                elementLayerIndex = layerIndex;
+                elementZIndex = element.zIndex;
+                break;
+            }
+        }
+        for (const auto& table : layer.tables) {
+            if (table.id == tableId) {
+                tableLayerIndex = layerIndex;
+                tableZIndex = table.zIndex;
+                break;
+            }
+        }
+    }
+
+    if (elementLayerIndex < 0 || tableLayerIndex < 0) {
+        return false;
+    }
+    if (elementLayerIndex != tableLayerIndex) {
+        // 高图层的普通元素才能抢占表格单元格点击，低图层小文本不能把表格焦点顶掉。
+        return elementLayerIndex > tableLayerIndex;
+    }
+    return elementZIndex > tableZIndex;
+}
+
 bool TemplateDesignerWindow::currentSelectionIsTable() const
 {
+    if constexpr (!kTableDesignerEnabled) {
+        return false;
+    }
     if (m_elementList == nullptr || m_elementList->currentItem() == nullptr) {
         return false;
     }
@@ -2667,6 +2876,16 @@ void TemplateDesignerWindow::applyPendingElementAutoApply()
     applyCurrentElementProperties(true);
 }
 
+void TemplateDesignerWindow::flushPendingPropertyEdits()
+{
+    // 命令可能由快捷键触发而不发生失焦，必须先提交防抖中的编辑再保存或打印。
+    applyPendingElementAutoApply();
+    applyPendingTableAutoApply();
+    if (m_settingsChangedTimer != nullptr && m_settingsChangedTimer->isActive()) {
+        notifySettingsChanged();
+    }
+}
+
 void TemplateDesignerWindow::applyPendingTableAutoApply()
 {
     if (m_tableAutoApplyTimer == nullptr || !m_tableAutoApplyTimer->isActive()) {
@@ -2695,6 +2914,9 @@ void TemplateDesignerWindow::updateSampleDataErrorLabel(const QString& errorMess
     const auto normalized = errorMessage.trimmed();
     m_sampleDataErrorLabel->setText(normalized);
     m_sampleDataErrorLabel->setVisible(!normalized.isEmpty());
+    if (!normalized.isEmpty() && m_workspacePanel != nullptr) {
+        m_workspacePanel->setSampleDataExpanded(true);
+    }
 }
 
 void TemplateDesignerWindow::resetDocumentHistory()
@@ -3075,8 +3297,81 @@ void TemplateDesignerWindow::handleTableCanvasFloatingAction(const QString& acti
     }
 }
 
+void TemplateDesignerWindow::handleCanvasClick(QPoint position, Qt::KeyboardModifiers modifiers)
+{
+    if (modifiers.testFlag(Qt::ShiftModifier)) {
+        // Shift 单元格选区在按下和拖动阶段处理，释放时不再执行普通命中，避免刚选中又被清空。
+        return;
+    }
+
+    const auto tableHit = tableCanvasHitAt(position);
+    const auto elementHit = canvasElementHitAt(position);
+    if (elementHit.has_value() && canEditElement(*elementHit) && !elementIdIsTable(*elementHit)) {
+        if (tableHit.has_value()
+            && canEditElement(tableHit->tableId)
+            && !canvasElementOverridesTable(*elementHit, tableHit->tableId)) {
+            selectTableCanvasCell(*tableHit);
+            return;
+        }
+
+        // 普通元素覆盖在表格上时，单击应切换到普通元素，并清理残留的表格单元格工具条。
+        m_tableCanvasSelection.reset();
+        m_tableCanvasSelectionAnchor.reset();
+        if (m_previewLabel != nullptr) {
+            m_previewLabel->setCanvasFocusRectMm(QRectF());
+            m_previewLabel->setCanvasFloatingActions({});
+        }
+        selectElement(*elementHit);
+        return;
+    }
+
+    if (tableHit.has_value() && canEditElement(tableHit->tableId)) {
+        selectTableCanvasCell(*tableHit);
+    }
+}
+
+bool TemplateDesignerWindow::handleTableCanvasShortcut(int key, Qt::KeyboardModifiers modifiers)
+{
+    const auto shortcutModifiers = normalizedShortcutModifiers(modifiers);
+    if (key == Qt::Key_Space && shortcutModifiers == Qt::ShiftModifier) {
+        return selectCurrentTableCanvasRows();
+    }
+    if (key == Qt::Key_Space && shortcutModifiers == Qt::ControlModifier) {
+        return selectCurrentTableCanvasColumns();
+    }
+    if (key == Qt::Key_M && shortcutModifiers == Qt::ControlModifier) {
+        return mergeCurrentTableCanvasSelection();
+    }
+    if (key == Qt::Key_M && shortcutModifiers == (Qt::ControlModifier | Qt::ShiftModifier)) {
+        return splitCurrentTableCanvasSelection();
+    }
+    return false;
+}
+
+std::optional<QString> TemplateDesignerWindow::canvasElementHitAt(QPoint position) const
+{
+    if (m_previewLabel == nullptr) {
+        return std::nullopt;
+    }
+
+    const auto paperSize = currentPaperSizeMm();
+    const auto previewSize = m_previewLabel->printableImageSizePx();
+    if (paperSize.isEmpty() || previewSize.isEmpty()) {
+        return std::nullopt;
+    }
+
+    return TemplateElementHitTester().hitTest(
+        m_previewCommands,
+        paperSize,
+        previewSize,
+        m_previewLabel->mapToPrintableImagePx(position));
+}
+
 std::optional<TableCanvasHit> TemplateDesignerWindow::tableCanvasHitAt(QPoint position) const
 {
+    if constexpr (!kTableDesignerEnabled) {
+        return std::nullopt;
+    }
     if (m_previewLabel == nullptr) {
         return std::nullopt;
     }
@@ -3110,6 +3405,156 @@ std::optional<TableCanvasSelection> TemplateDesignerWindow::tableCanvasSelection
     return std::nullopt;
 }
 
+bool TemplateDesignerWindow::selectTableCanvasCell(const TableCanvasHit& hit)
+{
+    if (!canEditElement(hit.tableId)) {
+        return false;
+    }
+
+    selectElement(hit.tableId);
+    m_tableCanvasSelectionAnchor.reset();
+    m_tableCanvasSelection = tableCanvasSelectionFromHits(hit, hit);
+    if (m_previewLabel != nullptr) {
+        m_previewLabel->setCanvasFocusRectMm(
+            m_tableCanvasSelection.has_value() ? m_tableCanvasSelection->rectMm : hit.cellRectMm);
+    }
+    refreshTableCanvasFloatingActions();
+    return m_tableCanvasSelection.has_value();
+}
+
+bool TemplateDesignerWindow::selectCurrentTableCanvasRows()
+{
+    const auto selection = expandedTableCanvasSelection(true, false);
+    return selection.has_value()
+        && setTableCanvasSelection(*selection, QString::fromUtf8("已选中当前表格行"));
+}
+
+bool TemplateDesignerWindow::selectCurrentTableCanvasColumns()
+{
+    const auto selection = expandedTableCanvasSelection(false, true);
+    return selection.has_value()
+        && setTableCanvasSelection(*selection, QString::fromUtf8("已选中当前表格列"));
+}
+
+bool TemplateDesignerWindow::mergeCurrentTableCanvasSelection()
+{
+    if (!m_tableCanvasSelection.has_value() || m_tableCanvasSelection->isSingleCell()) {
+        return false;
+    }
+
+    const auto selection = *m_tableCanvasSelection;
+    return applyTableCanvasSelectionMutation(
+        selection,
+        [selection](sleekpr::core::TableElement* table) {
+            return TemplateTableCanvasEditor::mergeSelection(table, selection);
+        },
+        QString::fromUtf8("已合并选区"));
+}
+
+bool TemplateDesignerWindow::splitCurrentTableCanvasSelection()
+{
+    if (!m_tableCanvasSelection.has_value()) {
+        return false;
+    }
+
+    const auto selection = *m_tableCanvasSelection;
+    return applyTableCanvasSelectionMutation(
+        selection,
+        [selection](sleekpr::core::TableElement* table) {
+            return TemplateTableCanvasEditor::splitSelection(table, selection);
+        },
+        QString::fromUtf8("已拆分选区"));
+}
+
+bool TemplateDesignerWindow::setTableCanvasSelection(const TableCanvasSelection& selection, const QString& statusText)
+{
+    if (!selection.isValid()) {
+        return false;
+    }
+
+    ensureCurrentTemplateDocument();
+    if (currentElementId() != selection.tableId) {
+        selectElement(selection.tableId);
+    }
+
+    auto* table = currentTable();
+    if (table == nullptr || table->id != selection.tableId) {
+        return false;
+    }
+
+    m_tableCanvasSelectionAnchor.reset();
+    m_tableCanvasSelection = selection;
+    if (m_previewLabel != nullptr) {
+        m_previewLabel->setCanvasFocusRectMm(selection.rectMm);
+    }
+    refreshTableCanvasFloatingActions();
+    if (m_statusLabel != nullptr) {
+        m_statusLabel->setText(statusText);
+    }
+    return true;
+}
+
+std::optional<TableCanvasSelection> TemplateDesignerWindow::expandedTableCanvasSelection(bool expandColumns, bool expandRows) const
+{
+    if (!m_tableCanvasSelection.has_value() || !m_tableCanvasSelection->isValid()) {
+        return std::nullopt;
+    }
+
+    const_cast<TemplateDesignerWindow*>(this)->ensureCurrentTemplateDocument();
+    const auto& document = m_settings.templateDocuments[m_templateKey];
+    const auto source = *m_tableCanvasSelection;
+    const sleekpr::core::TableElement* table = nullptr;
+    for (const auto& layer : document.layers) {
+        for (const auto& candidate : layer.tables) {
+            if (candidate.id == source.tableId) {
+                table = &candidate;
+                break;
+            }
+        }
+        if (table != nullptr) {
+            break;
+        }
+    }
+    if (table == nullptr || table->columns.isEmpty() || source.rowBandId.trimmed().isEmpty()) {
+        return std::nullopt;
+    }
+
+    const auto lastColumnIndex = static_cast<int>(table->columns.size()) - 1;
+    auto startColumnIndex = std::clamp(source.startColumnIndex, 0, lastColumnIndex);
+    auto endColumnIndex = std::clamp(source.endColumnIndex, 0, lastColumnIndex);
+    if (expandColumns) {
+        startColumnIndex = 0;
+        endColumnIndex = lastColumnIndex;
+    }
+
+    const auto legacyHeaderSelection = table->rowBands.isEmpty() && source.rowBandId == QStringLiteral("header");
+    const auto lastRowOffset = (!table->rowBands.isEmpty() || legacyHeaderSelection)
+        ? 0
+        : visibleLegacyDetailRowCount(*table) - 1;
+    auto startRowOffset = std::clamp(source.startRowOffset, 0, lastRowOffset);
+    auto endRowOffset = std::clamp(source.endRowOffset, 0, lastRowOffset);
+    if (expandRows) {
+        startRowOffset = 0;
+        endRowOffset = lastRowOffset;
+    }
+
+    const auto makeHit = [table, &source](int columnIndex, int rowOffset) {
+        TableCanvasHit hit;
+        hit.tableId = table->id;
+        hit.columnIndex = columnIndex;
+        hit.columnId = table->columns[columnIndex].id;
+        hit.rowBandId = source.rowBandId;
+        hit.band = source.rowBandId == QStringLiteral("header") ? TableCanvasBand::Header : TableCanvasBand::Detail;
+        hit.rowOffset = rowOffset;
+        return hit;
+    };
+
+    return TemplateTableCanvasEditor::selectionFromHits(
+        *table,
+        makeHit(startColumnIndex, startRowOffset),
+        makeHit(endColumnIndex, endRowOffset));
+}
+
 void TemplateDesignerWindow::editTableCanvasCellAt(QPoint position)
 {
     const auto hit = tableCanvasHitAt(position);
@@ -3117,14 +3562,9 @@ void TemplateDesignerWindow::editTableCanvasCellAt(QPoint position)
         return;
     }
 
-    selectElement(hit->tableId);
-    m_tableCanvasSelectionAnchor.reset();
-    m_tableCanvasSelection = tableCanvasSelectionFromHits(*hit, *hit);
-    if (m_previewLabel != nullptr) {
-        m_previewLabel->setCanvasFocusRectMm(hit->cellRectMm);
+    if (selectTableCanvasCell(*hit)) {
+        editTableCanvasColumnText(*hit);
     }
-    refreshTableCanvasFloatingActions();
-    editTableCanvasColumnText(*hit);
 }
 
 void TemplateDesignerWindow::showTableCanvasContextMenu(QPoint position, QPoint globalPosition)

@@ -53,7 +53,7 @@ int main(int argc, char* argv[])
     QApplication::setApplicationName("sleekpr");
     QApplication::setOrganizationName("zytxt");
     QApplication::setQuitOnLastWindowClosed(false);
-    app.setStyleSheet(sleekpr::app::sleekprAppStyleSheet());
+    sleekpr::app::applySleekprTheme(app);
 
     const auto settingsFilePath = settingsPath();
     qInfo() << "sleekpr settings:" << settingsFilePath;

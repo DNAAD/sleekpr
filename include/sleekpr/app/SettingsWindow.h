@@ -21,12 +21,15 @@
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
+class QEvent;
 class QLabel;
 class QLineEdit;
 class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
+class QScrollArea;
 class QSpinBox;
+class QStackedWidget;
 
 namespace sleekpr::app {
 class TemplatePreviewLabel;
@@ -55,6 +58,9 @@ public:
     void setOpenPaperSpecManagerCallback(OpenPaperSpecManagerCallback callback);
     void setOpenFieldPresetManagerCallback(OpenFieldPresetManagerCallback callback);
 
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
 private:
     void buildUi();
     QWidget* createWorkbenchNavigation();
@@ -62,6 +68,7 @@ private:
     QWidget* createPrinterPanel();
     QWidget* createPreviewPanel();
     QWidget* createElementPanel();
+    void fitPreviewToViewport();
     void refreshOverview();
     void populateTemplateCombo(const QString& preferredTemplateKey = QString());
     void populatePrinters();
@@ -114,6 +121,9 @@ private:
     QHash<QString, sleekpr::core::TemplateDocument> m_libraryTemplateDocuments;
     bool m_loadingForm = false;
 
+    QStackedWidget* m_settingsPages = nullptr;
+    QPushButton* m_printNavButton = nullptr;
+    QPushButton* m_securityNavButton = nullptr;
     QComboBox* m_templateCombo = nullptr;
     QComboBox* m_printerCombo = nullptr;
     QPlainTextEdit* m_allowedOriginsEdit = nullptr;
@@ -125,6 +135,8 @@ private:
     QDoubleSpinBox* m_offsetXSpin = nullptr;
     QDoubleSpinBox* m_offsetYSpin = nullptr;
     TemplatePreviewLabel* m_previewLabel = nullptr;
+    QScrollArea* m_previewScrollArea = nullptr;
+    bool m_fittingPreview = false;
     QLabel* m_statusLabel = nullptr;
     QLabel* m_serviceStatusLabel = nullptr;
     QLabel* m_printerStatusLabel = nullptr;

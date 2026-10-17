@@ -27,6 +27,7 @@ configure_qt_test_runtime(sleekpr_core_tests)
 
 add_executable(sleekpr_app_tests
     tst_app.cpp
+    ../resources/sleekpr-ui.qrc
     ../src/app/AppTheme.cpp
     ../src/app/TableAdvancedEditorPanel.cpp
     ../include/sleekpr/app/TableAdvancedEditorPanel.h
@@ -68,7 +69,26 @@ target_link_libraries(sleekpr_app_tests
 )
 
 add_test(NAME sleekpr_app_tests COMMAND sleekpr_app_tests)
+set_target_properties(sleekpr_app_tests PROPERTIES AUTORCC ON)
+# 延后模块继续保留完整回归覆盖，实际标签版本另用默认关闭表格能力的目标验证。
+target_compile_definitions(sleekpr_app_tests PRIVATE SLEEKPR_ENABLE_TABLE_DESIGNER=1)
 configure_qt_test_runtime(sleekpr_app_tests)
+
+# 标签版本单独验证实际发布界面，表格编辑器的既有测试继续保留供后续恢复使用。
+get_target_property(SLEEKPR_LABEL_APP_SOURCES sleekpr SOURCES)
+list(REMOVE_ITEM SLEEKPR_LABEL_APP_SOURCES src/app/main.cpp)
+list(TRANSFORM SLEEKPR_LABEL_APP_SOURCES PREPEND "../")
+add_executable(sleekpr_label_app_tests
+    tst_label_designer.cpp
+    ${SLEEKPR_LABEL_APP_SOURCES}
+)
+set_target_properties(sleekpr_label_app_tests PROPERTIES AUTORCC ON)
+target_link_libraries(sleekpr_label_app_tests PRIVATE
+    sleekpr_core Qt6::Widgets Qt6::PrintSupport Qt6::Test
+)
+target_compile_definitions(sleekpr_label_app_tests PRIVATE SLEEKPR_ENABLE_TABLE_DESIGNER=0)
+add_test(NAME sleekpr_label_app_tests COMMAND sleekpr_label_app_tests)
+configure_qt_test_runtime(sleekpr_label_app_tests)
 
 add_executable(sleekpr_http_tests
     tst_http.cpp

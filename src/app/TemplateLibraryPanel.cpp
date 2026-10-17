@@ -1,10 +1,14 @@
 #include "sleekpr/app/TemplateLibraryPanel.h"
+#include "sleekpr/app/AppTheme.h"
 
-#include <QGridLayout>
+#include <QAction>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
 #include <QPushButton>
+#include <QSizePolicy>
 #include <QVBoxLayout>
 
 namespace sleekpr::app {
@@ -31,15 +35,21 @@ TemplateLibraryPanel::TemplateLibraryPanel(QWidget* parent)
     m_searchEdit = new QLineEdit(this);
     m_searchEdit->setObjectName(QStringLiteral("templateLibrarySearchEdit"));
     m_searchEdit->setPlaceholderText(QString::fromUtf8("搜索名称、分类或模板键"));
+    m_searchEdit->setClearButtonEnabled(true);
+    m_searchEdit->setAccessibleName(QString::fromUtf8("搜索模板库"));
 
     m_nameEdit = new QLineEdit(this);
     m_nameEdit->setObjectName(QStringLiteral("templateLibraryNameEdit"));
     m_nameEdit->setPlaceholderText(QString::fromUtf8("新建或重命名模板名称"));
+    m_nameEdit->setAccessibleName(QString::fromUtf8("模板名称，用于新建或重命名"));
+    m_nameEdit->setToolTip(QString::fromUtf8("新建或重命名模板时使用此名称"));
 
     m_templateList = new QListWidget(this);
     m_templateList->setObjectName(QStringLiteral("templateLibraryList"));
-    m_templateList->setMinimumHeight(84);
-    m_templateList->setMaximumHeight(140);
+    m_templateList->setMinimumHeight(180);
+    m_templateList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    m_templateList->setAccessibleName(QString::fromUtf8("模板库列表"));
+    m_templateList->setContextMenuPolicy(Qt::CustomContextMenu);
 
     m_refreshButton = createPanelButton(QString::fromUtf8("刷新模板库"), QStringLiteral("refreshTemplateLibraryButton"), this);
     m_loadSelectedButton = createPanelButton(
@@ -62,24 +72,57 @@ TemplateLibraryPanel::TemplateLibraryPanel(QWidget* parent)
         this);
     m_loadCurrentButton = createPanelButton(QString::fromUtf8("从模板库加载"), QStringLiteral("loadTemplateFromLibraryButton"), this);
 
-    auto* buttonGrid = new QGridLayout();
-    buttonGrid->setContentsMargins(0, 0, 0, 0);
-    buttonGrid->addWidget(m_refreshButton, 0, 0);
-    buttonGrid->addWidget(m_loadSelectedButton, 0, 1);
-    buttonGrid->addWidget(m_createButton, 1, 0);
-    buttonGrid->addWidget(m_deleteButton, 1, 1);
-    buttonGrid->addWidget(m_duplicateButton, 2, 0);
-    buttonGrid->addWidget(m_renameButton, 2, 1);
-    buttonGrid->addWidget(m_loadCurrentButton, 3, 0, 1, 2);
+    configureIconButton(m_createButton, QStyle::SP_FileIcon, QString::fromUtf8("使用模板名称新建模板"));
+    configureIconButton(m_refreshButton, QStyle::SP_BrowserReload, QString::fromUtf8("刷新模板库"));
+    auto* moreButton = new QPushButton(this);
+    moreButton->setObjectName(QStringLiteral("templateLibraryMoreButton"));
+    configureIconButton(moreButton, QStyle::SP_TitleBarMenuButton, QString::fromUtf8("更多模板操作"));
+    auto* menu = new QMenu(moreButton);
+    menu->setObjectName(QStringLiteral("templateLibraryMenu"));
+    // 菜单复用原按钮的点击入口，保留主窗口接线与自动化访问契约。
+    const auto addCommand = [menu](QPushButton* button, QStyle::StandardPixmap icon) {
+        auto* action = menu->addAction(button->style()->standardIcon(icon), button->text());
+        action->setObjectName(button->objectName() + QStringLiteral("Action"));
+        action->setToolTip(button->text());
+        QObject::connect(action, &QAction::triggered, button, [button] { button->click(); });
+        QObject::connect(menu, &QMenu::aboutToShow, action, [action, button] {
+            action->setText(button->text());
+            action->setEnabled(button->isEnabled());
+        });
+        button->setToolTip(button->text());
+        button->setAccessibleName(button->text());
+        button->hide();
+    };
+    addCommand(m_loadSelectedButton, QStyle::SP_DialogOpenButton);
+    addCommand(m_duplicateButton, QStyle::SP_FileDialogNewFolder);
+    addCommand(m_renameButton, QStyle::SP_FileDialogDetailedView);
+    menu->addSeparator();
+    addCommand(m_deleteButton, QStyle::SP_TrashIcon);
+    menu->addSeparator();
+    addCommand(m_loadCurrentButton, QStyle::SP_DialogOpenButton);
+    moreButton->setMenu(menu);
+    connect(m_templateList, &QListWidget::customContextMenuRequested, this, [this, menu](const QPoint& position) {
+        if (auto* item = m_templateList->itemAt(position)) {
+            m_templateList->setCurrentItem(item);
+        }
+        menu->exec(m_templateList->viewport()->mapToGlobal(position));
+    });
+
+    auto* headerLayout = new QHBoxLayout();
+    headerLayout->setContentsMargins(0, 0, 0, 0);
+    headerLayout->setSpacing(4);
+    headerLayout->addWidget(titleLabel, 1);
+    headerLayout->addWidget(m_createButton);
+    headerLayout->addWidget(m_refreshButton);
+    headerLayout->addWidget(moreButton);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(8);
-    layout->addWidget(titleLabel);
+    layout->addLayout(headerLayout);
     layout->addWidget(m_searchEdit);
     layout->addWidget(m_nameEdit);
     layout->addWidget(m_templateList, 1);
-    layout->addLayout(buttonGrid);
 }
 
 QLineEdit* TemplateLibraryPanel::searchEdit() const

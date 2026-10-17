@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QWidget>
+#include <QSizeF>
 
 class QCheckBox;
 class QComboBox;
@@ -8,6 +9,8 @@ class QLabel;
 class QPlainTextEdit;
 class QPushButton;
 class QString;
+class QToolButton;
+class QHBoxLayout;
 
 namespace sleekpr::app {
 
@@ -18,6 +21,14 @@ class TemplateWorkspacePanel final : public QWidget
 {
 public:
     explicit TemplateWorkspacePanel(const QString& initialSampleDataJson, QWidget* parent = nullptr);
+
+    QWidget* toolbarWidget() const;
+    void setInsertionTools(QWidget* tools);
+    void setSampleDataExpanded(bool expanded);
+    QSize previewViewportSize() const;
+    QWidget* previewViewportWidget() const;
+    QPushButton* fitCanvasButton() const;
+    void setPaperSummary(QSizeF paperSizeMm);
 
     QPushButton* saveToLibraryButton() const;
     QPushButton* prePrintTemplateButton() const;
@@ -44,6 +55,12 @@ private:
     QPlainTextEdit* m_sampleDataEdit = nullptr;
     QLabel* m_sampleDataErrorLabel = nullptr;
     QLabel* m_statusLabel = nullptr;
+    QWidget* m_sampleDataPanel = nullptr;
+    QWidget* m_previewViewport = nullptr;
+    QHBoxLayout* m_insertionLayout = nullptr;
+    QToolButton* m_sampleDataToggle = nullptr;
+    QPushButton* m_fitCanvasButton = nullptr;
+    QLabel* m_paperSummaryLabel = nullptr;
 };
 
 } // 命名空间 sleekpr::app

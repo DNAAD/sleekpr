@@ -1,5 +1,6 @@
 #include "sleekpr/app/SettingsWindow.h"
 
+#include "sleekpr/app/AppTheme.h"
 #include "sleekpr/core/labels/LabelRenderPlanner.h"
 #include "sleekpr/core/labels/TemplateOverrideKey.h"
 #include "sleekpr/core/native/NativeLabelDrawingPlanner.h"
@@ -17,9 +18,11 @@
 #include "sleekpr/infrastructure/preview/LabelPreviewService.h"
 #include "sleekpr/infrastructure/preview/PreviewLabelFactory.h"
 
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QEvent>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -41,6 +44,7 @@
 #include <QSizePolicy>
 #include <QSpinBox>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QUuid>
 #include <QVBoxLayout>
 
@@ -81,7 +85,7 @@ QWidget* localHttpLimitField(const QString& title, QSpinBox* spinBox)
     layout->setSpacing(4);
 
     auto* titleLabel = new QLabel(title, field);
-    titleLabel->setStyleSheet(QStringLiteral("color: #334155; font-size: 12px;"));
+    titleLabel->setBuddy(spinBox);
     layout->addWidget(titleLabel);
     layout->addWidget(spinBox);
     return field;
@@ -200,7 +204,7 @@ SettingsWindow::SettingsWindow(
     , m_templateLibraryDirectoryPath(std::move(templateLibraryDirectoryPath))
 {
     setWindowTitle(QString::fromUtf8("sleekpr 设置"));
-    resize(1320, 680);
+    resize(1100, 740);
     buildUi();
     reloadFromDisk();
 }
@@ -251,40 +255,51 @@ void SettingsWindow::buildUi()
     auto* shell = new QWidget(this);
     shell->setObjectName(QStringLiteral("settingsWorkbenchShell"));
     auto* shellLayout = new QHBoxLayout(shell);
-    shellLayout->setContentsMargins(12, 12, 12, 12);
-    shellLayout->setSpacing(12);
+    shellLayout->setContentsMargins(0, 0, 0, 0);
+    shellLayout->setSpacing(0);
 
     shellLayout->addWidget(createWorkbenchNavigation(), 0);
 
     auto* contentPanel = new QWidget(shell);
     contentPanel->setObjectName(QStringLiteral("settingsContentPanel"));
     auto* contentLayout = new QVBoxLayout(contentPanel);
-    contentLayout->setContentsMargins(12, 12, 12, 12);
-    contentLayout->setSpacing(10);
+    contentLayout->setContentsMargins(20, 20, 20, 16);
+    contentLayout->setSpacing(16);
 
-    auto* splitter = new QSplitter(Qt::Horizontal, this);
+    auto* splitter = new QSplitter(Qt::Horizontal, contentPanel);
+    splitter->setObjectName(QStringLiteral("settingsWorkspaceSplitter"));
+    splitter->setChildrenCollapsible(false);
     splitter->addWidget(createPrinterPanel());
     splitter->addWidget(createPreviewPanel());
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
-    splitter->setSizes({260, 1040});
+    splitter->setSizes({320, 540});
     contentLayout->addWidget(createOverviewPanel());
     contentLayout->addWidget(splitter, 1);
 
-    auto* buttonLayout = new QHBoxLayout;
+    auto* footer = new QWidget(contentPanel);
+    footer->setObjectName(QStringLiteral("settingsFooter"));
+    auto* buttonLayout = new QHBoxLayout(footer);
+    buttonLayout->setContentsMargins(0, 12, 0, 0);
+    buttonLayout->setSpacing(8);
     auto* saveButton = new QPushButton(QString::fromUtf8("保存"));
-    auto* applyButton = new QPushButton(QString::fromUtf8("应用但不保存"));
-    auto* refreshButton = new QPushButton(QString::fromUtf8("刷新预览"));
+    auto* applyButton = new QPushButton(QString::fromUtf8("应用"));
+    auto* refreshButton = new QPushButton;
     auto* closeButton = new QPushButton(QString::fromUtf8("关闭"));
 
     saveButton->setObjectName(QStringLiteral("saveSettingsButton"));
     saveButton->setProperty("buttonRole", QStringLiteral("primary"));
+    applyButton->setObjectName(QStringLiteral("applySettingsButton"));
+    applyButton->setToolTip(QString::fromUtf8("应用当前设置，但不保存到文件"));
+    refreshButton->setObjectName(QStringLiteral("refreshSettingsPreviewButton"));
+    configureIconButton(refreshButton, QStyle::SP_BrowserReload, QString::fromUtf8("刷新预览"));
+    closeButton->setObjectName(QStringLiteral("closeSettingsButton"));
     buttonLayout->addWidget(saveButton);
     buttonLayout->addWidget(applyButton);
     buttonLayout->addWidget(refreshButton);
     buttonLayout->addStretch();
     buttonLayout->addWidget(closeButton);
-    contentLayout->addLayout(buttonLayout);
+    contentLayout->addWidget(footer);
 
     shellLayout->addWidget(contentPanel, 1);
     rootLayout->addWidget(shell, 1);
@@ -299,24 +314,37 @@ QWidget* SettingsWindow::createWorkbenchNavigation()
 {
     auto* panel = new QWidget(this);
     panel->setObjectName(QStringLiteral("settingsNavigationRail"));
-    panel->setFixedWidth(196);
+    panel->setFixedWidth(176);
     auto* layout = new QVBoxLayout(panel);
-    layout->setContentsMargins(14, 14, 14, 14);
+    layout->setContentsMargins(12, 24, 12, 16);
     layout->setSpacing(8);
 
     auto* titleLabel = new QLabel(QStringLiteral("sleekpr"), panel);
     titleLabel->setObjectName(QStringLiteral("settingsBrandTitle"));
     auto* subtitleLabel = new QLabel(QString::fromUtf8("本地打印工作台"), panel);
     subtitleLabel->setObjectName(QStringLiteral("settingsBrandSubtitle"));
-    auto* hintLabel = new QLabel(QString::fromUtf8("服务运行中 · 37122"), panel);
+    auto* hintLabel = new QLabel(QStringLiteral("127.0.0.1:37122"), panel);
     hintLabel->setObjectName(QStringLiteral("settingsNavigationHint"));
 
-    auto* overviewButton = new QPushButton(QString::fromUtf8("服务概览"), panel);
-    overviewButton->setEnabled(false);
-    overviewButton->setProperty("buttonRole", QStringLiteral("nav"));
-    auto* openDesignerButton = new QPushButton(QString::fromUtf8("模板设计器"), panel);
+    m_printNavButton = new QPushButton(QString::fromUtf8("打印设置"), panel);
+    m_printNavButton->setObjectName(QStringLiteral("settingsPrintNavButton"));
+    m_printNavButton->setProperty("buttonRole", QStringLiteral("nav"));
+    m_printNavButton->setCheckable(true);
+    m_securityNavButton = new QPushButton(QString::fromUtf8("接口安全"), panel);
+    m_securityNavButton->setObjectName(QStringLiteral("settingsSecurityNavButton"));
+    m_securityNavButton->setProperty("buttonRole", QStringLiteral("nav"));
+    m_securityNavButton->setCheckable(true);
+
+    // 页面导航保持互斥；切页只改变可见性，不收集或重载尚未保存的设置。
+    auto* pageNavigation = new QButtonGroup(panel);
+    pageNavigation->setExclusive(true);
+    pageNavigation->addButton(m_printNavButton);
+    pageNavigation->addButton(m_securityNavButton);
+    m_printNavButton->setChecked(true);
+
+    auto* openDesignerButton = new QPushButton(QString::fromUtf8("标签设计器"), panel);
     openDesignerButton->setObjectName(QStringLiteral("openTemplateDesignerButton"));
-    openDesignerButton->setProperty("buttonRole", QStringLiteral("primary"));
+    openDesignerButton->setProperty("buttonRole", QStringLiteral("nav"));
     auto* openPaperSpecManagerButton = new QPushButton(QString::fromUtf8("纸张规格"), panel);
     openPaperSpecManagerButton->setObjectName(QStringLiteral("openPaperSpecManagerButton"));
     openPaperSpecManagerButton->setProperty("buttonRole", QStringLiteral("nav"));
@@ -326,14 +354,26 @@ QWidget* SettingsWindow::createWorkbenchNavigation()
 
     layout->addWidget(titleLabel);
     layout->addWidget(subtitleLabel);
-    layout->addSpacing(10);
-    layout->addWidget(overviewButton);
+    layout->addSpacing(24);
+    layout->addWidget(m_printNavButton);
+    layout->addWidget(m_securityNavButton);
+    layout->addSpacing(16);
     layout->addWidget(openDesignerButton);
     layout->addWidget(openPaperSpecManagerButton);
     layout->addWidget(openFieldPresetManagerButton);
     layout->addStretch(1);
     layout->addWidget(hintLabel);
 
+    connect(m_printNavButton, &QPushButton::toggled, this, [this](bool checked) {
+        if (checked && m_settingsPages != nullptr) {
+            m_settingsPages->setCurrentIndex(0);
+        }
+    });
+    connect(m_securityNavButton, &QPushButton::toggled, this, [this](bool checked) {
+        if (checked && m_settingsPages != nullptr) {
+            m_settingsPages->setCurrentIndex(1);
+        }
+    });
     connect(openDesignerButton, &QPushButton::clicked, this, [this] {
         if (m_openTemplateDesigner) {
             m_openTemplateDesigner();
@@ -358,11 +398,11 @@ QWidget* SettingsWindow::createOverviewPanel()
     auto* panel = new QWidget(this);
     panel->setObjectName(QStringLiteral("settingsOverviewPanel"));
     auto* layout = new QGridLayout(panel);
-    layout->setContentsMargins(12, 10, 12, 10);
-    layout->setHorizontalSpacing(10);
+    layout->setContentsMargins(0, 0, 0, 12);
+    layout->setHorizontalSpacing(16);
     layout->setVerticalSpacing(8);
 
-    auto* titleLabel = new QLabel(QString::fromUtf8("服务概览"), panel);
+    auto* titleLabel = new QLabel(QString::fromUtf8("设置"), panel);
     titleLabel->setObjectName(QStringLiteral("settingsOverviewTitle"));
     m_serviceStatusLabel = new QLabel(panel);
     m_serviceStatusLabel->setObjectName(QStringLiteral("settingsServiceStatusLabel"));
@@ -370,12 +410,14 @@ QWidget* SettingsWindow::createOverviewPanel()
     m_printerStatusLabel->setObjectName(QStringLiteral("settingsPrinterStatusLabel"));
     m_templateStatusLabel = new QLabel(panel);
     m_templateStatusLabel->setObjectName(QStringLiteral("settingsTemplateStatusLabel"));
+    // 长打印机名和模板名不参与窗口最小宽度计算，完整内容保留在悬浮提示中。
+    m_printerStatusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    m_templateStatusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
 
     layout->addWidget(titleLabel, 0, 0, 1, 3);
     layout->addWidget(m_serviceStatusLabel, 1, 0);
     layout->addWidget(m_printerStatusLabel, 1, 1);
     layout->addWidget(m_templateStatusLabel, 1, 2);
-    layout->setColumnStretch(0, 1);
     layout->setColumnStretch(1, 1);
     layout->setColumnStretch(2, 1);
 
@@ -386,7 +428,8 @@ QWidget* SettingsWindow::createOverviewPanel()
 void SettingsWindow::refreshOverview()
 {
     if (m_serviceStatusLabel != nullptr) {
-        m_serviceStatusLabel->setText(QString::fromUtf8("本地服务：运行中 · 127.0.0.1:37122"));
+        // 设置窗口创建早于 HTTP 监听，此处只展示地址，不推断服务是否运行。
+        m_serviceStatusLabel->setText(QStringLiteral("http://127.0.0.1:37122"));
     }
 
     if (m_printerStatusLabel != nullptr) {
@@ -394,6 +437,7 @@ void SettingsWindow::refreshOverview()
             ? QString::fromUtf8("系统默认打印机")
             : m_settings.defaultPrinter.trimmed();
         m_printerStatusLabel->setText(QString::fromUtf8("默认打印机：%1").arg(printerName));
+        m_printerStatusLabel->setToolTip(m_printerStatusLabel->text());
     }
 
     if (m_templateStatusLabel != nullptr) {
@@ -401,59 +445,108 @@ void SettingsWindow::refreshOverview()
             ? m_templateCombo->currentText()
             : QString::fromUtf8("默认标签");
         m_templateStatusLabel->setText(QString::fromUtf8("当前模板：%1").arg(templateName));
+        m_templateStatusLabel->setToolTip(m_templateStatusLabel->text());
     }
 }
 
 QWidget* SettingsWindow::createPrinterPanel()
 {
-    auto* panel = new QWidget(this);
-    auto* layout = new QVBoxLayout(panel);
-    layout->setContentsMargins(0, 0, 10, 0);
+    m_settingsPages = new QStackedWidget(this);
+    m_settingsPages->setObjectName(QStringLiteral("settingsConfigurationStack"));
+    m_settingsPages->setFixedWidth(320);
 
-    auto* templateGroup = new QGroupBox(QString::fromUtf8("模板"));
-    auto* templateLayout = new QVBoxLayout(templateGroup);
-    m_templateCombo = new QComboBox(templateGroup);
+    auto* printPage = new QWidget(m_settingsPages);
+    printPage->setObjectName(QStringLiteral("settingsPrintPage"));
+    auto* printLayout = new QVBoxLayout(printPage);
+    printLayout->setContentsMargins(16, 16, 16, 16);
+    printLayout->setSpacing(12);
+    auto* printTitle = new QLabel(QString::fromUtf8("打印设置"), printPage);
+    printTitle->setObjectName(QStringLiteral("settingsPrintTitle"));
+    printLayout->addWidget(printTitle);
+    printLayout->addSpacing(8);
+
+    auto* templateTitle = new QLabel(QString::fromUtf8("标签模板"), printPage);
+    m_templateCombo = new QComboBox(printPage);
     m_templateCombo->setObjectName(QStringLiteral("settingsTemplateCombo"));
+    m_templateCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_templateCombo->setMinimumContentsLength(12);
+    templateTitle->setBuddy(m_templateCombo);
     populateTemplateCombo();
-    templateLayout->addWidget(m_templateCombo);
+    printLayout->addWidget(templateTitle);
+    printLayout->addWidget(m_templateCombo);
+    printLayout->addSpacing(8);
 
-    auto* printerGroup = new QGroupBox(QString::fromUtf8("打印机"));
-    auto* printerLayout = new QVBoxLayout(printerGroup);
-    m_printerCombo = new QComboBox(printerGroup);
-    auto* refreshPrintersButton = new QPushButton(QString::fromUtf8("刷新打印机"));
+    auto* printerTitle = new QLabel(QString::fromUtf8("打印机"), printPage);
+    auto* printerLayout = new QHBoxLayout;
+    printerLayout->setSpacing(8);
+    m_printerCombo = new QComboBox(printPage);
+    m_printerCombo->setObjectName(QStringLiteral("settingsPrinterCombo"));
+    m_printerCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_printerCombo->setMinimumContentsLength(12);
+    printerTitle->setBuddy(m_printerCombo);
+    auto* refreshPrintersButton = new QPushButton(printPage);
+    refreshPrintersButton->setObjectName(QStringLiteral("refreshSettingsPrintersButton"));
+    configureIconButton(refreshPrintersButton, QStyle::SP_BrowserReload, QString::fromUtf8("刷新打印机"));
     printerLayout->addWidget(m_printerCombo);
     printerLayout->addWidget(refreshPrintersButton);
+    printLayout->addWidget(printerTitle);
+    printLayout->addLayout(printerLayout);
+    printLayout->addSpacing(8);
 
-    auto* offsetGroup = new QGroupBox(QString::fromUtf8("整体偏移"));
-    auto* offsetLayout = new QFormLayout(offsetGroup);
+    printLayout->addWidget(new QLabel(QString::fromUtf8("整体偏移"), printPage));
+    auto* offsetLayout = new QGridLayout;
+    offsetLayout->setHorizontalSpacing(12);
+    offsetLayout->setVerticalSpacing(4);
+    offsetLayout->setColumnStretch(0, 1);
+    offsetLayout->setColumnStretch(1, 1);
     m_offsetXSpin = millimeterSpinBox();
     m_offsetYSpin = millimeterSpinBox();
-    offsetLayout->addRow(QString::fromUtf8("X"), m_offsetXSpin);
-    offsetLayout->addRow(QString::fromUtf8("Y"), m_offsetYSpin);
+    m_offsetXSpin->setObjectName(QStringLiteral("settingsOffsetXSpin"));
+    m_offsetYSpin->setObjectName(QStringLiteral("settingsOffsetYSpin"));
+    m_offsetXSpin->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_offsetYSpin->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto* offsetXTitle = new QLabel(QString::fromUtf8("水平 X"), printPage);
+    auto* offsetYTitle = new QLabel(QString::fromUtf8("垂直 Y"), printPage);
+    offsetXTitle->setBuddy(m_offsetXSpin);
+    offsetYTitle->setBuddy(m_offsetYSpin);
+    offsetLayout->addWidget(offsetXTitle, 0, 0);
+    offsetLayout->addWidget(offsetYTitle, 0, 1);
+    offsetLayout->addWidget(m_offsetXSpin, 1, 0);
+    offsetLayout->addWidget(m_offsetYSpin, 1, 1);
+    printLayout->addLayout(offsetLayout);
+    printLayout->addStretch();
 
-    auto* securityGroup = new QGroupBox(QString::fromUtf8("本地接口安全"));
-    auto* securityLayout = new QVBoxLayout(securityGroup);
+    auto* securityPage = new QWidget(m_settingsPages);
+    securityPage->setObjectName(QStringLiteral("settingsSecurityPage"));
+    auto* securityLayout = new QVBoxLayout(securityPage);
+    securityLayout->setContentsMargins(16, 16, 16, 16);
     securityLayout->setSpacing(8);
-    auto* allowedOriginsHint = new QLabel(
-        QString::fromUtf8("允许访问本地服务的网页 Origin，每行一个；留空时只接受没有 Origin 的本机调用。"),
-        securityGroup);
-    allowedOriginsHint->setWordWrap(true);
-    m_allowedOriginsEdit = new QPlainTextEdit(securityGroup);
+    auto* securityTitle = new QLabel(QString::fromUtf8("接口安全"), securityPage);
+    securityTitle->setObjectName(QStringLiteral("settingsSecurityTitle"));
+    securityLayout->addWidget(securityTitle);
+    securityLayout->addSpacing(8);
+
+    const auto originsTooltip = QString::fromUtf8(
+        "允许访问本地服务的网页 Origin，每行一个；留空时只接受没有 Origin 的本机调用。");
+    auto* allowedOriginsTitle = new QLabel(QString::fromUtf8("允许的 Origin"), securityPage);
+    allowedOriginsTitle->setToolTip(originsTooltip);
+    m_allowedOriginsEdit = new QPlainTextEdit(securityPage);
     m_allowedOriginsEdit->setObjectName(QStringLiteral("allowedOriginsEdit"));
     m_allowedOriginsEdit->setPlaceholderText(QString::fromUtf8("https://manager.example.com"));
-    m_allowedOriginsEdit->setFixedHeight(72);
-    securityLayout->addWidget(allowedOriginsHint);
+    m_allowedOriginsEdit->setToolTip(originsTooltip);
+    m_allowedOriginsEdit->setFixedHeight(96);
+    allowedOriginsTitle->setBuddy(m_allowedOriginsEdit);
+    securityLayout->addWidget(allowedOriginsTitle);
     securityLayout->addWidget(m_allowedOriginsEdit);
 
-    auto* limitTitle = new QLabel(QString::fromUtf8("高级上限"), securityGroup);
-    limitTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #0f172a;"));
-    auto* limitHint = new QLabel(
-        QString::fromUtf8("在收包和预览响应阶段生效；调大前请确认 Web 端确实需要。"),
-        securityGroup);
-    limitHint->setWordWrap(true);
-    limitHint->setStyleSheet(QStringLiteral("color: #64748b;"));
-    auto* limitsGridPanel = new QWidget(securityGroup);
+    const auto limitsTooltip = QString::fromUtf8(
+        "在收包和预览响应阶段生效；调大前请确认 Web 端确实需要。");
+    auto* limitTitle = new QLabel(QString::fromUtf8("高级上限"), securityPage);
+    limitTitle->setObjectName(QStringLiteral("settingsHttpLimitsTitle"));
+    limitTitle->setToolTip(limitsTooltip);
+    auto* limitsGridPanel = new QWidget(securityPage);
     limitsGridPanel->setObjectName(QStringLiteral("settingsHttpLimitsGrid"));
+    limitsGridPanel->setToolTip(limitsTooltip);
     auto* limitLayout = new QGridLayout(limitsGridPanel);
     limitLayout->setContentsMargins(0, 0, 0, 0);
     limitLayout->setHorizontalSpacing(10);
@@ -496,19 +589,18 @@ QWidget* SettingsWindow::createPrinterPanel()
     limitLayout->addWidget(localHttpLimitField(QString::fromUtf8("预览页数"), m_httpMaxPreviewPagesSpin), 1, 1);
     limitLayout->addWidget(localHttpLimitField(QString::fromUtf8("响应体"), m_httpMaxPreviewResponseMbSpin), 2, 0);
 
-    auto* resetLimitsButton = new QPushButton(QString::fromUtf8("恢复默认上限"), securityGroup);
+    auto* resetLimitsButton = new QPushButton(QString::fromUtf8("恢复默认上限"), securityPage);
     resetLimitsButton->setObjectName(QStringLiteral("resetHttpLimitsButton"));
     securityLayout->addSpacing(8);
     securityLayout->addWidget(limitTitle);
-    securityLayout->addWidget(limitHint);
     securityLayout->addWidget(limitsGridPanel);
-    securityLayout->addWidget(resetLimitsButton);
+    securityLayout->addWidget(resetLimitsButton, 0, Qt::AlignLeft);
+    securityLayout->addStretch();
 
-    layout->addWidget(templateGroup);
-    layout->addWidget(printerGroup);
-    layout->addWidget(offsetGroup);
-    layout->addWidget(securityGroup);
-    layout->addStretch();
+    // 两页共用原设置控件和保存路径，隐藏的安全页也保留用户正在编辑的值。
+    m_settingsPages->addWidget(printPage);
+    m_settingsPages->addWidget(securityPage);
+    m_settingsPages->setCurrentIndex(0);
 
     connect(refreshPrintersButton, &QPushButton::clicked, this, [this] {
         collectGeneralSettings();
@@ -529,33 +621,77 @@ QWidget* SettingsWindow::createPrinterPanel()
         m_httpMaxPreviewResponseMbSpin->setValue(sleekpr::http::LocalHttpLimits::kDefaultMaxPreviewResponseBytes / (1024 * 1024));
     });
 
-    return panel;
+    return m_settingsPages;
 }
 
 QWidget* SettingsWindow::createPreviewPanel()
 {
     auto* panel = new QWidget(this);
+    panel->setObjectName(QStringLiteral("settingsPreviewPanel"));
+    panel->setMinimumWidth(0);
+    panel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     auto* layout = new QVBoxLayout(panel);
-    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setContentsMargins(16, 16, 0, 0);
+    layout->setSpacing(12);
 
+    auto* header = new QHBoxLayout;
+    auto* title = new QLabel(QString::fromUtf8("打印预览"), panel);
+    title->setObjectName(QStringLiteral("settingsPreviewTitle"));
     m_statusLabel = new QLabel(panel);
+    m_statusLabel->setObjectName(QStringLiteral("settingsPreviewStatusLabel"));
     m_statusLabel->setText(QString::fromUtf8("预览尺寸：80mm x 30mm"));
-    layout->addWidget(m_statusLabel);
+    m_statusLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    m_statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    header->addWidget(title);
+    header->addWidget(m_statusLabel, 1);
+    layout->addLayout(header);
 
     m_previewLabel = new TemplatePreviewLabel(panel);
     m_previewLabel->setObjectName(QStringLiteral("settingsPreviewLabel"));
     m_previewLabel->setAlignment(Qt::AlignCenter);
-    m_previewLabel->setMinimumSize(945, 354);
-    m_previewLabel->setStyleSheet(QStringLiteral("QLabel { background: white; border: 1px solid #111827; }"));
+    m_previewLabel->setScaledContents(true);
     m_previewLabel->setDraggingEnabled(false);
 
-    auto* scrollArea = new QScrollArea(panel);
-    scrollArea->setWidgetResizable(true);
-    scrollArea->setAlignment(Qt::AlignCenter);
-    scrollArea->setWidget(m_previewLabel);
-    layout->addWidget(scrollArea, 1);
+    m_previewScrollArea = new QScrollArea(panel);
+    m_previewScrollArea->setObjectName(QStringLiteral("settingsPreviewScrollArea"));
+    m_previewScrollArea->setFrameShape(QFrame::NoFrame);
+    m_previewScrollArea->setWidgetResizable(false);
+    m_previewScrollArea->setAlignment(Qt::AlignCenter);
+    m_previewScrollArea->setWidget(m_previewLabel);
+    m_previewScrollArea->viewport()->setObjectName(QStringLiteral("settingsPreviewViewport"));
+    m_previewScrollArea->viewport()->installEventFilter(this);
+    m_previewLabel->installEventFilter(this);
+    layout->addWidget(m_previewScrollArea, 1);
 
     return panel;
+}
+
+bool SettingsWindow::eventFilter(QObject* watched, QEvent* event)
+{
+    if (m_previewScrollArea != nullptr
+        && (watched == m_previewScrollArea->viewport() || watched == m_previewLabel)
+        && (event->type() == QEvent::Resize || event->type() == QEvent::Show)) {
+        fitPreviewToViewport();
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
+void SettingsWindow::fitPreviewToViewport()
+{
+    if (m_fittingPreview || m_previewScrollArea == nullptr || m_previewLabel == nullptr
+        || m_previewLabel->pixmap().isNull()) {
+        return;
+    }
+
+    // 只调整预览控件的逻辑尺寸，原始图像和正式打印使用的像素、毫米数据均不改变。
+    const auto imageSize = m_previewLabel->pixmap().deviceIndependentSize().toSize();
+    const auto availableSize = (m_previewScrollArea->viewport()->size() - QSize(32, 32)).expandedTo(QSize(1, 1));
+    const auto fittedSize = imageSize.scaled(availableSize.boundedTo(imageSize), Qt::KeepAspectRatio);
+    if (m_previewLabel->size() != fittedSize) {
+        m_fittingPreview = true;
+        m_previewLabel->setFixedSize(fittedSize);
+        m_fittingPreview = false;
+    }
 }
 
 QWidget* SettingsWindow::createElementPanel()

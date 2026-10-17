@@ -7,12 +7,14 @@
 class QAction;
 class QCheckBox;
 class QDoubleSpinBox;
+class QLabel;
 class QLineEdit;
 class QListWidget;
 class QObject;
 class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
+class QTabWidget;
 class QWidget;
 
 namespace sleekpr::app {
@@ -42,6 +44,9 @@ public:
     void installPropertyEditorEventFilter(QObject* filterTarget);
 
     QListWidget* elementList() const;
+    // 两个独立区域可由主窗口迁移到左栏和画布工具栏，不改变原控件和信号的归属。
+    QWidget* elementListSection() const;
+    QWidget* insertionTools() const;
     QAction* renameElementAction() const;
     QAction* deleteElementAction() const;
     QAction* lockElementAction() const;
@@ -123,6 +128,18 @@ signals:
 private:
     void connectPropertySignals();
     void updateAutoFitRangeEnabled();
+
+    QWidget* m_elementListSection = nullptr;
+    QWidget* m_insertionTools = nullptr;
+    QTabWidget* m_inspectorTabs = nullptr;
+    QWidget* m_elementTab = nullptr;
+    QWidget* m_arrayGridTab = nullptr;
+    QWidget* m_elementContentSection = nullptr;
+    QWidget* m_elementCommonSection = nullptr;
+    QWidget* m_textStyleSection = nullptr;
+    QWidget* m_autoFitRangeSection = nullptr;
+    QLabel* m_elementValueLabel = nullptr;
+    QLabel* m_emptySelectionLabel = nullptr;
 
     QListWidget* m_elementList = nullptr;
     QAction* m_renameElementAction = nullptr;

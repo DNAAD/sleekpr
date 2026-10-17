@@ -1,5 +1,11 @@
 # sleekpr
 
+当前发布版本专注于原生 Qt 标签打印，保留固定文本、绑定字段、二维码、矩形、数组网格、模板库、设备校准及本地 HTTP 接口。
+
+复杂表格设计器暂缓开放，默认构建和正式绿色包不创建表格编辑面板，不启用画布合并、行带及分页编辑入口。历史模板中的表格数据继续保留，并通过既有 Qt 原生链路预览和打印，编辑其他标签元素不会删除这些数据。
+
+表格编辑代码和回归测试暂存于原模块，开发构建可通过 `-DSLEEKPR_ENABLE_TABLE_DESIGNER=ON` 恢复；正式打包目标始终构建标签版本。`sleekpr_label_app_tests` 验证标签版本，`sleekpr_app_tests` 保留完整编辑器回归覆盖。
+
 Native C++/Qt migration of the local ZYTXT print client.
 
 ## Current Scope
