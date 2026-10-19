@@ -1,4 +1,5 @@
 #include "sleekpr/app/TemplateDesignerCommand.h"
+#include "sleekpr/app/TemplateElementBindings.h"
 
 #include "sleekpr/app/TableColumnTextCodec.h"
 #include "sleekpr/core/templates/TemplateDocument.h"
@@ -388,6 +389,9 @@ TemplateDesignerCommandResult ElementPropertiesCommand::apply(sleekpr::core::Tem
         break;
     }
 
+    result.errorMessage = TemplateElementBindings::apply(updated, element, m_model.bindings, m_model.bindingKeyEditing);
+    if (!result.errorMessage.isEmpty()) return result;
+
     updated.x = m_model.x;
     updated.y = m_model.y;
     updated.width = m_model.width;
@@ -412,6 +416,45 @@ TemplateDesignerCommandResult ElementPropertiesCommand::apply(sleekpr::core::Tem
 TablePropertiesCommand::TablePropertiesCommand(DesignerTablePropertyModel model)
     : m_model(std::move(model))
 {
+}
+
+TemplateDesignerCommandResult ElementPropertiesCommand::apply(sleekpr::core::TemplateDocument& document, const QString& elementId) const
+{
+    for (auto& layer : document.layers) {
+        const auto element = std::find_if(layer.elements.begin(), layer.elements.end(), [&](const auto& item) { return item.id == elementId; });
+        if (element == layer.elements.end()) continue;
+        if (element->type == sleekpr::core::TemplateElementType::BoundField && m_model.fieldDisplayNameEdited
+            && m_model.value.trimmed().isEmpty() && !m_model.fieldDisplayName.trimmed().isEmpty()) {
+            return {elementId, false, QString::fromUtf8("请先填写绑定 key，再设置显示名称")};
+        }
+        auto updated = *element;
+        auto result = apply(updated);
+        if (!result.errorMessage.isEmpty()) return result;
+        auto names = document.fieldDisplayNames;
+        QMap<QString, QString> edits;
+        if (updated.type == sleekpr::core::TemplateElementType::BoundField && m_model.fieldDisplayNameEdited && !updated.fieldKey.isEmpty()) {
+            edits.insert(updated.fieldKey, m_model.fieldDisplayName.trimmed());
+        }
+        for (const auto& binding : m_model.bindings) {
+            const auto key = binding.key.trimmed();
+            if (!binding.displayNameEdited || !TemplateElementBindings::references(updated, binding.source, key)) continue;
+            const auto name = binding.displayName.trimmed();
+            if (edits.contains(key) && edits.value(key) != name) {
+                return {elementId, false, QString::fromUtf8("同一 key 的显示名称必须一致")};
+            }
+            edits.insert(key, name);
+        }
+        // 元素和名称一起提交；无效键或冲突不能留下半次修改，也不迁移样例、字段规则或其他元素。
+        for (auto it = edits.cbegin(); it != edits.cend(); ++it) {
+            if (it.value().isEmpty()) names.remove(it.key());
+            else names.insert(it.key(), it.value());
+        }
+        result.changed |= names != document.fieldDisplayNames;
+        *element = updated;
+        document.fieldDisplayNames = names;
+        return result;
+    }
+    return {elementId, false, QString::fromUtf8("未找到目标元素")};
 }
 
 TemplateDesignerCommandResult TablePropertiesCommand::apply(sleekpr::core::TemplateDocument& document, const QString& tableId) const

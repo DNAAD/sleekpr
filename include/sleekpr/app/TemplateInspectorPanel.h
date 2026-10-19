@@ -21,6 +21,8 @@ namespace sleekpr::app {
 
 class TableColumnEditorPanel;
 class TableAdvancedEditorPanel;
+class FieldBindingSelector;
+class ElementBindingEditor;
 
 class TemplateInspectorPanel final : public QScrollArea
 {
@@ -36,6 +38,7 @@ public:
     void setElementProperties(const DesignerElementPropertyModel& model);
     DesignerElementPropertyModel elementProperties() const;
     void clearElementProperties();
+    void showMultipleSelection(int count);
     void setTableProperties(const DesignerTablePropertyModel& model);
     DesignerTablePropertyModel tableProperties() const;
     void clearTableProperties();
@@ -162,6 +165,8 @@ private:
     QPushButton* m_moveElementDownButton = nullptr;
 
     QPlainTextEdit* m_elementValueEdit = nullptr;
+    FieldBindingSelector* m_fieldBindingSelector = nullptr;
+    ElementBindingEditor* m_bindingEditor = nullptr;
     QDoubleSpinBox* m_elementXSpin = nullptr;
     QDoubleSpinBox* m_elementYSpin = nullptr;
     QDoubleSpinBox* m_elementWidthSpin = nullptr;

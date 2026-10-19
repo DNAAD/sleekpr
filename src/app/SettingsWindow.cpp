@@ -214,6 +214,11 @@ void SettingsWindow::setOpenTemplateDesignerCallback(OpenTemplateDesignerCallbac
     m_openTemplateDesigner = std::move(callback);
 }
 
+void SettingsWindow::setOpenPrintWorkbenchCallback(OpenPrintWorkbenchCallback callback)
+{
+    m_openPrintWorkbench = std::move(callback);
+}
+
 void SettingsWindow::setOpenPaperSpecManagerCallback(OpenPaperSpecManagerCallback callback)
 {
     m_openPaperSpecManager = std::move(callback);
@@ -355,6 +360,10 @@ QWidget* SettingsWindow::createWorkbenchNavigation()
     layout->addWidget(titleLabel);
     layout->addWidget(subtitleLabel);
     layout->addSpacing(24);
+    auto* workbench = new QPushButton(QString::fromUtf8("打印工作台"), panel);
+    workbench->setObjectName(QStringLiteral("openPrintWorkbenchButton"));
+    workbench->setProperty("buttonRole", QStringLiteral("nav"));
+    layout->addWidget(workbench);
     layout->addWidget(m_printNavButton);
     layout->addWidget(m_securityNavButton);
     layout->addSpacing(16);
@@ -378,6 +387,9 @@ QWidget* SettingsWindow::createWorkbenchNavigation()
         if (m_openTemplateDesigner) {
             m_openTemplateDesigner();
         }
+    });
+    connect(workbench, &QPushButton::clicked, this, [this] {
+        if (m_openPrintWorkbench) m_openPrintWorkbench();
     });
     connect(openPaperSpecManagerButton, &QPushButton::clicked, this, [this] {
         if (m_openPaperSpecManager) {

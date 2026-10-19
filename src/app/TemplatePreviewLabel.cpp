@@ -14,7 +14,9 @@
 #include <QPen>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace sleekpr::app {
@@ -24,6 +26,40 @@ namespace {
 // 标签版使用紧凑标尺；显式启用表格设计器时再为浮动工具条预留空间。
 constexpr int kHorizontalRulerHeightPx = kTableDesignerEnabled ? 44 : 18;
 constexpr int kVerticalRulerWidthPx = 28;
+constexpr int kEditorResizeHandleSizePx = 9;
+constexpr int kEditorResizeHandleHitMarginPx = 3;
+// 相邻手柄的命中区之间至少留一个逻辑像素，同时保留中央移动区，尺寸不随 DPR 改变。
+constexpr int kEditorMinimumInteractionSidePx = 2 * (kEditorResizeHandleSizePx + 2 * kEditorResizeHandleHitMarginPx + 1);
+
+const std::array<Qt::Edges, 8> kEditorResizeEdges = {
+    Qt::TopEdge | Qt::LeftEdge, Qt::TopEdge | Qt::RightEdge,
+    Qt::BottomEdge | Qt::RightEdge, Qt::BottomEdge | Qt::LeftEdge,
+    Qt::TopEdge, Qt::RightEdge, Qt::BottomEdge, Qt::LeftEdge};
+
+bool finitePoint(QPointF point)
+{
+    return std::isfinite(point.x()) && std::isfinite(point.y());
+}
+
+QRectF normalizedEditorRect(QRectF rect)
+{
+    if (!finitePoint(rect.topLeft()) || !finitePoint(rect.bottomRight())) {
+        return {};
+    }
+    rect = rect.normalized();
+    return rect.isEmpty() ? QRectF{} : rect;
+}
+
+Qt::CursorShape resizeCursor(Qt::Edges edges)
+{
+    if (edges == (Qt::TopEdge | Qt::LeftEdge) || edges == (Qt::BottomEdge | Qt::RightEdge)) {
+        return Qt::SizeFDiagCursor;
+    }
+    if (edges == (Qt::TopEdge | Qt::RightEdge) || edges == (Qt::BottomEdge | Qt::LeftEdge)) {
+        return Qt::SizeBDiagCursor;
+    }
+    return edges.testFlag(Qt::LeftEdge) || edges.testFlag(Qt::RightEdge) ? Qt::SizeHorCursor : Qt::SizeVerCursor;
+}
 
 struct DesignAidItem
 {
@@ -79,7 +115,10 @@ TemplatePreviewLabel::TemplatePreviewLabel(QWidget* parent)
 void TemplatePreviewLabel::setDraggingEnabled(bool enabled)
 {
     m_draggingEnabled = enabled;
-    setCursor(enabled ? Qt::OpenHandCursor : Qt::ArrowCursor);
+    if (!enabled) {
+        finishDrag(true);
+    }
+    updateEditorCursor(m_lastMousePosition);
 }
 
 void TemplatePreviewLabel::setDragStartCallback(DragStartCallback callback)
@@ -90,6 +129,11 @@ void TemplatePreviewLabel::setDragStartCallback(DragStartCallback callback)
 void TemplatePreviewLabel::setDragDeltaCallback(DragDeltaCallback callback)
 {
     m_dragDeltaCallback = std::move(callback);
+}
+
+void TemplatePreviewLabel::setDragFinishedCallback(DragFinishedCallback callback)
+{
+    m_dragFinishedCallback = std::move(callback);
 }
 
 void TemplatePreviewLabel::setCanvasClickCallback(CanvasClickCallback callback)
@@ -200,6 +244,124 @@ QString TemplatePreviewLabel::designAidSelectedElementKey() const
     return m_designAidSelectedElementKey;
 }
 
+void TemplatePreviewLabel::setEditorSelectionRectsMm(const QList<QRectF>& rects, QRectF bounds, bool handlesEnabled)
+{
+    QList<QRectF> selection;
+    selection.reserve(rects.size());
+    QRectF combined;
+    for (const auto& rect : rects) {
+        const auto normalized = normalizedEditorRect(rect);
+        if (!normalized.isEmpty()) {
+            selection.append(normalized);
+            combined = combined.united(normalized);
+        }
+    }
+    bounds = selection.isEmpty() ? QRectF{} : normalizedEditorRect(bounds);
+    if (bounds.isEmpty()) {
+        bounds = combined;
+    }
+    if (m_editorSelectionRectsMm == selection && m_editorSelectionBoundsMm == bounds
+        && m_editorResizeHandlesEnabled == handlesEnabled) {
+        return;
+    }
+    m_editorSelectionRectsMm = std::move(selection);
+    m_editorSelectionBoundsMm = bounds;
+    m_editorResizeHandlesEnabled = handlesEnabled;
+    updateEditorCursor(m_lastMousePosition);
+    update();
+}
+
+void TemplatePreviewLabel::setEditorMarqueeRectMm(QRectF rectMm)
+{
+    rectMm = normalizedEditorRect(rectMm);
+    if (m_editorMarqueeRectMm == rectMm) {
+        return;
+    }
+    m_editorMarqueeRectMm = rectMm;
+    update();
+}
+
+void TemplatePreviewLabel::setEditorSnapGuidesMm(const QList<QLineF>& guides)
+{
+    QList<QLineF> validGuides;
+    validGuides.reserve(guides.size());
+    for (const auto& guide : guides) {
+        if (finitePoint(guide.p1()) && finitePoint(guide.p2()) && !guide.isNull()) {
+            validGuides.append(guide);
+        }
+    }
+    if (m_editorSnapGuidesMm == validGuides) {
+        return;
+    }
+    m_editorSnapGuidesMm = std::move(validGuides);
+    update();
+}
+
+QRectF TemplatePreviewLabel::editorInteractionFramePx() const
+{
+    auto frame = editorRectPx(m_editorSelectionBoundsMm, printableImageOriginPx(), printableImageSizePx());
+    if (frame.isEmpty()) {
+        return {};
+    }
+    const QSizeF minimumSize(std::max(frame.width(), double(kEditorMinimumInteractionSidePx)),
+        std::max(frame.height(), double(kEditorMinimumInteractionSidePx)));
+    if (frame.size() != minimumSize) {
+        // 只把手柄外置到最小交互框；真实选区毫米范围和绘制轮廓保持不变。
+        const auto center = frame.center();
+        frame.setSize(minimumSize);
+        frame.moveCenter(center);
+    }
+    return frame;
+}
+
+QRect TemplatePreviewLabel::editorResizeHandleRect(Qt::Edges edges) const
+{
+    if (!m_editorResizeHandlesEnabled || m_editorSelectionRectsMm.isEmpty()
+        || std::find(kEditorResizeEdges.cbegin(), kEditorResizeEdges.cend(), edges) == kEditorResizeEdges.cend()) {
+        return {};
+    }
+    const auto bounds = editorInteractionFramePx();
+    if (bounds.isEmpty()) {
+        return {};
+    }
+    QPointF anchor = bounds.center();
+    if (edges.testFlag(Qt::LeftEdge)) {
+        anchor.setX(bounds.left());
+    } else if (edges.testFlag(Qt::RightEdge)) {
+        anchor.setX(bounds.right());
+    }
+    if (edges.testFlag(Qt::TopEdge)) {
+        anchor.setY(bounds.top());
+    } else if (edges.testFlag(Qt::BottomEdge)) {
+        anchor.setY(bounds.bottom());
+    }
+    // 手柄保持固定逻辑像素大小，不能随原生预览图的 DPR 再放大一遍。
+    const QPoint center(qRound(anchor.x()), qRound(anchor.y()));
+    return QRect(center - QPoint(kEditorResizeHandleSizePx / 2, kEditorResizeHandleSizePx / 2),
+        QSize(kEditorResizeHandleSizePx, kEditorResizeHandleSizePx));
+}
+
+Qt::Edges TemplatePreviewLabel::editorResizeHandleAt(QPoint localPosition) const
+{
+    Qt::Edges nearest;
+    auto nearestDistance = std::numeric_limits<double>::max();
+    for (const auto edges : kEditorResizeEdges) {
+        const auto handle = editorResizeHandleRect(edges);
+        if (handle.isEmpty() || !handle.adjusted(-kEditorResizeHandleHitMarginPx, -kEditorResizeHandleHitMarginPx,
+                                    kEditorResizeHandleHitMarginPx, kEditorResizeHandleHitMarginPx).contains(localPosition)) {
+            continue;
+        }
+        // 命中边距也使用逻辑像素；若边缘舍入后出现重叠，取最近手柄，等距时优先四角。
+        const auto delta = QPointF(localPosition) - QPointF(handle.center());
+        const auto distance = delta.x() * delta.x() + delta.y() * delta.y();
+        if (distance < nearestDistance) {
+            nearest = edges;
+            nearestDistance = distance;
+        }
+    }
+    return nearest;
+}
+
 void TemplatePreviewLabel::setCanvasFocusRectMm(QRectF rectMm)
 {
     if (m_canvasFocusRectMm == rectMm) {
@@ -308,6 +470,10 @@ void TemplatePreviewLabel::paintEvent(QPaintEvent* event)
 {
     if (!m_rulerVisible || m_rulerPaperSizeMm.isEmpty() || pixmap().isNull()) {
         QLabel::paintEvent(event);
+        if (!pixmap().isNull()) {
+            QPainter painter(this);
+            drawEditorOverlays(painter, printableImageOriginPx(), printableImageSizePx());
+        }
         return;
     }
 
@@ -361,7 +527,7 @@ void TemplatePreviewLabel::paintEvent(QPaintEvent* event)
     }
     if (m_designAidVisible && !m_designAidCommands.isEmpty()) {
         drawDesignAids(painter, origin, imageSize);
-    } else if (!m_designAidSelectedElementKey.isEmpty()) {
+    } else if (m_editorSelectionRectsMm.isEmpty() && !m_designAidSelectedElementKey.isEmpty()) {
         QRectF selection;
         for (const auto& command : m_designAidCommands) {
             if (designAidElementKey(command.elementKey) == m_designAidSelectedElementKey) {
@@ -377,8 +543,79 @@ void TemplatePreviewLabel::paintEvent(QPaintEvent* event)
         }
     }
     drawTablePaginationOverlays(painter, origin, imageSize);
-    drawCanvasFocusRect(painter, origin, imageSize);
+    if (m_editorSelectionRectsMm.isEmpty()) {
+        drawCanvasFocusRect(painter, origin, imageSize);
+    }
+    drawEditorOverlays(painter, origin, imageSize);
     drawCanvasFloatingActions(painter, origin, imageSize);
+}
+
+QRectF TemplatePreviewLabel::editorRectPx(QRectF rectMm, QPoint imageOrigin, QSize imageSize) const
+{
+    rectMm = normalizedEditorRect(rectMm);
+    if (rectMm.isEmpty() || m_rulerPaperSizeMm.isEmpty() || imageSize.isEmpty()
+        || !std::isfinite(m_rulerPaperSizeMm.width()) || !std::isfinite(m_rulerPaperSizeMm.height())) {
+        return {};
+    }
+    // 输入已经是预览毫米坐标；这里只按逻辑图像尺寸缩放并加上标尺偏移，不再应用设备变换或 DPR。
+    const auto scaleX = imageSize.width() / m_rulerPaperSizeMm.width();
+    const auto scaleY = imageSize.height() / m_rulerPaperSizeMm.height();
+    return QRectF(imageOrigin.x() + rectMm.x() * scaleX, imageOrigin.y() + rectMm.y() * scaleY,
+        rectMm.width() * scaleX, rectMm.height() * scaleY);
+}
+
+void TemplatePreviewLabel::drawEditorOverlays(QPainter& painter, QPoint imageOrigin, QSize imageSize) const
+{
+    if (m_rulerPaperSizeMm.isEmpty() || imageSize.isEmpty()
+        || !std::isfinite(m_rulerPaperSizeMm.width()) || !std::isfinite(m_rulerPaperSizeMm.height())
+        || (m_editorSelectionRectsMm.isEmpty() && m_editorMarqueeRectMm.isEmpty() && m_editorSnapGuidesMm.isEmpty())) {
+        return;
+    }
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, false);
+    painter.setClipRect(QRect(imageOrigin, imageSize));
+    painter.setBrush(Qt::NoBrush);
+
+    const auto selectionColor = palette().highlight().color();
+    painter.setPen(QPen(selectionColor, 1, Qt::DashLine));
+    for (const auto& rect : m_editorSelectionRectsMm) {
+        painter.drawRect(editorRectPx(rect, imageOrigin, imageSize));
+    }
+    if (m_editorSelectionRectsMm.size() > 1) {
+        painter.setPen(QPen(selectionColor, 1));
+        painter.drawRect(editorRectPx(m_editorSelectionBoundsMm, imageOrigin, imageSize));
+    }
+
+    if (!m_editorMarqueeRectMm.isEmpty()) {
+        auto fillColor = selectionColor;
+        fillColor.setAlpha(30);
+        painter.setPen(QPen(selectionColor, 1, Qt::DashLine));
+        painter.setBrush(fillColor);
+        painter.drawRect(editorRectPx(m_editorMarqueeRectMm, imageOrigin, imageSize));
+        painter.setBrush(Qt::NoBrush);
+    }
+
+    const auto scaleX = imageSize.width() / m_rulerPaperSizeMm.width();
+    const auto scaleY = imageSize.height() / m_rulerPaperSizeMm.height();
+    painter.setPen(QPen(QColor(208, 54, 126), 1, Qt::DashLine));
+    for (const auto& guide : m_editorSnapGuidesMm) {
+        painter.drawLine(QPointF(imageOrigin.x() + guide.x1() * scaleX, imageOrigin.y() + guide.y1() * scaleY),
+            QPointF(imageOrigin.x() + guide.x2() * scaleX, imageOrigin.y() + guide.y2() * scaleY));
+    }
+    painter.restore();
+
+    // 手柄可跨出纸张边缘半个尺寸，便于选择贴边元素；引导线和框选填充仍严格限制在纸张内。
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, false);
+    painter.setPen(QPen(selectionColor, 1));
+    painter.setBrush(Qt::white);
+    for (const auto edges : kEditorResizeEdges) {
+        const auto handle = editorResizeHandleRect(edges);
+        if (!handle.isEmpty()) {
+            painter.drawRect(handle.adjusted(0, 0, -1, -1));
+        }
+    }
+    painter.restore();
 }
 
 QRectF TemplatePreviewLabel::commandRectPx(
@@ -452,12 +689,15 @@ void TemplatePreviewLabel::drawDesignAids(QPainter& painter, QPoint imageOrigin,
 
     painter.setFont(QFont(QStringLiteral("Microsoft YaHei"), 7));
     for (const auto& item : items) {
-        const bool selected = !m_designAidSelectedElementKey.isEmpty() && item.key == m_designAidSelectedElementKey;
+        const bool legacySelected = !m_designAidSelectedElementKey.isEmpty() && item.key == m_designAidSelectedElementKey;
+        const bool selected = legacySelected && m_editorSelectionRectsMm.isEmpty();
         QPen boxPen(selected ? QColor(255, 128, 0, 230) : QColor(0, 104, 183, 180));
         boxPen.setStyle(Qt::DashLine);
         boxPen.setWidth(selected ? 2 : 1);
         painter.setPen(boxPen);
-        painter.drawRect(item.rectPx);
+        if (!legacySelected || m_editorSelectionRectsMm.isEmpty()) {
+            painter.drawRect(item.rectPx);
+        }
 
         if (selected) {
             QPen selectedGuidePen(QColor(255, 128, 0, 170));
@@ -725,8 +965,83 @@ void TemplatePreviewLabel::drawCanvasFloatingActions(QPainter& painter, QPoint i
     painter.restore();
 }
 
+bool TemplatePreviewLabel::event(QEvent* event)
+{
+    switch (event->type()) {
+    case QEvent::UngrabMouse:
+    case QEvent::Hide:
+    case QEvent::WindowDeactivate:
+        finishDrag(true);
+        break;
+    case QEvent::EnabledChange:
+        if (!isEnabled()) {
+            finishDrag(true);
+        }
+        updateEditorCursor(m_lastMousePosition);
+        break;
+    case QEvent::Leave:
+        if (!m_dragging) {
+            m_lastMousePosition = QPoint(-1, -1);
+            m_hoveredCanvasFloatingActionId.clear();
+            updateEditorCursor(m_lastMousePosition);
+            update();
+        }
+        break;
+    default:
+        break;
+    }
+    return QLabel::event(event);
+}
+
+void TemplatePreviewLabel::updateEditorCursor(QPoint position)
+{
+    if (!m_draggingEnabled || !isEnabled()) {
+        setCursor(Qt::ArrowCursor);
+        return;
+    }
+    if (m_dragging) {
+        setCursor(m_dragResizeEdges != Qt::Edges{} ? resizeCursor(m_dragResizeEdges) : Qt::ClosedHandCursor);
+        return;
+    }
+    if (!canvasFloatingActionAt(position).isEmpty()) {
+        setCursor(Qt::PointingHandCursor);
+        return;
+    }
+    const auto edges = editorResizeHandleAt(position);
+    setCursor(edges != Qt::Edges{} ? resizeCursor(edges) : Qt::OpenHandCursor);
+}
+
+void TemplatePreviewLabel::finishDrag(bool cancelled, QMouseEvent* releaseEvent)
+{
+    if (!m_dragging) {
+        return;
+    }
+    const auto wasClick = !m_dragMoved;
+    const auto finishedCallback = m_dragFinishedCallback;
+    // 先清除活动状态，避免单击回调隐藏窗口、释放抓取或禁用编辑时再次结束同一事务。
+    m_dragging = false;
+    m_dragMoved = false;
+    m_dragResizeEdges = {};
+    if (cancelled && QWidget::mouseGrabber() == this) {
+        releaseMouse();
+    }
+    if (!cancelled && releaseEvent && wasClick && m_canvasClickCallback) {
+        // 单击选择先落定，再通知控制器提交事务，保持选择和撤销记录的一致性。
+        m_canvasClickCallback(releaseEvent->pos(), releaseEvent->modifiers());
+    }
+    if (finishedCallback) {
+        finishedCallback(cancelled);
+    }
+    updateEditorCursor(m_lastMousePosition);
+}
+
 void TemplatePreviewLabel::keyPressEvent(QKeyEvent* event)
 {
+    if (m_dragging && event->key() == Qt::Key_Escape) {
+        finishDrag(true);
+        event->accept();
+        return;
+    }
     if (m_draggingEnabled && m_canvasShortcutCallback && m_canvasShortcutCallback(event->key(), event->modifiers())) {
         event->accept();
         return;
@@ -764,6 +1079,7 @@ void TemplatePreviewLabel::keyPressEvent(QKeyEvent* event)
 void TemplatePreviewLabel::mousePressEvent(QMouseEvent* event)
 {
     if (m_draggingEnabled && event->button() == Qt::LeftButton) {
+        finishDrag(true);
         const auto actionId = canvasFloatingActionAt(event->pos());
         if (!actionId.isEmpty() && m_canvasFloatingActionCallback) {
             setFocus(Qt::MouseFocusReason);
@@ -772,6 +1088,7 @@ void TemplatePreviewLabel::mousePressEvent(QMouseEvent* event)
             return;
         }
 
+        const auto resizeEdges = editorResizeHandleAt(event->pos());
         if (m_dragStartCallback && !m_dragStartCallback(event->pos(), event->modifiers())) {
             QLabel::mousePressEvent(event);
             return;
@@ -782,7 +1099,8 @@ void TemplatePreviewLabel::mousePressEvent(QMouseEvent* event)
         m_dragMoved = false;
         m_dragStartPosition = event->pos();
         m_lastMousePosition = event->pos();
-        setCursor(Qt::ClosedHandCursor);
+        m_dragResizeEdges = resizeEdges;
+        updateEditorCursor(event->pos());
         event->accept();
         return;
     }
@@ -791,6 +1109,10 @@ void TemplatePreviewLabel::mousePressEvent(QMouseEvent* event)
 
 void TemplatePreviewLabel::mouseDoubleClickEvent(QMouseEvent* event)
 {
+    if (event->button() == Qt::LeftButton) {
+        // 双击可转入单元格或文本编辑，旧的按下手势必须先取消，随后释放不能误提交它。
+        finishDrag(true);
+    }
     if (m_draggingEnabled && event->button() == Qt::LeftButton && m_doubleClickCallback) {
         setFocus(Qt::MouseFocusReason);
         // 双击只上报画布坐标，具体是表头、字段还是普通元素由设计器窗口判断。
@@ -814,6 +1136,10 @@ void TemplatePreviewLabel::contextMenuEvent(QContextMenuEvent* event)
 
 void TemplatePreviewLabel::mouseMoveEvent(QMouseEvent* event)
 {
+    if (m_dragging && !(event->buttons() & Qt::LeftButton)) {
+        // 系统或其他控件可能吞掉释放事件；再次移动时也要解除旧手势。
+        finishDrag(true);
+    }
     if (m_dragging && (event->buttons() & Qt::LeftButton)) {
         if (!m_dragMoved
             && (event->pos() - m_dragStartPosition).manhattanLength() < QApplication::startDragDistance()) {
@@ -833,12 +1159,13 @@ void TemplatePreviewLabel::mouseMoveEvent(QMouseEvent* event)
         return;
     }
 
+    m_lastMousePosition = event->pos();
     const auto hoveredActionId = canvasFloatingActionAt(event->pos());
     if (m_hoveredCanvasFloatingActionId != hoveredActionId) {
         m_hoveredCanvasFloatingActionId = hoveredActionId;
-        setCursor(!hoveredActionId.isEmpty() ? Qt::PointingHandCursor : (m_draggingEnabled ? Qt::OpenHandCursor : Qt::ArrowCursor));
         update();
     }
+    updateEditorCursor(event->pos());
     if (!hoveredActionId.isEmpty()) {
         event->accept();
         return;
@@ -850,15 +1177,8 @@ void TemplatePreviewLabel::mouseMoveEvent(QMouseEvent* event)
 void TemplatePreviewLabel::mouseReleaseEvent(QMouseEvent* event)
 {
     if (m_dragging && event->button() == Qt::LeftButton) {
-        const auto wasClick = !m_dragMoved;
-        const auto clickPosition = event->pos();
-        m_dragging = false;
-        m_dragMoved = false;
-        setCursor(m_draggingEnabled ? Qt::OpenHandCursor : Qt::ArrowCursor);
-        if (wasClick && m_canvasClickCallback) {
-            // 单击在释放时处理，避免按下阶段抢走表格拖拽的旧行为。
-            m_canvasClickCallback(clickPosition, event->modifiers());
-        }
+        m_lastMousePosition = event->pos();
+        finishDrag(false, event);
         event->accept();
         return;
     }

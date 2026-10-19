@@ -444,6 +444,14 @@ QJsonObject TemplateDocumentJson::toJson(const TemplateDocument& document)
     json["sampleData"] = document.sampleData;
     json["versions"] = versionsToJson(document.versions);
     json["deviceProfiles"] = profilesToJson(document.deviceProfiles);
+    // 名称覆盖独立于字段声明；空映射不输出，避免旧模板产生无关差异。
+    if (!document.fieldDisplayNames.isEmpty()) {
+        QJsonObject names;
+        for (auto it = document.fieldDisplayNames.constBegin(); it != document.fieldDisplayNames.constEnd(); ++it) {
+            names.insert(it.key(), it.value());
+        }
+        json["fieldDisplayNames"] = names;
+    }
     return json;
 }
 
@@ -466,6 +474,10 @@ TemplateDocument TemplateDocumentJson::fromJson(const QJsonObject& json)
     document.sampleData = json["sampleData"].toObject();
     document.versions = versionsFromJson(json["versions"].toArray());
     document.deviceProfiles = profilesFromJson(json["deviceProfiles"].toArray());
+    const auto names = json["fieldDisplayNames"].toObject();
+    for (auto it = names.constBegin(); it != names.constEnd(); ++it) {
+        document.fieldDisplayNames.insert(it.key(), it.value().toString());
+    }
     return document;
 }
 
@@ -519,6 +531,30 @@ bool TemplateDocumentJson::validateForImport(const QJsonObject& json, QString* e
         // 字段定义由独立校验器维护，模板导入只负责把错误向上返回。
         if (!FieldSchemaJson::validate(json["fieldSchema"].toObject(), errorMessage)) {
             return false;
+        }
+    }
+
+    // 名称覆盖不要求对应字段存在，但必须使用稳定字段键和字符串名称；空名称允许回退。
+    if (json.contains("fieldDisplayNames")) {
+        if (!json["fieldDisplayNames"].isObject()) {
+            setError(errorMessage, QStringLiteral("模板 fieldDisplayNames 必须是对象"));
+            return false;
+        }
+        const auto names = json["fieldDisplayNames"].toObject();
+        for (auto it = names.constBegin(); it != names.constEnd(); ++it) {
+            const auto key = it.key().trimmed();
+            if (key.isEmpty()) {
+                setError(errorMessage, QStringLiteral("模板 fieldDisplayNames 的字段 key 不能为空"));
+                return false;
+            }
+            if (it.key() != key) {
+                setError(errorMessage, QStringLiteral("模板 fieldDisplayNames 的字段 key 不能包含首尾空白：%1").arg(key));
+                return false;
+            }
+            if (!it.value().isString()) {
+                setError(errorMessage, QStringLiteral("模板 fieldDisplayNames 的名称必须是字符串：%1").arg(key));
+                return false;
+            }
         }
     }
 

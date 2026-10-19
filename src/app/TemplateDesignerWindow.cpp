@@ -1,7 +1,9 @@
 #include "sleekpr/app/TemplateDesignerWindow.h"
+#include "sleekpr/app/TemplateElementBindings.h"
 #include "sleekpr/app/DesignerFeatures.h"
 
 #include "sleekpr/app/TemplateDesignerFactory.h"
+#include "sleekpr/app/TemplateCanvasEditor.h"
 #include "sleekpr/app/TemplateDragCoordinateMapper.h"
 #include "sleekpr/app/TemplateElementHitTester.h"
 #include "sleekpr/app/TemplateInspectorPanel.h"
@@ -351,6 +353,19 @@ TemplateDesignerWindow::TemplateDesignerWindow(
     refreshElementList();
     refreshPreview();
     resetDocumentHistory();
+}
+
+TemplateDesignerWindow::~TemplateDesignerWindow()
+{
+    // 关闭窗口会让子编辑器失焦，先断开自动应用，避免成员析构后再读取文档。
+    if (m_inspectorPanel != nullptr) QObject::disconnect(m_inspectorPanel, nullptr, this, nullptr);
+    QObject::disconnect(qApp, nullptr, this, nullptr);
+    // 窗口成员先于子控件析构，必须在文档和计时器仍有效时取消手势、解绑画布回调。
+    if (m_canvasEditor != nullptr) {
+        m_canvasEditor->finishGesture(true);
+        delete m_canvasEditor;
+        m_canvasEditor = nullptr;
+    }
 }
 
 bool TemplateDesignerWindow::eventFilter(QObject* watched, QEvent* event)
@@ -773,6 +788,9 @@ void TemplateDesignerWindow::buildUi()
         refreshPreview();
     });
     connect(m_elementList, &QListWidget::currentRowChanged, this, [this] {
+        if (m_canvasEditor != nullptr) {
+            return;
+        }
         if (m_previewLabel != nullptr) {
             m_previewLabel->setCanvasFocusRectMm(QRectF());
             m_previewLabel->setCanvasFloatingActions({});
@@ -875,6 +893,98 @@ void TemplateDesignerWindow::buildUi()
     m_previewLabel->setKeyboardNudgeCallback([this](QPoint direction, Qt::KeyboardModifiers modifiers) {
         nudgeSelectedElement(direction, modifiers);
     });
+    if constexpr (!kTableDesignerEnabled) {
+        setupCanvasEditor();
+    }
+}
+
+void TemplateDesignerWindow::setupCanvasEditor()
+{
+    ensureCurrentTemplateDocument();
+    TemplateCanvasEditor::Host host;
+    host.document = [this]() -> sleekpr::core::TemplateDocument& { return m_settings.templateDocuments[m_templateKey]; };
+    host.paperSize = [this] { return currentPaperSizeMm(); };
+    host.targetLayerId = [this] { return currentLayerId(); };
+    host.displayTransform = [this] {
+        const auto printer = m_deviceProfilePrinterEdit == nullptr ? QString() : m_deviceProfilePrinterEdit->text();
+        const auto profile = sleekpr::core::DeviceProfileResolver::resolve(m_settings.templateDocuments[m_templateKey].deviceProfiles, printer);
+        const auto sx = profile.scaleX > 0.0 ? profile.scaleX : 1.0;
+        const auto sy = profile.scaleY > 0.0 ? profile.scaleY : 1.0;
+        return QTransform(sx, 0, 0, sy, (m_settings.labelOffset.x + profile.offsetX) * sx,
+            (m_settings.labelOffset.y + profile.offsetY) * sy);
+    };
+    host.hitTest = [this](QPoint point) { return canvasElementHitAt(point); };
+    host.beforeEdit = [this] { flushPendingPropertyEdits(); };
+    host.selectionChanged = [this](const QStringList& ids) { applyCanvasSelection(ids); };
+    host.documentChanged = [this](bool committed) {
+        if (!committed) {
+            // 单帧队列不会因新鼠标事件重新计时，持续拖动也能看到原生预览更新。
+            if (!m_previewRefreshTimer->isActive()) {
+                schedulePreviewRefresh(kPreviewRefreshDelayMs);
+            }
+            return;
+        }
+        ScopedBoolFlag syncing(m_syncingCanvasSelection);
+        refreshElementList();
+        refreshPreview();
+        notifySettingsChanged();
+    };
+    host.undo = [this] { undoCurrentTemplateChange(); };
+    host.redo = [this] { redoCurrentTemplateChange(); };
+    m_canvasEditor = new TemplateCanvasEditor(m_previewLabel, std::move(host), this);
+    m_elementList->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    connect(m_elementList, &QListWidget::itemSelectionChanged, this, [this] { syncCanvasSelectionFromList(); });
+    auto* more = findChild<QPushButton*>(QStringLiteral("designerObjectMoreButton"));
+    m_canvasEditor->installActions(m_elementList, more == nullptr ? nullptr : more->menu());
+}
+
+void TemplateDesignerWindow::syncCanvasSelectionFromList()
+{
+    if (m_canvasEditor == nullptr || m_syncingCanvasSelection) {
+        return;
+    }
+    QStringList ids;
+    for (auto* item : m_elementList->selectedItems()) {
+        ids.append(item->data(Qt::UserRole).toString());
+    }
+    m_canvasEditor->setSelection(ids);
+}
+
+void TemplateDesignerWindow::applyCanvasSelection(const QStringList& ids)
+{
+    ScopedBoolFlag syncing(m_syncingCanvasSelection);
+    if (!ids.isEmpty()) {
+        const auto& document = m_settings.templateDocuments[m_templateKey];
+        for (const auto& layer : document.layers) {
+            if (std::any_of(layer.elements.cbegin(), layer.elements.cend(), [&ids](const auto& element) { return element.id == ids.last(); })
+                && layer.id != currentLayerId()) {
+                const QSignalBlocker blockLayer(m_layerList);
+                selectLayer(layer.id);
+                refreshElementList();
+                break;
+            }
+        }
+    }
+    const QSignalBlocker blockList(m_elementList);
+    m_elementList->clearSelection();
+    m_elementList->setCurrentItem(nullptr);
+    for (int row = 0; row < m_elementList->count(); ++row) {
+        auto* item = m_elementList->item(row);
+        const auto id = item->data(Qt::UserRole).toString();
+        if (ids.contains(id)) {
+            item->setSelected(true);
+            if (id == ids.last()) {
+                m_elementList->setCurrentItem(item, QItemSelectionModel::NoUpdate);
+            }
+        }
+    }
+    refreshElementPropertyEditor();
+    refreshInspectorTabForCurrentSelection();
+    m_previewLabel->setDesignAidSelectedElementKey(ids.size() == 1 ? ids.first() : QString());
+    for (auto* action : {m_inspectorPanel->renameElementAction(), m_inspectorPanel->lockElementAction(),
+             m_inspectorPanel->hideElementAction(), m_inspectorPanel->moveElementUpAction(), m_inspectorPanel->moveElementDownAction()}) {
+        action->setEnabled(ids.size() == 1);
+    }
 }
 
 void TemplateDesignerWindow::ensureCurrentTemplateDocument()
@@ -1029,6 +1139,10 @@ void TemplateDesignerWindow::addArrayGridElement()
 
 void TemplateDesignerWindow::deleteCurrentElement()
 {
+    if (m_canvasEditor != nullptr) {
+        m_canvasEditor->deleteSelection();
+        return;
+    }
     ensureCurrentTemplateDocument();
     auto& document = m_settings.templateDocuments[m_templateKey];
     const auto elementId = currentElementId();
@@ -1567,6 +1681,7 @@ void TemplateDesignerWindow::saveSampleDataFromEditor()
 
 void TemplateDesignerWindow::undoCurrentTemplateChange()
 {
+    flushPendingPropertyEdits();
     const auto document = m_state.undoDocument();
     if (!document.has_value()) {
         updateHistoryButtons();
@@ -1586,6 +1701,7 @@ void TemplateDesignerWindow::undoCurrentTemplateChange()
 
 void TemplateDesignerWindow::redoCurrentTemplateChange()
 {
+    flushPendingPropertyEdits();
     const auto document = m_state.redoDocument();
     if (!document.has_value()) {
         updateHistoryButtons();
@@ -1776,6 +1892,7 @@ void TemplateDesignerWindow::refreshElementList()
     m_elementList->blockSignals(wasBlocked);
     refreshElementPropertyEditor();
     refreshTablePropertyEditor();
+    syncCanvasSelectionFromList();
 }
 
 void TemplateDesignerWindow::refreshElementPropertyEditor()
@@ -1785,13 +1902,18 @@ void TemplateDesignerWindow::refreshElementPropertyEditor()
     }
 
     ScopedBoolFlag updating(m_updatingPropertyEditors);
+    if (m_canvasEditor != nullptr && m_canvasEditor->selection().size() > 1) {
+        m_inspectorPanel->showMultipleSelection(m_canvasEditor->selection().size());
+        return;
+    }
     const auto* element = currentElement();
     if (element == nullptr || currentSelectionIsTable()) {
         m_inspectorPanel->clearElementProperties();
         return;
     }
 
-    m_inspectorPanel->setElementProperties(m_presenter.elementPropertyModel(*element, canEditElement(element->id)));
+    const auto& document = m_settings.templateDocuments[m_templateKey];
+    m_inspectorPanel->setElementProperties(m_presenter.elementPropertyModel(*element, canEditElement(element->id), &document));
 }
 
 void TemplateDesignerWindow::refreshTablePropertyEditor()
@@ -1932,7 +2054,13 @@ void TemplateDesignerWindow::refreshPreview()
     const auto previewOrigin = m_previewLabel->printableImageOriginPx();
     // 预览控件尺寸包含外置标尺边距，打印图层本身仍保持渲染图原始比例，避免标签变形。
     const auto logicalSize = previewPixmap.deviceIndependentSize().toSize();
-    m_previewLabel->setFixedSize(logicalSize.width() + previewOrigin.x(), logicalSize.height() + previewOrigin.y());
+    // 小对象手柄会外置到最小交互框，纸张右下方需保留空间，避免贴边对象的手柄被裁掉。
+    const auto interactionMargin = m_canvasEditor == nullptr ? 0 : 24;
+    m_previewLabel->setFixedSize(logicalSize.width() + previewOrigin.x() + interactionMargin,
+        logicalSize.height() + previewOrigin.y() + interactionMargin);
+    if (m_canvasEditor != nullptr) {
+        m_canvasEditor->refreshOverlay();
+    }
     if (m_workspacePanel != nullptr) {
         m_workspacePanel->setPaperSummary(paperSize);
     }
@@ -1951,6 +2079,8 @@ void TemplateDesignerWindow::refreshPreview()
 
 void TemplateDesignerWindow::refreshAll()
 {
+    const auto selection = m_canvasEditor == nullptr ? QStringList{} : m_canvasEditor->selection();
+    ScopedBoolFlag syncing(m_syncingCanvasSelection);
     const auto layerId = currentLayerId();
     const auto elementId = currentElementId();
     refreshSampleDataEditor();
@@ -1959,6 +2089,10 @@ void TemplateDesignerWindow::refreshAll()
     selectLayer(layerId);
     refreshElementList();
     selectElement(elementId);
+    if (m_canvasEditor != nullptr) {
+        m_canvasEditor->setSelection(selection);
+        applyCanvasSelection(m_canvasEditor->selection());
+    }
     refreshPreview();
     scheduleCanvasFit();
 }
@@ -2768,6 +2902,9 @@ void TemplateDesignerWindow::addTable(sleekpr::core::TableElement table)
 
 bool TemplateDesignerWindow::applyCurrentElementProperties(bool lightweightRefresh)
 {
+    if (m_canvasEditor != nullptr && m_canvasEditor->selection().size() > 1) {
+        return false;
+    }
     auto* element = currentElement();
     if (element == nullptr || currentSelectionIsTable() || m_inspectorPanel == nullptr) {
         m_statusLabel->setText(QString::fromUtf8("请先选择固定文本或绑定字段"));
@@ -2781,9 +2918,11 @@ bool TemplateDesignerWindow::applyCurrentElementProperties(bool lightweightRefre
 
     const auto elementId = element->id;
     auto model = m_inspectorPanel->elementProperties();
+    const auto previousFieldKey = element->fieldKey;
     model.elementId = elementId;
     model.canEdit = canEdit;
-    const auto result = m_presenter.applyElementProperties(*element, model);
+    auto& document = m_settings.templateDocuments[m_templateKey];
+    const auto result = m_presenter.applyElementProperties(document, elementId, model);
     if (!result.errorMessage.isEmpty()) {
         m_statusLabel->setText(result.errorMessage);
         return false;
@@ -2795,6 +2934,9 @@ bool TemplateDesignerWindow::applyCurrentElementProperties(bool lightweightRefre
     // 自动应用只刷新画布，避免重建列表和属性面板导致输入卡顿；手动应用保留完整刷新。
     if (lightweightRefresh) {
         schedulePreviewRefresh(kPreviewRefreshDelayMs);
+        if (model.type == sleekpr::core::TemplateElementType::BoundField
+            && (model.fieldDisplayNameEdited || previousFieldKey != model.value.trimmed())) refreshElementPropertyEditor();
+        else if (model.bindings != TemplateElementBindings::describe(*element, document)) refreshElementPropertyEditor();
     } else {
         refreshAll();
         selectElement(elementId);
@@ -2878,6 +3020,9 @@ void TemplateDesignerWindow::applyPendingElementAutoApply()
 
 void TemplateDesignerWindow::flushPendingPropertyEdits()
 {
+    if (m_canvasEditor != nullptr && m_canvasEditor->isGestureActive()) {
+        m_canvasEditor->finishGesture(false);
+    }
     // 命令可能由快捷键触发而不发生失焦，必须先提交防抖中的编辑再保存或打印。
     applyPendingElementAutoApply();
     applyPendingTableAutoApply();

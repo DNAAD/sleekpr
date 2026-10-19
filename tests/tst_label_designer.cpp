@@ -2,24 +2,41 @@
 #include "sleekpr/app/TemplateDesignerFactory.h"
 #include "sleekpr/app/TemplateDesignerWindow.h"
 #include "sleekpr/app/TemplatePreviewLabel.h"
+#include "sleekpr/app/FieldBindingSelector.h"
+#include "sleekpr/app/TemplateDesignerPresenter.h"
+#include "sleekpr/app/TemplateInspectorPanel.h"
+#include "sleekpr/app/PrintFieldEditorPanel.h"
 #include "sleekpr/app/SettingsWindow.h"
 #include "sleekpr/core/templates/TemplateDocumentJson.h"
 #include "sleekpr/core/templates/TemplateLibraryStore.h"
 #include "sleekpr/core/templates/PaperSpecStore.h"
+#include "sleekpr/core/templates/FieldSchemaJson.h"
+#include "sleekpr/core/templates/TemplateInputSchema.h"
 
 #include <QFile>
+#include <QAction>
+#include <QClipboard>
 #include <QCheckBox>
+#include <QComboBox>
+#include <QInputDialog>
+#include <QFormLayout>
+#include <QLineEdit>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QListWidget>
+#include <QMimeData>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSignalSpy>
 #include <QTabWidget>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QToolButton>
+#include <QTimer>
 #include <QtTest>
 
 #include <algorithm>
+#include <memory>
 
 using namespace sleekpr::app;
 using namespace sleekpr::core;
@@ -41,13 +58,769 @@ private slots:
     void settingsSeparatesPrintingAndSecurity();
     void savingCommitsPendingPropertyEdits();
     void fitModeRefitsAfterPaperChanges();
+    void canvasSupportsMultiSelectionAndDuplicate();
+    void canvasGestureCommitsOneUndoStep();
+    void canvasMarqueeResizeClipboardAndAlignment();
+    void canvasSlowDragAndCancelAreTransactional();
+    void canvasMapsDeviceCalibrationBackToMillimeters();
+    void canvasRejectsUnsafeClipboardElements();
+    void canvasAltDragCancelRestoresOriginalAndNoopHasNoHistory();
+    void canvasWindowCanBeDestroyedDuringDrag();
+    void canvasSmallEdgeElementHasVisibleHandlesAndMoveArea();
+    void settingsOffersPrintWorkbenchEntry();
+    void boundFieldPickerShowsChineseLabelAndSavesKey();
+    void fieldPickerKeepsKeysSeparateFromLabels();
+    void fieldPickerUsesSchemaNamesAndOnlyCurrentDocument();
+    void fieldPickerAcceptsAndCancelsCustomInput();
+    void fieldPickerRefreshIsSilentAndFitsNarrowPanel();
+    void bindingKeyAndDisplayNameCanBeEditedSeparately();
+    void bindingNameAutoAppliesAndStaysWithinTemplate();
+    void bindingNameCommandPreservesRulesAndBlocksLockedEdits();
+    void bindingKeyChangeDoesNotRenameDataOrOtherElements();
+    void bindingKeySupportsDirectInputWithoutCarryingOldName();
+    void bindingFastKeyChangeKeepsPreviousName();
+    void bindingNameKeepsExplicitSchemaNameEqualToKey();
+    void allDataReferencesExposeKeyAndDisplayName_data();
+    void allDataReferencesExposeKeyAndDisplayName();
+    void referenceEditsOnlyRewriteCurrentElement();
+    void arrayReferencesKeepSourceAndRowKeysSeparate();
+    void legacyQrBindingKeepsNativeMeaning();
+    void unifiedReferenceNamesAutoApplySaveAndUndo();
+    void unifiedReferenceValidationIsAtomic();
+    void unifiedReferencesFollowContentWithoutMovingCursor();
+    void arrayReferenceRefreshKeepsTemplateCursor();
+    void partialKeyCollisionDoesNotRemoveEditor();
+    void clearedLegacyQrStillAcceptsBindingKeyChange();
 };
+
+namespace {
+
+PrintClientSettings selectionTestSettings()
+{
+    auto document = TemplateDesignerFactory::createBlankDocument(QStringLiteral("selection-test"),
+        QString::fromUtf8("选区测试"), QStringLiteral("default"), QStringLiteral("label-80x30"), {});
+    TemplateLayer layer;
+    layer.id = QStringLiteral("base");
+    layer.name = QString::fromUtf8("标签图层");
+    for (int index = 0; index < 3; ++index) {
+        auto element = TemplateDesignerFactory::createElement(TemplateElementType::Rectangle);
+        element.id = QStringLiteral("rect-%1").arg(index);
+        element.layerId = layer.id;
+        element.x = 5.0 + index * 20.0;
+        element.y = 5.0;
+        element.width = 10.0;
+        element.height = 6.0;
+        layer.elements.append(element);
+    }
+    document.layers = {layer};
+    PrintClientSettings settings;
+    settings.templateDocuments.insert(QStringLiteral("default"), document);
+    return settings;
+}
+
+QPoint canvasPoint(TemplatePreviewLabel* preview, double x, double y)
+{
+    const auto size = preview->printableImageSizePx();
+    return preview->printableImageOriginPx() + QPoint(qRound(x * size.width() / 80.0), qRound(y * size.height() / 30.0));
+}
+
+void dragCanvas(TemplatePreviewLabel* preview, QPoint start, QPoint finish)
+{
+    QTest::mousePress(preview, Qt::LeftButton, Qt::NoModifier, start);
+    for (int step = 1; step <= 4; ++step) {
+        const auto point = start + (finish - start) * step / 4;
+        QMouseEvent move(QEvent::MouseMove, point, preview->mapToGlobal(point), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(preview, &move);
+    }
+    QTest::mouseRelease(preview, Qt::LeftButton, Qt::NoModifier, finish);
+}
+
+} // 命名空间
+
+void LabelDesignerTests::allDataReferencesExposeKeyAndDisplayName_data()
+{
+    QTest::addColumn<int>("type");
+    QTest::addColumn<QString>("content");
+    QTest::addColumn<int>("rows");
+    QTest::newRow("text-placeholders") << int(TemplateElementType::FixedText) << QStringLiteral("${productName}/${salesCode}/${productName}") << 2;
+    QTest::newRow("qr-expression") << int(TemplateElementType::QrCode) << QStringLiteral("https://test/${productName}/${salesCode}") << 2;
+    QTest::newRow("array-grid") << int(TemplateElementType::ArrayGrid) << QStringLiteral("${productName}:${weight}") << 3;
+    QTest::newRow("literal-text") << int(TemplateElementType::FixedText) << QString::fromUtf8("固定文字") << 0;
+    QTest::newRow("literal-qr") << int(TemplateElementType::QrCode) << QStringLiteral("fixed-payload") << 0;
+    QTest::newRow("rectangle") << int(TemplateElementType::Rectangle) << QString() << 0;
+}
+
+void LabelDesignerTests::allDataReferencesExposeKeyAndDisplayName()
+{
+    QFETCH(int, type);
+    QFETCH(QString, content);
+    QFETCH(int, rows);
+    auto document = selectionTestSettings().templateDocuments.value(QStringLiteral("default"));
+    auto element = document.layers.first().elements.first();
+    element.type = TemplateElementType(type);
+    element.text = content;
+    element.payload = content;
+    element.dataPath = QStringLiteral("items");
+    element.arrayGridCellTemplate = content;
+    document.fieldDisplayNames.insert(QStringLiteral("items"), QString::fromUtf8("商品明细"));
+    TemplateInspectorPanel panel;
+    TemplateDesignerPresenter presenter;
+    panel.setElementProperties(presenter.elementPropertyModel(element, true, &document));
+    auto* table = panel.findChild<QTableWidget*>(QStringLiteral("elementBindingsTable"));
+    QVERIFY2(table != nullptr, "所有数据引用都应提供独立的 key 与 displayName 编辑入口");
+    QCOMPARE(table->rowCount(), rows);
+    QCOMPARE(table->isHidden(), rows == 0);
+    if (rows > 0) {
+        auto* key = qobject_cast<QLineEdit*>(table->cellWidget(0, 0));
+        auto* name = qobject_cast<QLineEdit*>(table->cellWidget(0, 1));
+        QVERIFY(key != nullptr && name != nullptr);
+        QCOMPARE(key->text(), type == int(TemplateElementType::ArrayGrid) ? QStringLiteral("items") : QStringLiteral("productName"));
+        QCOMPARE(name->text(), type == int(TemplateElementType::ArrayGrid) ? QString::fromUtf8("商品明细") : QString::fromUtf8("商品名称"));
+        panel.setElementProperties(presenter.elementPropertyModel(element, false, &document));
+        QVERIFY(!table->isEnabled());
+    }
+}
+
+void LabelDesignerTests::referenceEditsOnlyRewriteCurrentElement()
+{
+    auto document = selectionTestSettings().templateDocuments.value(QStringLiteral("default"));
+    auto& element = document.layers.first().elements.first();
+    element.type = TemplateElementType::FixedText;
+    element.text = QStringLiteral("productName: ${ productName } / ${productName} / ${salesCode}");
+    auto other = element;
+    other.id = QStringLiteral("other");
+    document.layers.first().elements.append(other);
+    const auto samples = document.sampleData;
+    TemplateDesignerPresenter presenter;
+    TemplateInspectorPanel panel;
+    panel.setElementProperties(presenter.elementPropertyModel(document.layers.first().elements.first(), true, &document));
+    auto* table = panel.findChild<QTableWidget*>(QStringLiteral("elementBindingsTable"));
+    QVERIFY(table != nullptr && table->rowCount() == 2);
+    qobject_cast<QLineEdit*>(table->cellWidget(0, 0))->setText(QStringLiteral("salesCode"));
+    qobject_cast<QLineEdit*>(table->cellWidget(1, 0))->setText(QStringLiteral("productName"));
+    qobject_cast<QLineEdit*>(table->cellWidget(0, 1))->setText(QString::fromUtf8("新编号"));
+    const auto id = document.layers.first().elements.first().id;
+    const auto result = presenter.applyElementProperties(document, id, panel.elementProperties());
+    QVERIFY2(result.errorMessage.isEmpty(), qPrintable(result.errorMessage));
+    QVERIFY(result.changed);
+    QCOMPARE(document.layers.first().elements.first().text, QStringLiteral("productName: ${salesCode} / ${salesCode} / ${productName}"));
+    QCOMPARE(document.layers.first().elements.last().text, other.text);
+    QCOMPARE(document.fieldDisplayNames.value(QStringLiteral("salesCode")), QString::fromUtf8("新编号"));
+    QVERIFY(!document.fieldDisplayNames.contains(QStringLiteral("productName")));
+    QCOMPARE(document.sampleData, samples);
+    QVERIFY(document.fieldSchema.isEmpty());
+}
+
+void LabelDesignerTests::arrayReferencesKeepSourceAndRowKeysSeparate()
+{
+    auto document = selectionTestSettings().templateDocuments.value(QStringLiteral("default"));
+    auto& element = document.layers.first().elements.first();
+    element.type = TemplateElementType::ArrayGrid;
+    element.dataPath = QStringLiteral("order.items");
+    element.arrayGridCellTemplate = QStringLiteral("${name}:${weight}");
+    TemplateDesignerPresenter presenter;
+    TemplateInspectorPanel panel;
+    panel.setElementProperties(presenter.elementPropertyModel(element, true, &document));
+    auto* table = panel.findChild<QTableWidget*>(QStringLiteral("elementBindingsTable"));
+    QVERIFY(table != nullptr && table->rowCount() == 3);
+    qobject_cast<QLineEdit*>(table->cellWidget(0, 0))->setText(QStringLiteral("order.parts"));
+    qobject_cast<QLineEdit*>(table->cellWidget(0, 1))->setText(QString::fromUtf8("配件列表"));
+    qobject_cast<QLineEdit*>(table->cellWidget(1, 0))->setText(QStringLiteral("title"));
+    qobject_cast<QLineEdit*>(table->cellWidget(1, 1))->setText(QString::fromUtf8("配件名称"));
+    const auto result = presenter.applyElementProperties(document, element.id, panel.elementProperties());
+    QVERIFY2(result.errorMessage.isEmpty(), qPrintable(result.errorMessage));
+    QCOMPARE(element.dataPath, QStringLiteral("order.parts"));
+    QCOMPARE(element.arrayGridCellTemplate, QStringLiteral("${title}:${weight}"));
+    QCOMPARE(document.fieldDisplayNames.value(QStringLiteral("order.parts")), QString::fromUtf8("配件列表"));
+    QCOMPARE(document.fieldDisplayNames.value(QStringLiteral("title")), QString::fromUtf8("配件名称"));
+    const auto fields = TemplateInputSchema::fields(document);
+    QCOMPARE(fields.size(), 1);
+    QCOMPARE(fields.first().definition.key, QStringLiteral("order.parts"));
+}
+
+void LabelDesignerTests::legacyQrBindingKeepsNativeMeaning()
+{
+    auto document = selectionTestSettings().templateDocuments.value(QStringLiteral("default"));
+    auto& element = document.layers.first().elements.first();
+    element.type = TemplateElementType::QrCode;
+    element.fieldKey = QStringLiteral("qrPayload");
+    element.payload.clear();
+    TemplateDesignerPresenter presenter;
+    TemplateInspectorPanel panel;
+    panel.setElementProperties(presenter.elementPropertyModel(element, true, &document));
+    auto* table = panel.findChild<QTableWidget*>(QStringLiteral("elementBindingsTable"));
+    QVERIFY(table != nullptr && table->rowCount() == 1);
+    qobject_cast<QLineEdit*>(table->cellWidget(0, 0))->setText(QStringLiteral("serial"));
+    qobject_cast<QLineEdit*>(table->cellWidget(0, 1))->setText(QString::fromUtf8("追踪码"));
+    const auto result = presenter.applyElementProperties(document, element.id, panel.elementProperties());
+    QVERIFY2(result.errorMessage.isEmpty(), qPrintable(result.errorMessage));
+    QCOMPARE(element.fieldKey, QStringLiteral("serial"));
+    QVERIFY(element.payload.isEmpty());
+    QCOMPARE(document.fieldDisplayNames.value(QStringLiteral("serial")), QString::fromUtf8("追踪码"));
+}
+
+void LabelDesignerTests::unifiedReferenceNamesAutoApplySaveAndUndo()
+{
+    QTemporaryDir directory;
+    auto settings = selectionTestSettings();
+    auto& document = settings.templateDocuments[QStringLiteral("default")];
+    document.layers.first().elements.resize(1);
+    auto& element = document.layers.first().elements.first();
+    element.type = TemplateElementType::FixedText;
+    element.text = QStringLiteral("${productName}");
+    PrintClientSettings changed;
+    TemplateDesignerWindow window(settings, [&changed](const auto& next) { changed = next; }, directory.path());
+    auto* table = window.findChild<QTableWidget*>(QStringLiteral("elementBindingsTable"));
+    QVERIFY(table != nullptr && table->rowCount() == 1);
+    qobject_cast<QLineEdit*>(table->cellWidget(0, 1))->setText(QString::fromUtf8("标签品名"));
+    QTRY_COMPARE(changed.templateDocuments.value(QStringLiteral("default")).fieldDisplayNames.value(QStringLiteral("productName")), QString::fromUtf8("标签品名"));
+    qobject_cast<QLineEdit*>(table->cellWidget(0, 1))->setText(QString::fromUtf8("保存前品名"));
+    window.findChild<QPushButton*>(QStringLiteral("saveTemplateToLibraryButton"))->click();
+    const auto stored = TemplateLibraryStore(directory.path()).loadTemplate(document.id);
+    QVERIFY(stored.has_value());
+    QCOMPARE(stored->fieldDisplayNames.value(QStringLiteral("productName")), QString::fromUtf8("保存前品名"));
+    QCOMPARE(stored->layers.first().elements.first().text, QStringLiteral("${productName}"));
+    window.findChild<QPushButton*>(QStringLiteral("designerUndoButton"))->click();
+    QCOMPARE(qobject_cast<QLineEdit*>(table->cellWidget(0, 1))->text(), QString::fromUtf8("标签品名"));
+    window.findChild<QPushButton*>(QStringLiteral("designerRedoButton"))->click();
+    QCOMPARE(qobject_cast<QLineEdit*>(table->cellWidget(0, 1))->text(), QString::fromUtf8("保存前品名"));
+}
+
+void LabelDesignerTests::unifiedReferenceValidationIsAtomic()
+{
+    auto document = selectionTestSettings().templateDocuments.value(QStringLiteral("default"));
+    auto& element = document.layers.first().elements.first();
+    element.type = TemplateElementType::FixedText;
+    element.text = QStringLiteral("${name}/${weight}");
+    TemplateDesignerPresenter presenter;
+    const auto before = TemplateDocumentJson::toJson(document);
+    auto model = presenter.elementPropertyModel(element, true, &document);
+    QVERIFY(model.bindings.size() == 2);
+    model.bindings[0].key.clear();
+    model.x += 1;
+    auto result = presenter.applyElementProperties(document, element.id, model);
+    QVERIFY(!result.errorMessage.isEmpty());
+    QVERIFY(!result.changed);
+    QCOMPARE(TemplateDocumentJson::toJson(document), before);
+
+    model = presenter.elementPropertyModel(element, true, &document);
+    model.bindings[0].key = QStringLiteral("weight");
+    model.bindings[0].displayName = QStringLiteral("one");
+    model.bindings[0].displayNameEdited = true;
+    model.bindings[1].displayName = QStringLiteral("two");
+    model.bindings[1].displayNameEdited = true;
+    result = presenter.applyElementProperties(document, element.id, model);
+    QVERIFY(!result.errorMessage.isEmpty());
+    QCOMPARE(TemplateDocumentJson::toJson(document), before);
+
+    model = presenter.elementPropertyModel(element, true, &document);
+    model.value = QStringLiteral("literal");
+    model.bindings[0].displayName = QStringLiteral("orphan-name");
+    model.bindings[0].displayNameEdited = true;
+    result = presenter.applyElementProperties(document, element.id, model);
+    QVERIFY(result.errorMessage.isEmpty());
+    QCOMPARE(element.text, QStringLiteral("literal"));
+    QVERIFY(document.fieldDisplayNames.isEmpty());
+
+    element.type = TemplateElementType::ArrayGrid;
+    element.dataPath = QStringLiteral("items");
+    element.arrayGridCellTemplate.clear();
+    model = presenter.elementPropertyModel(element, true, &document);
+    QCOMPARE(model.bindings.size(), 2);
+    QCOMPARE(model.bindings.last().key, QStringLiteral("value"));
+    model.bindings.last().key = QStringLiteral("title");
+    result = presenter.applyElementProperties(document, element.id, model);
+    QVERIFY(result.errorMessage.isEmpty());
+    QCOMPARE(element.arrayGridCellTemplate, QStringLiteral("${title}"));
+}
+
+void LabelDesignerTests::unifiedReferencesFollowContentWithoutMovingCursor()
+{
+    auto settings = selectionTestSettings();
+    auto& element = settings.templateDocuments[QStringLiteral("default")].layers.first().elements.first();
+    element.type = TemplateElementType::FixedText;
+    element.text = QStringLiteral("literal");
+    PrintClientSettings changed;
+    TemplateDesignerWindow window(settings, [&changed](const auto& next) { changed = next; });
+    window.resize(1120, 800);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    auto* table = window.findChild<QTableWidget*>(QStringLiteral("elementBindingsTable"));
+    auto* content = window.findChild<QPlainTextEdit*>(QStringLiteral("elementValueEdit"));
+    QVERIFY(table != nullptr && content != nullptr);
+    QVERIFY(table->isHidden());
+    content->setFocus();
+    content->setPlainText(QStringLiteral("${productName}/${priceText}"));
+    auto cursor = content->textCursor();
+    cursor.setPosition(5);
+    content->setTextCursor(cursor);
+    QTRY_COMPARE(table->rowCount(), 2);
+    QCOMPARE(content->textCursor().position(), 5);
+    QVERIFY(content->hasFocus());
+    auto* key = qobject_cast<QLineEdit*>(table->cellWidget(0, 0));
+    auto* name = qobject_cast<QLineEdit*>(table->cellWidget(0, 1));
+    QVERIFY(key != nullptr && name != nullptr);
+    key->setFocus();
+    key->setText(QStringLiteral("customerName"));
+    key->setCursorPosition(4);
+    QTRY_COMPARE(changed.templateDocuments.value(QStringLiteral("default")).layers.first().elements.first().text, QStringLiteral("${customerName}/${priceText}"));
+    QCOMPARE(table->cellWidget(0, 0), key);
+    QCOMPARE(key->cursorPosition(), 4);
+    QVERIFY(key->hasFocus());
+    QVERIFY(name->text().isEmpty() || name->text() == QStringLiteral("customerName"));
+    QVERIFY(!changed.templateDocuments.value(QStringLiteral("default")).fieldDisplayNames.contains(QStringLiteral("customerName")));
+    name->setText(QString::fromUtf8("客户名称"));
+    QTRY_COMPARE(changed.templateDocuments.value(QStringLiteral("default")).fieldDisplayNames.value(QStringLiteral("customerName")), QString::fromUtf8("客户名称"));
+    const auto screenshot = qEnvironmentVariable("SLEEKPR_BINDINGS_SCREENSHOT");
+    if (!screenshot.isEmpty()) QVERIFY(window.grab().save(screenshot));
+    content->setPlainText(QStringLiteral("literal"));
+    QTRY_COMPARE(table->rowCount(), 0);
+    QVERIFY(table->isHidden());
+}
+
+void LabelDesignerTests::arrayReferenceRefreshKeepsTemplateCursor()
+{
+    auto settings = selectionTestSettings();
+    auto& element = settings.templateDocuments[QStringLiteral("default")].layers.first().elements.first();
+    element.type = TemplateElementType::ArrayGrid;
+    element.dataPath = QStringLiteral("items");
+    element.arrayGridCellTemplate = QStringLiteral("${name}");
+    TemplateDesignerWindow window(settings, {});
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    auto* content = window.findChild<QPlainTextEdit*>(QStringLiteral("arrayGridCellTemplateEdit"));
+    auto* table = window.findChild<QTableWidget*>(QStringLiteral("elementBindingsTable"));
+    QVERIFY(content != nullptr && table != nullptr);
+    content->setFocus();
+    content->setPlainText(QStringLiteral("${name}/${weight}"));
+    auto cursor = content->textCursor();
+    cursor.setPosition(4);
+    content->setTextCursor(cursor);
+    QTRY_COMPARE(table->rowCount(), 3);
+    QCOMPARE(content->textCursor().position(), 4);
+    QVERIFY(content->hasFocus());
+}
+
+void LabelDesignerTests::partialKeyCollisionDoesNotRemoveEditor()
+{
+    auto settings = selectionTestSettings();
+    auto& element = settings.templateDocuments[QStringLiteral("default")].layers.first().elements.first();
+    element.type = TemplateElementType::FixedText;
+    element.text = QStringLiteral("${a}/${b}");
+    PrintClientSettings changed = settings;
+    TemplateDesignerWindow window(settings, [&changed](const auto& next) { changed = next; });
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    auto* table = window.findChild<QTableWidget*>(QStringLiteral("elementBindingsTable"));
+    QVERIFY(table != nullptr && table->rowCount() == 2);
+    auto* key = qobject_cast<QLineEdit*>(table->cellWidget(1, 0));
+    QVERIFY(key != nullptr);
+    key->setFocus();
+    key->setText(QStringLiteral("a"));
+    QTest::qWait(TemplateInspectorPanel::TextAutoApplyDelayMs + 250);
+    QCOMPARE(table->rowCount(), 2);
+    QCOMPARE(table->cellWidget(1, 0), key);
+    QVERIFY(key->hasFocus());
+    key->setText(QStringLiteral("aLong"));
+    QTRY_COMPARE(changed.templateDocuments.value(QStringLiteral("default")).layers.first().elements.first().text, QStringLiteral("${a}/${aLong}"));
+    key->setText(QStringLiteral("a"));
+    window.findChild<QPlainTextEdit*>(QStringLiteral("elementValueEdit"))->setFocus();
+    QTRY_COMPARE(table->rowCount(), 1);
+    QCOMPARE(changed.templateDocuments.value(QStringLiteral("default")).layers.first().elements.first().text, QStringLiteral("${a}/${a}"));
+}
+
+void LabelDesignerTests::clearedLegacyQrStillAcceptsBindingKeyChange()
+{
+    auto document = selectionTestSettings().templateDocuments.value(QStringLiteral("default"));
+    auto& element = document.layers.first().elements.first();
+    element.type = TemplateElementType::QrCode;
+    element.fieldKey = QStringLiteral("qrPayload");
+    element.payload.clear();
+    TemplateDesignerPresenter presenter;
+    TemplateInspectorPanel panel;
+    panel.setElementProperties(presenter.elementPropertyModel(element, true, &document));
+    panel.elementValueEdit()->clear();
+    auto* table = panel.findChild<QTableWidget*>(QStringLiteral("elementBindingsTable"));
+    QVERIFY(table != nullptr && table->rowCount() == 1);
+    qobject_cast<QLineEdit*>(table->cellWidget(0, 0))->setText(QStringLiteral("serial"));
+    const auto result = presenter.applyElementProperties(document, element.id, panel.elementProperties());
+    QVERIFY2(result.errorMessage.isEmpty(), qPrintable(result.errorMessage));
+    QCOMPARE(element.fieldKey, QStringLiteral("serial"));
+    QVERIFY(element.payload.isEmpty());
+}
 
 void LabelDesignerTests::initTestCase()
 {
     applySleekprTheme(*qApp);
     QVERIFY(!QPixmap(QStringLiteral(":/sleekpr/ui/caret-down.png")).isNull());
     QVERIFY(!QPixmap(QStringLiteral(":/sleekpr/ui/check.png")).isNull());
+}
+
+void LabelDesignerTests::boundFieldPickerShowsChineseLabelAndSavesKey()
+{
+    QTemporaryDir directory;
+    auto settings = selectionTestSettings();
+    auto& document = settings.templateDocuments[QStringLiteral("default")];
+    document.layers.first().elements.resize(1);
+    auto& element = document.layers.first().elements.first();
+    element.type = TemplateElementType::BoundField;
+    element.fieldKey = QStringLiteral("productName");
+    FieldDefinition sales;
+    sales.key = QStringLiteral("salesCode");
+    sales.displayName = QString::fromUtf8("销售编码");
+    document.fieldSchema = {sales};
+    PrintClientSettings changed;
+    TemplateDesignerWindow window(settings, [&changed](const auto& next) { changed = next; }, directory.path());
+    window.resize(1024, 720);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    auto* combo = window.findChild<QComboBox*>(QStringLiteral("elementFieldBindingCombo"));
+    QVERIFY2(combo != nullptr, "绑定字段必须提供中文名称与原始 key 的选择器");
+    QCOMPARE(combo->currentText(), QStringLiteral("productName"));
+    auto* fieldName = window.findChild<QLineEdit*>(QStringLiteral("elementFieldDisplayNameEdit"));
+    QVERIFY(fieldName != nullptr);
+    QCOMPARE(fieldName->text(), QString::fromUtf8("商品名称"));
+    QCOMPARE(combo->currentData().toString(), QStringLiteral("productName"));
+    QVERIFY(combo->isVisible());
+    const auto screenshot = qEnvironmentVariable("SLEEKPR_TEST_SCREENSHOT");
+    if (!screenshot.isEmpty()) {
+        QTest::qWait(100);
+        QVERIFY(window.grab().save(screenshot + QStringLiteral(".binding.png")));
+    }
+    const auto index = combo->findData(QStringLiteral("salesCode"));
+    QVERIFY(index >= 0);
+    QCOMPARE(combo->itemText(index), QString::fromUtf8("销售编码（salesCode）"));
+    combo->setCurrentIndex(index);
+    auto* apply = window.findChild<QPushButton*>(QStringLiteral("applyElementPropertiesButton"));
+    QVERIFY(apply != nullptr);
+    apply->click();
+    const auto actual = changed.templateDocuments.value(QStringLiteral("default"));
+    QVERIFY(!actual.layers.isEmpty());
+    QCOMPARE(actual.layers.first().elements.first().fieldKey, QStringLiteral("salesCode"));
+    auto* save = window.findChild<QPushButton*>(QStringLiteral("saveTemplateToLibraryButton"));
+    QVERIFY(save != nullptr);
+    save->click();
+    const auto stored = TemplateLibraryStore(directory.path()).loadTemplate(document.id);
+    QVERIFY(stored.has_value());
+    QCOMPARE(stored->layers.first().elements.first().fieldKey, QStringLiteral("salesCode"));
+    auto* undo = window.findChild<QPushButton*>(QStringLiteral("designerUndoButton"));
+    auto* redo = window.findChild<QPushButton*>(QStringLiteral("designerRedoButton"));
+    QVERIFY(undo != nullptr && redo != nullptr);
+    undo->click();
+    QCOMPARE(combo->currentData().toString(), QStringLiteral("productName"));
+    redo->click();
+    QCOMPARE(combo->currentData().toString(), QStringLiteral("salesCode"));
+}
+
+void LabelDesignerTests::fieldPickerKeepsKeysSeparateFromLabels()
+{
+    FieldBindingSelector selector;
+    const QList<DesignerFieldOption> options{
+        {QStringLiteral("productName"), QString::fromUtf8("商品名称")},
+        {QStringLiteral("otherName"), QString::fromUtf8("商品名称")},
+    };
+    QSignalSpy edits(&selector, &FieldBindingSelector::fieldKeyEdited);
+    const auto legacy = QString::fromUtf8("商品名称（productName）");
+    selector.setOptionsAndValue(options, legacy);
+    auto* combo = selector.findChild<QComboBox*>();
+    QVERIFY(combo != nullptr);
+    QCOMPARE(selector.fieldKey(), legacy);
+    QCOMPARE(combo->currentData().toString(), legacy);
+    QCOMPARE(edits.count(), 0);
+    combo->setCurrentIndex(combo->findData(QStringLiteral("otherName")));
+    QCOMPARE(selector.fieldKey(), QStringLiteral("otherName"));
+    QCOMPARE(edits.count(), 1);
+    selector.setOptionsAndValue(options, QString::fromUtf8("原有中文字段"));
+    QCOMPARE(selector.fieldKey(), QString::fromUtf8("原有中文字段"));
+    QCOMPARE(edits.count(), 1);
+}
+
+void LabelDesignerTests::fieldPickerUsesSchemaNamesAndOnlyCurrentDocument()
+{
+    TemplateDocument document;
+    FieldDefinition field;
+    field.key = QStringLiteral("productName");
+    field.displayName = QString::fromUtf8("本店商品名称");
+    document.fieldSchema = {field};
+    document.sampleData = QJsonObject{{QStringLiteral("storeName"), QStringLiteral("private-sample-value")}};
+    TemplateElement element;
+    element.type = TemplateElementType::BoundField;
+    element.fieldKey = QStringLiteral("legacy_name");
+    TemplateDesignerPresenter presenter;
+    const auto model = presenter.elementPropertyModel(element, true, &document);
+    FieldBindingSelector selector;
+    selector.setOptionsAndValue(model.fieldOptions, model.value);
+    auto* combo = selector.findChild<QComboBox*>();
+    QVERIFY(combo != nullptr);
+    QCOMPARE(combo->itemText(combo->findData(QStringLiteral("productName"))), QString::fromUtf8("本店商品名称（productName）"));
+    QVERIFY(combo->findData(QStringLiteral("storeName")) >= 0);
+    QCOMPARE(combo->findText(QStringLiteral("private-sample-value")), -1);
+    QCOMPARE(combo->currentData().toString(), QStringLiteral("legacy_name"));
+    const auto other = presenter.elementPropertyModel(element, true);
+    selector.setOptionsAndValue(other.fieldOptions, other.value);
+    QCOMPARE(combo->findData(QStringLiteral("storeName")), -1);
+}
+
+void LabelDesignerTests::fieldPickerAcceptsAndCancelsCustomInput()
+{
+    FieldBindingSelector selector;
+    selector.setOptionsAndValue({{QStringLiteral("productName"), QString::fromUtf8("商品名称")}}, QStringLiteral("productName"));
+    selector.resize(300, 40);
+    selector.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&selector));
+    auto* button = selector.findChild<QPushButton*>(QStringLiteral("elementCustomFieldButton"));
+    QVERIFY(button != nullptr);
+    QSignalSpy edits(&selector, &FieldBindingSelector::fieldKeyEdited);
+    QTimer::singleShot(0, [] {
+        auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+        if (dialog != nullptr) {
+            dialog->setTextValue(QStringLiteral("custom_code"));
+            dialog->accept();
+        }
+    });
+    button->click();
+    QCOMPARE(selector.fieldKey(), QStringLiteral("custom_code"));
+    QCOMPARE(edits.count(), 1);
+    QTimer::singleShot(0, [] {
+        auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+        if (dialog != nullptr) {
+            dialog->setTextValue(QStringLiteral("discarded"));
+            dialog->reject();
+        }
+    });
+    button->click();
+    QCOMPARE(selector.fieldKey(), QStringLiteral("custom_code"));
+    QCOMPARE(edits.count(), 1);
+}
+
+void LabelDesignerTests::fieldPickerRefreshIsSilentAndFitsNarrowPanel()
+{
+    FieldBindingSelector selector;
+    const QList<DesignerFieldOption> options{{QStringLiteral("long_key"), QString(120, QChar(0x540d))}};
+    QSignalSpy edits(&selector, &FieldBindingSelector::fieldKeyEdited);
+    selector.setOptionsAndValue(options, QStringLiteral("long_key"));
+    selector.resize(260, 40);
+    selector.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&selector));
+    selector.setOptionsAndValue(options, QStringLiteral("long_key"));
+    QCOMPARE(edits.count(), 0);
+    QVERIFY(selector.width() <= 260);
+    for (const auto* child : selector.findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly)) {
+        QVERIFY(selector.rect().contains(child->geometry()));
+    }
+}
+
+void LabelDesignerTests::bindingKeyAndDisplayNameCanBeEditedSeparately()
+{
+    QTemporaryDir directory;
+    auto settings = selectionTestSettings();
+    auto& document = settings.templateDocuments[QStringLiteral("default")];
+    document.layers.first().elements.resize(1);
+    auto& element = document.layers.first().elements.first();
+    element.type = TemplateElementType::BoundField;
+    element.fieldKey = QStringLiteral("productName");
+    PrintClientSettings changed;
+    TemplateDesignerWindow window(settings, [&changed](const auto& next) { changed = next; }, directory.path());
+    auto* name = window.findChild<QLineEdit*>(QStringLiteral("elementFieldDisplayNameEdit"));
+    QVERIFY2(name != nullptr, "绑定 key 与 displayName 必须分别编辑");
+    QCOMPARE(name->text(), QString::fromUtf8("商品名称"));
+    name->setText(QString::fromUtf8("门店品名"));
+    auto* apply = window.findChild<QPushButton*>(QStringLiteral("applyElementPropertiesButton"));
+    QVERIFY(apply != nullptr);
+    apply->click();
+    const auto actual = changed.templateDocuments.value(QStringLiteral("default"));
+    QVERIFY(!actual.layers.isEmpty());
+    QCOMPARE(actual.layers.first().elements.first().fieldKey, QStringLiteral("productName"));
+    const auto json = TemplateDocumentJson::toJson(actual);
+    QCOMPARE(json.value(QStringLiteral("fieldDisplayNames")).toObject().value(QStringLiteral("productName")).toString(),
+        QString::fromUtf8("门店品名"));
+    QVERIFY(actual.fieldSchema.isEmpty());
+    auto* save = window.findChild<QPushButton*>(QStringLiteral("saveTemplateToLibraryButton"));
+    QVERIFY(save != nullptr);
+    save->click();
+    const auto stored = TemplateLibraryStore(directory.path()).loadTemplate(document.id);
+    QVERIFY(stored.has_value());
+    QCOMPARE(TemplateDocumentJson::toJson(*stored).value(QStringLiteral("fieldDisplayNames")), json.value(QStringLiteral("fieldDisplayNames")));
+    window.findChild<QPushButton*>(QStringLiteral("designerUndoButton"))->click();
+    QCOMPARE(name->text(), QString::fromUtf8("商品名称"));
+    window.findChild<QPushButton*>(QStringLiteral("designerRedoButton"))->click();
+    QCOMPARE(name->text(), QString::fromUtf8("门店品名"));
+}
+
+void LabelDesignerTests::bindingNameAutoAppliesAndStaysWithinTemplate()
+{
+    auto settings = selectionTestSettings();
+    auto& document = settings.templateDocuments[QStringLiteral("default")];
+    document.layers.first().elements.resize(2);
+    for (auto& element : document.layers.first().elements) {
+        element.type = TemplateElementType::BoundField;
+        element.fieldKey = QStringLiteral("productName");
+    }
+    PrintClientSettings changed;
+    TemplateDesignerWindow window(settings, [&changed](const auto& next) { changed = next; });
+    window.resize(1024, 720);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    auto* name = window.findChild<QLineEdit*>(QStringLiteral("elementFieldDisplayNameEdit"));
+    auto* list = window.findChild<QListWidget*>(QStringLiteral("templateElementList"));
+    QVERIFY(name != nullptr && list != nullptr);
+    name->setText(QString::fromUtf8("店内品名"));
+    QTRY_COMPARE(changed.templateDocuments.value(QStringLiteral("default")).fieldDisplayNames.value(QStringLiteral("productName")), QString::fromUtf8("店内品名"));
+    list->setCurrentRow(1);
+    QCOMPARE(name->text(), QString::fromUtf8("店内品名"));
+    QCOMPARE(changed.templateDocuments.value(QStringLiteral("default")).layers.first().elements[1].fieldKey, QStringLiteral("productName"));
+    const auto screenshot = qEnvironmentVariable("SLEEKPR_TEST_SCREENSHOT");
+    if (!screenshot.isEmpty()) QVERIFY(window.grab().save(screenshot + QStringLiteral(".binding-name.png")));
+
+    TemplateElement element = document.layers.first().elements.first();
+    TemplateDesignerPresenter presenter;
+    const auto otherModel = presenter.elementPropertyModel(element, true, &document);
+    QCOMPARE(otherModel.fieldDisplayName, QString::fromUtf8("商品名称"));
+    PrintFieldEditorPanel fields;
+    fields.setDocument(changed.templateDocuments.value(QStringLiteral("default")));
+    fields.setValues(QJsonObject{{"productName", "actual-value"}});
+    auto* input = fields.findChild<QLineEdit*>(QStringLiteral("printField_productName"));
+    auto* form = fields.findChild<QFormLayout*>();
+    QVERIFY(input != nullptr && form != nullptr);
+    auto* label = qobject_cast<QLabel*>(form->labelForField(input->parentWidget()));
+    QVERIFY(label != nullptr && label->text().contains(QString::fromUtf8("店内品名")));
+    QCOMPARE(fields.values(), QJsonObject({{"productName", "actual-value"}}));
+}
+
+void LabelDesignerTests::bindingNameCommandPreservesRulesAndBlocksLockedEdits()
+{
+    auto document = selectionTestSettings().templateDocuments.value(QStringLiteral("default"));
+    auto& element = document.layers.first().elements.first();
+    element.type = TemplateElementType::BoundField;
+    element.fieldKey = QStringLiteral("productName");
+    FieldDefinition field;
+    field.key = QStringLiteral("productName");
+    field.displayName = QString::fromUtf8("原品名");
+    field.required = true;
+    field.defaultValue = QStringLiteral("original-default");
+    document.fieldSchema = {field};
+    const auto rules = FieldSchemaJson::toJson(document.fieldSchema);
+    TemplateDesignerPresenter presenter;
+    auto model = presenter.elementPropertyModel(element, true, &document);
+    model.x += 1;
+    QVERIFY(presenter.applyElementProperties(document, element.id, model).changed);
+    QVERIFY(document.fieldDisplayNames.isEmpty());
+    model.fieldDisplayNameEdited = true;
+    model.fieldDisplayName = QString::fromUtf8("新解释名称");
+    QVERIFY(presenter.applyElementProperties(document, element.id, model).changed);
+    QCOMPARE(FieldSchemaJson::toJson(document.fieldSchema), rules);
+    QCOMPARE(document.layers.first().elements.first().fieldKey, QStringLiteral("productName"));
+    QVERIFY(!presenter.applyElementProperties(document, element.id, model).changed);
+    const auto before = TemplateDocumentJson::toJson(document);
+    model.canEdit = false;
+    model.fieldDisplayName = QStringLiteral("blocked");
+    const auto locked = presenter.applyElementProperties(document, element.id, model);
+    QVERIFY(!locked.changed && !locked.errorMessage.isEmpty());
+    QCOMPARE(TemplateDocumentJson::toJson(document), before);
+    model.canEdit = true;
+    model.fieldDisplayName.clear();
+    QVERIFY(presenter.applyElementProperties(document, element.id, model).changed);
+    QVERIFY(document.fieldDisplayNames.isEmpty());
+    QCOMPARE(FieldSchemaJson::toJson(document.fieldSchema), rules);
+}
+
+void LabelDesignerTests::bindingKeyChangeDoesNotRenameDataOrOtherElements()
+{
+    auto settings = selectionTestSettings();
+    auto& document = settings.templateDocuments[QStringLiteral("default")];
+    document.layers.first().elements.resize(2);
+    for (auto& element : document.layers.first().elements) {
+        element.type = TemplateElementType::BoundField;
+        element.fieldKey = QStringLiteral("productName");
+    }
+    document.sampleData = QJsonObject{{"productName", "original"}, {"salesCode", "code"}};
+    document.fieldDisplayNames.insert(QStringLiteral("productName"), QString::fromUtf8("品名说明"));
+    const auto sample = document.sampleData;
+    const auto& first = document.layers.first().elements.first();
+    TemplateDesignerPresenter presenter;
+    auto model = presenter.elementPropertyModel(first, true, &document);
+    model.value = QStringLiteral("salesCode");
+    QVERIFY(presenter.applyElementProperties(document, first.id, model).changed);
+    QCOMPARE(document.layers.first().elements.first().fieldKey, QStringLiteral("salesCode"));
+    QCOMPARE(document.layers.first().elements[1].fieldKey, QStringLiteral("productName"));
+    QCOMPARE(document.sampleData, sample);
+    QVERIFY(!document.fieldDisplayNames.contains(QStringLiteral("salesCode")));
+    QCOMPARE(document.fieldDisplayNames.value(QStringLiteral("productName")), QString::fromUtf8("品名说明"));
+}
+
+void LabelDesignerTests::bindingKeySupportsDirectInputWithoutCarryingOldName()
+{
+    FieldBindingSelector selector;
+    selector.setOptionsAndValue({{QStringLiteral("productName"), QString::fromUtf8("商品名称")},
+        {QStringLiteral("salesCode"), QString::fromUtf8("销售码")}}, QStringLiteral("productName"));
+    auto* combo = selector.findChild<QComboBox*>();
+    auto* name = selector.findChild<QLineEdit*>(QStringLiteral("elementFieldDisplayNameEdit"));
+    QVERIFY(combo != nullptr && name != nullptr && combo->isEditable());
+    QVERIFY(!combo->lineEdit()->isReadOnly());
+    selector.resize(300, 140);
+    selector.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&selector));
+    combo->lineEdit()->selectAll();
+    QTest::keyClicks(combo->lineEdit(), "custom_code");
+    QCOMPARE(selector.fieldKey(), QStringLiteral("custom_code"));
+    QCOMPARE(combo->currentText(), QStringLiteral("custom_code"));
+    QVERIFY(name->text().isEmpty());
+    QVERIFY(!selector.isDisplayNameEdited());
+    name->setText(QString::fromUtf8("自定义码"));
+    QVERIFY(selector.isDisplayNameEdited());
+    combo->setCurrentIndex(combo->findData(QStringLiteral("salesCode")));
+    QCOMPARE(selector.fieldKey(), QStringLiteral("salesCode"));
+    QCOMPARE(combo->currentText(), QStringLiteral("salesCode"));
+    QCOMPARE(name->text(), QString::fromUtf8("销售码"));
+    QVERIFY(!selector.isDisplayNameEdited());
+}
+
+void LabelDesignerTests::bindingFastKeyChangeKeepsPreviousName()
+{
+    auto settings = selectionTestSettings();
+    auto& element = settings.templateDocuments[QStringLiteral("default")].layers.first().elements.first();
+    element.type = TemplateElementType::BoundField;
+    element.fieldKey = QStringLiteral("productName");
+    PrintClientSettings changed;
+    TemplateDesignerWindow window(settings, [&changed](const auto& next) { changed = next; });
+    window.show();
+    window.activateWindow();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    auto* name = window.findChild<QLineEdit*>(QStringLiteral("elementFieldDisplayNameEdit"));
+    auto* combo = window.findChild<QComboBox*>(QStringLiteral("elementFieldBindingCombo"));
+    QVERIFY(name != nullptr && combo != nullptr);
+    name->setFocus();
+    name->setText(QString::fromUtf8("快速修改的品名"));
+    combo->lineEdit()->setFocus();
+    combo->lineEdit()->selectAll();
+    QTest::keyClicks(combo->lineEdit(), "salesCode");
+    QTRY_COMPARE(changed.templateDocuments.value(QStringLiteral("default")).layers.first().elements.first().fieldKey, QStringLiteral("salesCode"));
+    const auto document = changed.templateDocuments.value(QStringLiteral("default"));
+    QCOMPARE(document.fieldDisplayNames.value(QStringLiteral("productName")), QString::fromUtf8("快速修改的品名"));
+    QVERIFY(!document.fieldDisplayNames.contains(QStringLiteral("salesCode")));
+    QCOMPARE(name->text(), QString::fromUtf8("销售码"));
+}
+
+void LabelDesignerTests::bindingNameKeepsExplicitSchemaNameEqualToKey()
+{
+    TemplateDocument document;
+    FieldDefinition field;
+    field.key = QStringLiteral("productName");
+    field.displayName = field.key;
+    document.fieldSchema = {field};
+    TemplateElement element;
+    element.type = TemplateElementType::BoundField;
+    element.fieldKey = field.key;
+    TemplateDesignerPresenter presenter;
+    for (const auto& name : {QString(), QStringLiteral("  ")}) {
+        document.fieldDisplayNames.insert(field.key, name);
+        QCOMPARE(presenter.elementPropertyModel(element, true, &document).fieldDisplayName, field.displayName);
+    }
+    document.fieldDisplayNames.insert(field.key, QString::fromUtf8("自定义解释"));
+    QCOMPARE(presenter.elementPropertyModel(element, true, &document).fieldDisplayName, QString::fromUtf8("自定义解释"));
+    document.fieldDisplayNames.clear();
+    document.fieldSchema.first().displayName.clear();
+    QCOMPARE(presenter.elementPropertyModel(element, true, &document).fieldDisplayName, QString::fromUtf8("商品名称"));
 }
 
 void LabelDesignerTests::labelDesignerOmitsTableControls()
@@ -354,6 +1127,250 @@ void LabelDesignerTests::fitModeRefitsAfterPaperChanges()
     QVERIFY(smallIndex >= 0);
     paper->setCurrentIndex(smallIndex);
     QTRY_VERIFY_WITH_TIMEOUT(qAbs(preview->printableImageSizePx().width() - originalWidth) <= 2, 1000);
+}
+
+void LabelDesignerTests::canvasSupportsMultiSelectionAndDuplicate()
+{
+    auto changed = selectionTestSettings();
+    TemplateDesignerWindow window(changed, [&changed](const auto& next) { changed = next; });
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    QTest::qWait(50);
+    auto* preview = dynamic_cast<TemplatePreviewLabel*>(window.findChild<QLabel*>(QStringLiteral("designerPreviewLabel")));
+    auto* list = window.findChild<QListWidget*>(QStringLiteral("templateElementList"));
+    QVERIFY(preview != nullptr && list != nullptr);
+    QTest::mouseClick(preview, Qt::LeftButton, Qt::NoModifier, canvasPoint(preview, 8, 8));
+    QTest::mouseClick(preview, Qt::LeftButton, Qt::ControlModifier, canvasPoint(preview, 28, 8));
+    QCOMPARE(list->selectedItems().size(), 2);
+    QTest::keyClick(preview, Qt::Key_D, Qt::ControlModifier);
+    QTRY_COMPARE(changed.templateDocuments[QStringLiteral("default")].layers.first().elements.size(), 5);
+    QCOMPARE(list->selectedItems().size(), 2);
+    QTest::keyClick(preview, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE(changed.templateDocuments[QStringLiteral("default")].layers.first().elements.size(), 3);
+    QTest::keyClick(preview, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+    QTRY_COMPARE(changed.templateDocuments[QStringLiteral("default")].layers.first().elements.size(), 5);
+}
+
+void LabelDesignerTests::canvasGestureCommitsOneUndoStep()
+{
+    auto changed = selectionTestSettings();
+    int notifications = 0;
+    TemplateDesignerWindow window(changed, [&](const auto& next) { changed = next; ++notifications; });
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    QTest::qWait(50);
+    auto* preview = dynamic_cast<TemplatePreviewLabel*>(window.findChild<QLabel*>(QStringLiteral("designerPreviewLabel")));
+    QVERIFY(preview != nullptr);
+    dragCanvas(preview, canvasPoint(preview, 8, 8), canvasPoint(preview, 15, 12));
+    QTRY_VERIFY(changed.templateDocuments[QStringLiteral("default")].layers.first().elements.first().x > 10.0);
+    QCOMPARE(notifications, 1);
+    QTest::keyClick(preview, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE(changed.templateDocuments[QStringLiteral("default")].layers.first().elements.first().x, 5.0);
+    QVERIFY(!window.findChild<QPushButton*>(QStringLiteral("designerUndoButton"))->isEnabled());
+}
+
+void LabelDesignerTests::canvasMarqueeResizeClipboardAndAlignment()
+{
+    auto changed = selectionTestSettings();
+    TemplateDesignerWindow window(changed, [&changed](const auto& next) { changed = next; });
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    QTest::qWait(50);
+    auto* preview = dynamic_cast<TemplatePreviewLabel*>(window.findChild<QLabel*>(QStringLiteral("designerPreviewLabel")));
+    auto* list = window.findChild<QListWidget*>(QStringLiteral("templateElementList"));
+    QVERIFY(preview != nullptr && list != nullptr);
+    dragCanvas(preview, canvasPoint(preview, 2, 2), canvasPoint(preview, 37, 14));
+    QCOMPARE(list->selectedItems().size(), 2);
+    auto* align = window.findChild<QAction*>(QStringLiteral("designerAlign0Action"));
+    QVERIFY(align != nullptr);
+    align->trigger();
+    QCOMPARE(changed.templateDocuments[QStringLiteral("default")].layers.first().elements[1].x, 5.0);
+
+    QTest::mouseClick(preview, Qt::LeftButton, Qt::NoModifier, canvasPoint(preview, 75, 25));
+    QCOMPARE(list->selectedItems().size(), 0);
+    list->setCurrentRow(2);
+    const auto handle = preview->editorResizeHandleRect(Qt::RightEdge | Qt::BottomEdge);
+    QVERIFY(!handle.isEmpty());
+    dragCanvas(preview, handle.center(), handle.center() + QPoint(30, 15));
+    const auto resized = changed.templateDocuments[QStringLiteral("default")].layers.first().elements[2];
+    QVERIFY(resized.width > 12.0);
+    QVERIFY(resized.height > 7.0);
+
+    QTest::keyClick(preview, Qt::Key_C, Qt::ControlModifier);
+    QTest::keyClick(preview, Qt::Key_V, Qt::ControlModifier);
+    QTRY_COMPARE(changed.templateDocuments[QStringLiteral("default")].layers.first().elements.size(), 4);
+    QCOMPARE(preview->designAidCommandCount(), 4);
+    const auto pasted = changed.templateDocuments[QStringLiteral("default")].layers.first().elements.last();
+    QVERIFY(pasted.id != resized.id);
+    QCOMPARE(pasted.width, resized.width);
+    QCOMPARE(pasted.height, resized.height);
+    QCOMPARE(pasted.type, resized.type);
+    QCOMPARE(list->selectedItems().size(), 1);
+    const auto screenshotPath = qEnvironmentVariable("SLEEKPR_TEST_SCREENSHOT");
+    if (!screenshotPath.isEmpty()) QVERIFY(window.grab().save(screenshotPath + QStringLiteral(".selection.png")));
+
+    QTest::keyClick(preview, Qt::Key_Delete);
+    QCOMPARE(changed.templateDocuments[QStringLiteral("default")].layers.first().elements.size(), 3);
+    QTest::keyClick(preview, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE(changed.templateDocuments[QStringLiteral("default")].layers.first().elements.size(), 4);
+}
+
+void LabelDesignerTests::canvasSlowDragAndCancelAreTransactional()
+{
+    auto changed = selectionTestSettings();
+    int notifications = 0;
+    TemplateDesignerWindow window(changed, [&](const auto& next) { changed = next; ++notifications; });
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    QTest::qWait(50);
+    auto* preview = dynamic_cast<TemplatePreviewLabel*>(window.findChild<QLabel*>(QStringLiteral("designerPreviewLabel")));
+    QVERIFY(preview != nullptr);
+    const auto start = canvasPoint(preview, 8, 8);
+    const auto finish = canvasPoint(preview, 16, 14);
+    QTest::mousePress(preview, Qt::LeftButton, Qt::NoModifier, start);
+    QMouseEvent move(QEvent::MouseMove, finish, preview->mapToGlobal(finish), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(preview, &move);
+    QTest::qWait(320);
+    QCOMPARE(notifications, 0);
+    QTest::keyClick(preview, Qt::Key_Escape);
+    QTest::mouseRelease(preview, Qt::LeftButton, Qt::NoModifier, finish);
+    QTest::qWait(280);
+    QCOMPARE(notifications, 0);
+    QVERIFY(!window.findChild<QPushButton*>(QStringLiteral("designerUndoButton"))->isEnabled());
+    dragCanvas(preview, start, finish);
+    QCOMPARE(notifications, 1);
+    QTest::keyClick(preview, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE(changed.templateDocuments[QStringLiteral("default")].layers.first().elements.first().x, 5.0);
+}
+
+void LabelDesignerTests::canvasMapsDeviceCalibrationBackToMillimeters()
+{
+    auto changed = selectionTestSettings();
+    auto& document = changed.templateDocuments[QStringLiteral("default")];
+    DeviceProfile profile;
+    profile.scaleX = 1.2;
+    profile.scaleY = 0.8;
+    profile.offsetX = 2.0;
+    profile.offsetY = 1.0;
+    document.deviceProfiles = {profile};
+    TemplateDesignerWindow window(changed, [&changed](const auto& next) { changed = next; });
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    QTest::qWait(50);
+    auto* preview = dynamic_cast<TemplatePreviewLabel*>(window.findChild<QLabel*>(QStringLiteral("designerPreviewLabel")));
+    auto* snap = window.findChild<QAction*>(QStringLiteral("designerSnapAction"));
+    QVERIFY(preview != nullptr && snap != nullptr);
+    snap->setChecked(false);
+    const auto start = canvasPoint(preview, (8.0 + 2.0) * 1.2, (8.0 + 1.0) * 0.8);
+    const auto finish = canvasPoint(preview, (12.0 + 2.0) * 1.2, (10.0 + 1.0) * 0.8);
+    dragCanvas(preview, start, finish);
+    const auto element = changed.templateDocuments[QStringLiteral("default")].layers.first().elements.first();
+    QVERIFY(qAbs(element.x - 9.0) < 0.25);
+    QVERIFY(qAbs(element.y - 7.0) < 0.25);
+}
+
+void LabelDesignerTests::canvasRejectsUnsafeClipboardElements()
+{
+    auto changed = selectionTestSettings();
+    TemplateDesignerWindow window(changed, [&changed](const auto& next) { changed = next; });
+    auto* paste = window.findChild<QAction*>(QStringLiteral("designerPasteAction"));
+    QVERIFY(paste != nullptr);
+    auto invalid = changed.templateDocuments[QStringLiteral("default")];
+    invalid.layers.first().elements.first().width = -2.0;
+    const auto setClipboard = [](const TemplateDocument& document) {
+        auto* mime = new QMimeData();
+        mime->setData("application/x-sleekpr-label-elements+json", QJsonDocument(TemplateDocumentJson::toJson(document)).toJson());
+        QApplication::clipboard()->setMimeData(mime);
+    };
+    setClipboard(invalid);
+    paste->trigger();
+    QCOMPARE(changed.templateDocuments[QStringLiteral("default")].layers.first().elements.size(), 3);
+
+    invalid = changed.templateDocuments[QStringLiteral("default")];
+    invalid.layers.first().elements.first().type = TemplateElementType::ArrayGrid;
+    invalid.layers.first().elements.first().arrayGridRows = 100000;
+    invalid.layers.first().elements.first().arrayGridColumns = 100000;
+    setClipboard(invalid);
+    paste->trigger();
+    QCOMPARE(changed.templateDocuments[QStringLiteral("default")].layers.first().elements.size(), 3);
+}
+
+void LabelDesignerTests::canvasAltDragCancelRestoresOriginalAndNoopHasNoHistory()
+{
+    auto changed = selectionTestSettings();
+    TemplateDesignerWindow window(changed, [&changed](const auto& next) { changed = next; });
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    QTest::qWait(50);
+    auto* preview = dynamic_cast<TemplatePreviewLabel*>(window.findChild<QLabel*>(QStringLiteral("designerPreviewLabel")));
+    auto* undo = window.findChild<QPushButton*>(QStringLiteral("designerUndoButton"));
+    QVERIFY(preview != nullptr && undo != nullptr);
+    const auto start = canvasPoint(preview, 8, 8);
+    const auto finish = canvasPoint(preview, 17, 15);
+    QTest::mousePress(preview, Qt::LeftButton, Qt::AltModifier, start);
+    QMouseEvent move(QEvent::MouseMove, finish, preview->mapToGlobal(finish), Qt::NoButton, Qt::LeftButton, Qt::AltModifier);
+    QApplication::sendEvent(preview, &move);
+    QTest::keyClick(preview, Qt::Key_Escape);
+    QTest::mouseRelease(preview, Qt::LeftButton, Qt::AltModifier, finish);
+    QTest::qWait(30);
+    QCOMPARE(preview->designAidCommandCount(), 3);
+    QVERIFY(!undo->isEnabled());
+    QTest::mousePress(preview, Qt::LeftButton, Qt::NoModifier, start);
+    QApplication::sendEvent(preview, &move);
+    QMouseEvent back(QEvent::MouseMove, start, preview->mapToGlobal(start), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(preview, &back);
+    QTest::mouseRelease(preview, Qt::LeftButton, Qt::NoModifier, start);
+    QVERIFY(!undo->isEnabled());
+    QCOMPARE(changed.templateDocuments[QStringLiteral("default")].layers.first().elements.size(), 3);
+}
+
+void LabelDesignerTests::canvasWindowCanBeDestroyedDuringDrag()
+{
+    auto settings = selectionTestSettings();
+    int notifications = 0;
+    auto window = std::make_unique<TemplateDesignerWindow>(settings, [&](const auto&) { ++notifications; });
+    window->show();
+    QVERIFY(QTest::qWaitForWindowExposed(window.get()));
+    auto* preview = dynamic_cast<TemplatePreviewLabel*>(window->findChild<QLabel*>(QStringLiteral("designerPreviewLabel")));
+    QVERIFY(preview != nullptr);
+    const auto start = canvasPoint(preview, 8, 8);
+    const auto finish = canvasPoint(preview, 18, 16);
+    QTest::mousePress(preview, Qt::LeftButton, Qt::NoModifier, start);
+    QMouseEvent move(QEvent::MouseMove, finish, preview->mapToGlobal(finish), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(preview, &move);
+    window.reset();
+    QCoreApplication::processEvents();
+    QCOMPARE(notifications, 0);
+}
+
+void LabelDesignerTests::canvasSmallEdgeElementHasVisibleHandlesAndMoveArea()
+{
+    auto settings = selectionTestSettings();
+    auto& element = settings.templateDocuments[QStringLiteral("default")].layers.first().elements.first();
+    element.x = 79.4;
+    element.y = 29.4;
+    element.width = 0.5;
+    element.height = 0.5;
+    TemplateDesignerWindow window(settings, nullptr);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    QTest::qWait(50);
+    auto* preview = dynamic_cast<TemplatePreviewLabel*>(window.findChild<QLabel*>(QStringLiteral("designerPreviewLabel")));
+    QVERIFY(preview != nullptr);
+    const auto center = canvasPoint(preview, 79.65, 29.65);
+    QCOMPARE(preview->editorResizeHandleAt(center), Qt::Edges{});
+    const auto handle = preview->editorResizeHandleRect(Qt::RightEdge | Qt::BottomEdge);
+    QVERIFY(!handle.isEmpty());
+    QVERIFY(preview->rect().contains(handle));
+}
+
+void LabelDesignerTests::settingsOffersPrintWorkbenchEntry()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    SettingsWindow window(directory.filePath(QStringLiteral("settings.json")), nullptr);
+    auto* button = window.findChild<QPushButton*>(QStringLiteral("openPrintWorkbenchButton"));
+    QVERIFY2(button != nullptr, "设置页必须提供独立打印工作台入口");
 }
 
 QTEST_MAIN(LabelDesignerTests)

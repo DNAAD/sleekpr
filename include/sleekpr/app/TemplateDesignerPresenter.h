@@ -15,7 +15,8 @@ class TemplateDesignerPresenter final
 public:
     DesignerElementPropertyModel elementPropertyModel(
         const sleekpr::core::TemplateElement& element,
-        bool canEdit) const;
+        bool canEdit,
+        const sleekpr::core::TemplateDocument* document = nullptr) const;
     DesignerTablePropertyModel tablePropertyModel(
         const sleekpr::core::TableElement& table,
         bool canEdit) const;
@@ -28,6 +29,8 @@ public:
     TemplateDesignerCommandResult applyElementProperties(
         sleekpr::core::TemplateElement& element,
         const DesignerElementPropertyModel& model) const;
+    TemplateDesignerCommandResult applyElementProperties(
+        sleekpr::core::TemplateDocument& document, const QString& elementId, const DesignerElementPropertyModel& model) const;
     TemplateDesignerCommandResult applyTableProperties(
         sleekpr::core::TemplateDocument& document,
         const QString& tableId,

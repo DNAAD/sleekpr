@@ -16,6 +16,7 @@
 #include <QPoint>
 #include <QSizeF>
 #include <QString>
+#include <QStringList>
 #include <Qt>
 #include <QWidget>
 
@@ -44,6 +45,8 @@ struct TableElement;
 
 namespace sleekpr::app {
 
+class TemplateCanvasEditor;
+
 class TemplatePreviewLabel;
 class TemplateInspectorPanel;
 class TemplateWorkspacePanel;
@@ -67,7 +70,7 @@ public:
         QString templateLibraryDirectoryPath,
         PrePrintCallback prePrintCallback,
         QWidget* parent = nullptr);
-    ~TemplateDesignerWindow() override = default;
+    ~TemplateDesignerWindow() override;
 
     bool exportTemplateToFile(const QString& path) const;
     bool importTemplateFromFile(const QString& path);
@@ -88,6 +91,9 @@ private:
     };
 
     void buildUi();
+    void setupCanvasEditor();
+    void applyCanvasSelection(const QStringList& ids);
+    void syncCanvasSelectionFromList();
     void ensureCurrentTemplateDocument();
     void addLayer();
     void deleteCurrentLayer();
@@ -238,6 +244,8 @@ private:
     TemplateInspectorPanel* m_inspectorPanel = nullptr;
     TemplateWorkspacePanel* m_workspacePanel = nullptr;
     TemplatePreviewLabel* m_previewLabel = nullptr;
+    TemplateCanvasEditor* m_canvasEditor = nullptr;
+    bool m_syncingCanvasSelection = false;
     QLabel* m_statusLabel = nullptr;
     QLabel* m_sampleDataErrorLabel = nullptr;
     QPlainTextEdit* m_sampleDataEdit = nullptr;

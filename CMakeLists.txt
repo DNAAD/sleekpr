@@ -1,6 +1,39 @@
 cmake_minimum_required(VERSION 3.24)
 
+if(CMAKE_HOST_WIN32)
+    # 配置和编译使用同一语言偏好；缺少英文语言包时仍允许 MSVC 回退到本机语言。
+    set(ENV{VSLANG} "1033")
+endif()
+
 project(sleekpr VERSION 0.1.0 LANGUAGES CXX)
+
+if(MSVC AND CMAKE_GENERATOR MATCHES "Ninja")
+    # 本机可能只安装中文语言包，不能假定 VSLANG 一定能切成英文。
+    # Qt/MSVC 的 /utf-8 输出必须按 UTF-8 读取，不能沿用被本机代码页误解码的缓存前缀。
+    set(_sleekpr_probe_dir "${CMAKE_BINARY_DIR}/CMakeFiles/sleekpr-msvc-deps")
+    file(MAKE_DIRECTORY "${_sleekpr_probe_dir}")
+    file(WRITE "${_sleekpr_probe_dir}/sleekpr_msvc_probe.h" "#pragma once\n")
+    file(WRITE "${_sleekpr_probe_dir}/probe.cpp" "#include \"sleekpr_msvc_probe.h\"\n")
+    execute_process(
+        COMMAND "${CMAKE_CXX_COMPILER}" /nologo /utf-8 /Zs /showIncludes /TP "${_sleekpr_probe_dir}/probe.cpp"
+        RESULT_VARIABLE _sleekpr_probe_result
+        OUTPUT_VARIABLE _sleekpr_probe_output
+        ERROR_VARIABLE _sleekpr_probe_error
+        ENCODING UTF-8
+    )
+    string(REGEX MATCH "([^\r\n]*:)[ \t]+[^\r\n]*sleekpr_msvc_probe\\.h"
+        _sleekpr_include_line "${_sleekpr_probe_output}${_sleekpr_probe_error}")
+    if(NOT _sleekpr_probe_result EQUAL 0 OR NOT _sleekpr_include_line)
+        message(FATAL_ERROR "无法探测 MSVC 头文件依赖前缀：${_sleekpr_probe_output}${_sleekpr_probe_error}")
+    endif()
+    set(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX "${CMAKE_MATCH_1} ")
+    set(CMAKE_CL_SHOWINCLUDES_PREFIX "${CMAKE_CXX_CL_SHOWINCLUDES_PREFIX}")
+    set(_sleekpr_compiler_launcher "${CMAKE_COMMAND}" -E env "VSLANG=1033" --)
+    if(CMAKE_CXX_COMPILER_LAUNCHER)
+        list(APPEND _sleekpr_compiler_launcher ${CMAKE_CXX_COMPILER_LAUNCHER})
+    endif()
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${_sleekpr_compiler_launcher}")
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +53,7 @@ add_library(sleekpr_core
     src/core/native/SilverNativeLabelDrawingPlanner.cpp
     src/core/printing/LabelPaperSize.cpp
     src/core/printing/PrintUnitConverter.cpp
+    src/core/printing/PrintCopyPlanner.cpp
     src/core/security/AllowedOriginParser.cpp
     src/core/security/LocalCorsPolicy.cpp
     src/core/security/PrivateNetworkAccessPolicy.cpp
@@ -39,11 +73,13 @@ add_library(sleekpr_core
     src/core/templates/TableElementLayout.cpp
     src/core/templates/TableElementRenderer.cpp
     src/core/templates/TemplateDocumentEditModel.cpp
+    src/core/templates/TemplateSelectionEditModel.cpp
     src/core/templates/TemplateDocumentFactory.cpp
     src/core/templates/TemplateDocumentJson.cpp
     src/core/templates/TemplateLibraryStore.cpp
     src/core/templates/TemplateDocumentRenderer.cpp
     src/core/templates/TemplateDocumentValidator.cpp
+    src/core/templates/TemplateInputSchema.cpp
     src/core/templates/TemplateRenderContextBuilder.cpp
     src/infrastructure/preview/LabelPreviewImageRenderer.cpp
     src/infrastructure/preview/LabelPreviewService.cpp
@@ -52,6 +88,7 @@ add_library(sleekpr_core
     src/infrastructure/preview/QrCodeMatrixRenderer.cpp
     src/infrastructure/printing/QrModulePixelLayout.cpp
     src/infrastructure/printing/QtLabelPrintEngine.cpp
+    src/infrastructure/printing/TemplatePrintService.cpp
     src/infrastructure/rendering/TextAutoFitSizer.cpp
 )
 
@@ -96,8 +133,21 @@ add_executable(sleekpr
     src/app/TableColumnTextCodec.cpp
     include/sleekpr/app/TableColumnTextCodec.h
     src/app/TemplateDesignerCommand.cpp
+    src/app/TemplateCanvasEditor.cpp
     src/app/FieldPresetManagerWindow.cpp
+    src/app/FieldBindingSelector.cpp
+    src/app/ElementBindingEditor.cpp
+    include/sleekpr/app/ElementBindingEditor.h
+    src/app/TemplateElementBindings.cpp
+    src/app/TemplateFieldNames.cpp
+    include/sleekpr/app/FieldBindingSelector.h
     src/app/PaperSpecManagerWindow.cpp
+    src/app/PrintWorkbenchWindow.cpp
+    src/app/PrintPreviewPanel.cpp
+    src/app/PrintFieldEditorPanel.cpp
+    include/sleekpr/app/PrintFieldEditorPanel.h
+    src/app/PrintPreflightPanel.cpp
+    include/sleekpr/app/PrintPreflightPanel.h
     src/app/SettingsWindow.cpp
     src/app/TemplateDesignerFactory.cpp
     src/app/TemplateInspectorPanel.cpp

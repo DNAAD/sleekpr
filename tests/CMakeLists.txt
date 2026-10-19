@@ -36,7 +36,14 @@ add_executable(sleekpr_app_tests
     ../src/app/TableColumnTextCodec.cpp
     ../include/sleekpr/app/TableColumnTextCodec.h
     ../src/app/TemplateDesignerCommand.cpp
+    ../src/app/TemplateCanvasEditor.cpp
     ../src/app/FieldPresetManagerWindow.cpp
+    ../src/app/FieldBindingSelector.cpp
+    ../src/app/ElementBindingEditor.cpp
+    ../include/sleekpr/app/ElementBindingEditor.h
+    ../src/app/TemplateElementBindings.cpp
+    ../src/app/TemplateFieldNames.cpp
+    ../include/sleekpr/app/FieldBindingSelector.h
     ../src/app/PaperSpecManagerWindow.cpp
     ../src/app/SettingsWindow.cpp
     ../src/app/TemplateDesignerFactory.cpp
@@ -90,6 +97,79 @@ target_compile_definitions(sleekpr_label_app_tests PRIVATE SLEEKPR_ENABLE_TABLE_
 add_test(NAME sleekpr_label_app_tests COMMAND sleekpr_label_app_tests)
 configure_qt_test_runtime(sleekpr_label_app_tests)
 
+add_executable(sleekpr_selection_tests tst_selection.cpp)
+target_link_libraries(sleekpr_selection_tests PRIVATE sleekpr_core Qt6::Test)
+add_test(NAME sleekpr_selection_tests COMMAND sleekpr_selection_tests)
+configure_qt_test_runtime(sleekpr_selection_tests)
+
+add_executable(sleekpr_canvas_tests tst_canvas_interaction.cpp ../src/app/TemplatePreviewLabel.cpp)
+target_link_libraries(sleekpr_canvas_tests PRIVATE sleekpr_core Qt6::Widgets Qt6::Test)
+add_test(NAME sleekpr_canvas_tests COMMAND sleekpr_canvas_tests)
+configure_qt_test_runtime(sleekpr_canvas_tests)
+
+add_executable(sleekpr_template_print_tests tst_template_print_service.cpp)
+target_link_libraries(sleekpr_template_print_tests PRIVATE sleekpr_core Qt6::Test)
+add_test(NAME sleekpr_template_print_tests COMMAND sleekpr_template_print_tests)
+configure_qt_test_runtime(sleekpr_template_print_tests)
+
+add_executable(sleekpr_template_input_tests tst_template_input_schema.cpp)
+target_link_libraries(sleekpr_template_input_tests PRIVATE sleekpr_core Qt6::Test)
+add_test(NAME sleekpr_template_input_tests COMMAND sleekpr_template_input_tests)
+configure_qt_test_runtime(sleekpr_template_input_tests)
+
+add_executable(sleekpr_field_editor_tests
+    tst_print_field_editor.cpp
+    ../src/app/PrintFieldEditorPanel.cpp
+    ../src/app/TemplateFieldNames.cpp
+    ../include/sleekpr/app/PrintFieldEditorPanel.h
+    ../src/app/AppTheme.cpp
+    ../resources/sleekpr-ui.qrc
+)
+set_target_properties(sleekpr_field_editor_tests PROPERTIES AUTORCC ON)
+target_link_libraries(sleekpr_field_editor_tests PRIVATE sleekpr_core Qt6::Widgets Qt6::Test)
+add_test(NAME sleekpr_field_editor_tests COMMAND sleekpr_field_editor_tests)
+configure_qt_test_runtime(sleekpr_field_editor_tests)
+
+add_executable(sleekpr_workbench_tests
+    tst_print_workbench.cpp
+    ../src/app/PrintWorkbenchWindow.cpp
+    ../src/app/PrintPreviewPanel.cpp
+    ../src/app/PrintFieldEditorPanel.cpp
+    ../src/app/TemplateFieldNames.cpp
+    ../include/sleekpr/app/PrintFieldEditorPanel.h
+    ../src/app/PrintPreflightPanel.cpp
+    ../include/sleekpr/app/PrintPreflightPanel.h
+    ../src/app/AppTheme.cpp
+    ../resources/sleekpr-ui.qrc
+)
+set_target_properties(sleekpr_workbench_tests PROPERTIES AUTORCC ON)
+target_link_libraries(sleekpr_workbench_tests PRIVATE sleekpr_core Qt6::Widgets Qt6::PrintSupport Qt6::Test)
+add_test(NAME sleekpr_workbench_tests COMMAND sleekpr_workbench_tests)
+configure_qt_test_runtime(sleekpr_workbench_tests)
+
+add_executable(sleekpr_preflight_panel_tests
+    tst_print_preflight_panel.cpp
+    ../src/app/PrintPreflightPanel.cpp
+    ../include/sleekpr/app/PrintPreflightPanel.h
+    ../src/app/AppTheme.cpp
+    ../resources/sleekpr-ui.qrc
+)
+set_target_properties(sleekpr_preflight_panel_tests PROPERTIES AUTORCC ON)
+target_link_libraries(sleekpr_preflight_panel_tests PRIVATE sleekpr_core Qt6::Widgets Qt6::Test)
+add_test(NAME sleekpr_preflight_panel_tests COMMAND sleekpr_preflight_panel_tests)
+configure_qt_test_runtime(sleekpr_preflight_panel_tests)
+
+add_executable(sleekpr_print_preview_tests
+    tst_print_preview.cpp
+    ../src/app/PrintPreviewPanel.cpp
+    ../src/app/AppTheme.cpp
+    ../resources/sleekpr-ui.qrc
+)
+set_target_properties(sleekpr_print_preview_tests PROPERTIES AUTORCC ON)
+target_link_libraries(sleekpr_print_preview_tests PRIVATE sleekpr_core Qt6::Widgets Qt6::Test)
+add_test(NAME sleekpr_print_preview_tests COMMAND sleekpr_print_preview_tests)
+configure_qt_test_runtime(sleekpr_print_preview_tests)
+
 add_executable(sleekpr_http_tests
     tst_http.cpp
 )
@@ -103,3 +183,17 @@ target_link_libraries(sleekpr_http_tests
 
 add_test(NAME sleekpr_http_tests COMMAND sleekpr_http_tests)
 configure_qt_test_runtime(sleekpr_http_tests)
+
+# 直接测试发布程序使用的对象文件，避免独立编译的 UI 测试掩盖增量构建中的类布局混用。
+add_test(NAME sleekpr_designer_launch_test COMMAND sleekpr --smoke-test-designer)
+set_tests_properties(sleekpr_designer_launch_test PROPERTIES TIMEOUT 20)
+configure_qt_test_runtime(sleekpr_designer_launch_test)
+
+if(MSVC AND CMAKE_GENERATOR STREQUAL "Ninja")
+    add_test(NAME sleekpr_msvc_header_dependencies
+        COMMAND "${CMAKE_COMMAND}"
+            "-DBUILD_DIR=${CMAKE_BINARY_DIR}"
+            "-DNINJA_EXECUTABLE=${CMAKE_MAKE_PROGRAM}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/check_msvc_header_dependencies.cmake"
+    )
+endif()

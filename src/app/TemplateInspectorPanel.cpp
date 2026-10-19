@@ -2,6 +2,8 @@
 
 #include "sleekpr/app/AppTheme.h"
 #include "sleekpr/app/DesignerFeatures.h"
+#include "sleekpr/app/FieldBindingSelector.h"
+#include "sleekpr/app/ElementBindingEditor.h"
 #include "sleekpr/app/TableAdvancedEditorPanel.h"
 #include "sleekpr/app/TableColumnEditorPanel.h"
 #include "sleekpr/app/TableColumnTextCodec.h"
@@ -296,6 +298,10 @@ TemplateInspectorPanel::TemplateInspectorPanel(QWidget* parent)
     m_elementValueEdit->setPlaceholderText(QString::fromUtf8("例如：地址:${address}"));
     contentLayout->addWidget(m_elementValueLabel);
     contentLayout->addWidget(m_elementValueEdit);
+    m_fieldBindingSelector = new FieldBindingSelector(m_elementContentSection);
+    contentLayout->addWidget(m_fieldBindingSelector);
+    m_fieldBindingSelector->hide();
+    m_bindingEditor = new ElementBindingEditor(elementPanel);
     m_elementXSpin = createInspectorSpinBox(QStringLiteral("elementXSpin"), 0.0, 1000.0, 5.0, elementPanel);
     m_elementYSpin = createInspectorSpinBox(QStringLiteral("elementYSpin"), 0.0, 1000.0, 5.0, elementPanel);
     m_elementWidthSpin = createInspectorSpinBox(QStringLiteral("elementWidthSpin"), 0.1, 1000.0, 10.0, elementPanel);
@@ -436,8 +442,8 @@ TemplateInspectorPanel::TemplateInspectorPanel(QWidget* parent)
 
     auto* arrayGridPropertyGrid = new QGridLayout();
     arrayGridPropertyGrid->setContentsMargins(0, 0, 0, 0);
-    arrayGridPropertyGrid->addWidget(new QLabel(QStringLiteral("dataPath"), elementPanel), 0, 0);
-    arrayGridPropertyGrid->addWidget(m_arrayGridDataPathEdit, 0, 1);
+    // 数据源统一在绑定面板编辑，保留旧控件适配已有属性接口，不重复显示输入项。
+    m_arrayGridDataPathEdit->hide();
     arrayGridPropertyGrid->addWidget(new QLabel(QString::fromUtf8("行数"), elementPanel), 1, 0);
     arrayGridPropertyGrid->addWidget(m_arrayGridRowsSpin, 1, 1);
     arrayGridPropertyGrid->addWidget(new QLabel(QString::fromUtf8("列数"), elementPanel), 2, 0);
@@ -483,6 +489,7 @@ TemplateInspectorPanel::TemplateInspectorPanel(QWidget* parent)
     elementTabLayout->setSpacing(8);
     elementTabLayout->addWidget(m_emptySelectionLabel);
     elementTabLayout->addWidget(m_elementContentSection);
+    elementTabLayout->addWidget(m_bindingEditor);
     elementTabLayout->addWidget(m_elementCommonSection);
     elementTabLayout->addWidget(m_applyElementPropertiesButton);
     elementTabLayout->addStretch(1);
@@ -553,6 +560,7 @@ void TemplateInspectorPanel::setElementProperties(const DesignerElementPropertyM
         : QString::fromUtf8("请选择固定文本或绑定字段");
 
     m_emptySelectionLabel->setVisible(!hasElement);
+    m_emptySelectionLabel->setText(QString::fromUtf8("未选择对象"));
     m_elementContentSection->setVisible(hasElement && model.canEditValue);
     m_elementCommonSection->setVisible(hasElement);
     m_textStyleSection->setVisible(hasElement && model.supportsTextStyle);
@@ -561,7 +569,7 @@ void TemplateInspectorPanel::setElementProperties(const DesignerElementPropertyM
     m_elementVerticalTextCheck->setVisible(hasElement && model.supportsVerticalText);
     switch (model.type) {
     case sleekpr::core::TemplateElementType::BoundField:
-        m_elementValueLabel->setText(QString::fromUtf8("绑定字段"));
+        m_elementValueLabel->setText(QString::fromUtf8("绑定 key"));
         break;
     case sleekpr::core::TemplateElementType::QrCode:
         m_elementValueLabel->setText(QString::fromUtf8("二维码内容"));
@@ -574,9 +582,15 @@ void TemplateInspectorPanel::setElementProperties(const DesignerElementPropertyM
     auto* propertyTab = isArrayGrid ? m_arrayGridTab : m_elementTab;
     if (m_elementCommonSection->parentWidget() != propertyTab) {
         auto* propertyLayout = qobject_cast<QVBoxLayout*>(propertyTab->layout());
-        propertyLayout->insertWidget(2, m_elementCommonSection);
+        propertyLayout->insertWidget(isArrayGrid ? 2 : 3, m_elementCommonSection);
         m_elementCommonSection->setVisible(hasElement);
     }
+    if (m_bindingEditor->parentWidget() != propertyTab) {
+        auto* propertyLayout = qobject_cast<QVBoxLayout*>(propertyTab->layout());
+        propertyLayout->insertWidget(isArrayGrid ? 1 : 2, m_bindingEditor);
+    }
+    m_bindingEditor->setBindings(hasElement ? model.bindings : QList<DesignerFieldBinding>{}, model.fieldOptions);
+    m_bindingEditor->setEnabled(canEdit);
     m_inspectorTabs->setTabVisible(m_inspectorTabs->indexOf(propertyTab), true);
     auto* otherTab = isArrayGrid ? m_elementTab : m_arrayGridTab;
     m_inspectorTabs->setTabVisible(m_inspectorTabs->indexOf(otherTab), false);
@@ -586,10 +600,19 @@ void TemplateInspectorPanel::setElementProperties(const DesignerElementPropertyM
 
     if (m_elementValueEdit != nullptr) {
         const QSignalBlocker blocker(m_elementValueEdit);
-        m_elementValueEdit->setPlainText(hasElement ? model.value : QString());
+        const auto text = hasElement ? model.value : QString();
+        if (m_elementValueEdit->toPlainText() != text) m_elementValueEdit->setPlainText(text);
         m_elementValueEdit->setPlaceholderText(valuePlaceholder);
         m_elementValueEdit->setEnabled(canEdit && model.canEditValue);
+        m_elementValueEdit->setVisible(model.type != sleekpr::core::TemplateElementType::BoundField);
     }
+    if (model.type == sleekpr::core::TemplateElementType::BoundField) {
+        m_fieldBindingSelector->setOptionsAndValue(model.fieldOptions, model.value);
+    } else {
+        m_fieldBindingSelector->setOptionsAndValue({}, {});
+    }
+    m_fieldBindingSelector->setVisible(hasElement && model.type == sleekpr::core::TemplateElementType::BoundField);
+    m_fieldBindingSelector->setEnabled(canEdit && model.canEditValue);
     if (m_elementXSpin != nullptr) {
         m_elementXSpin->setValue(model.x);
         m_elementXSpin->setEnabled(canEdit);
@@ -650,7 +673,9 @@ void TemplateInspectorPanel::setElementProperties(const DesignerElementPropertyM
     }
     if (m_arrayGridCellTemplateEdit != nullptr) {
         const QSignalBlocker blocker(m_arrayGridCellTemplateEdit);
-        m_arrayGridCellTemplateEdit->setPlainText(model.arrayGridCellTemplate);
+        if (m_arrayGridCellTemplateEdit->toPlainText() != model.arrayGridCellTemplate) {
+            m_arrayGridCellTemplateEdit->setPlainText(model.arrayGridCellTemplate);
+        }
         m_arrayGridCellTemplateEdit->setEnabled(canEdit && model.isArrayGrid);
     }
     if (m_arrayGridDrawBordersCheck != nullptr) {
@@ -669,8 +694,15 @@ void TemplateInspectorPanel::setElementProperties(const DesignerElementPropertyM
 DesignerElementPropertyModel TemplateInspectorPanel::elementProperties() const
 {
     auto model = m_elementModel;
+    model.bindings = m_bindingEditor->bindings();
+    model.bindingKeyEditing = m_bindingEditor->hasActiveKeyEditor();
     if (m_elementValueEdit != nullptr) {
-        model.value = m_elementValueEdit->toPlainText();
+        model.value = model.type == sleekpr::core::TemplateElementType::BoundField
+            ? m_fieldBindingSelector->fieldKey() : m_elementValueEdit->toPlainText();
+    }
+    if (model.type == sleekpr::core::TemplateElementType::BoundField) {
+        model.fieldDisplayName = m_fieldBindingSelector->displayName();
+        model.fieldDisplayNameEdited = m_fieldBindingSelector->isDisplayNameEdited();
     }
     if (m_elementXSpin != nullptr) {
         model.x = m_elementXSpin->value();
@@ -731,6 +763,13 @@ void TemplateInspectorPanel::clearElementProperties()
     DesignerElementPropertyModel model;
     model.valuePlaceholder = QString::fromUtf8("请选择固定文本或绑定字段");
     setElementProperties(model);
+}
+
+void TemplateInspectorPanel::showMultipleSelection(int count)
+{
+    // 多选时不展示某一个对象的属性，防止用户误以为输入会批量写回所有对象。
+    clearElementProperties();
+    m_emptySelectionLabel->setText(QString::fromUtf8("已选择 %1 个对象").arg(count));
 }
 
 void TemplateInspectorPanel::setTableProperties(const DesignerTablePropertyModel& model)
@@ -863,6 +902,8 @@ bool TemplateInspectorPanel::isElementPropertyEditor(QObject* watched) const
     const auto* watchedWidget = qobject_cast<const QWidget*>(watched);
     const QList<QWidget*> editors{
         m_elementValueEdit,
+        m_fieldBindingSelector,
+        m_bindingEditor,
         m_elementXSpin,
         m_elementYSpin,
         m_elementWidthSpin,
@@ -913,6 +954,8 @@ void TemplateInspectorPanel::installPropertyEditorEventFilter(QObject* filterTar
 {
     for (auto* editor : QList<QWidget*>{
              m_elementValueEdit,
+             m_fieldBindingSelector,
+             m_bindingEditor,
              m_elementXSpin,
              m_elementYSpin,
              m_elementWidthSpin,
@@ -981,6 +1024,12 @@ void TemplateInspectorPanel::connectPropertySignals()
 #endif
 
     connect(m_elementValueEdit, &QPlainTextEdit::textChanged, this, emitElementTextEdited);
+    connect(m_fieldBindingSelector, &FieldBindingSelector::fieldKeyEdited, this, emitElementControlEdited);
+    connect(m_fieldBindingSelector, &FieldBindingSelector::fieldKeyTextEdited, this, emitElementTextEdited);
+    connect(m_fieldBindingSelector, &FieldBindingSelector::displayNameEdited, this, emitElementTextEdited);
+    connect(m_fieldBindingSelector, &FieldBindingSelector::displayNameEditingFinished, this, [this] { emit elementPropertiesEditingFinished(); });
+    connect(m_bindingEditor, &ElementBindingEditor::bindingsEdited, this, emitElementTextEdited);
+    connect(m_bindingEditor, &ElementBindingEditor::editingFinished, this, [this] { emit elementPropertiesEditingFinished(); });
     connect(m_elementXSpin, &QDoubleSpinBox::valueChanged, this, emitElementControlEdited);
     connect(m_elementYSpin, &QDoubleSpinBox::valueChanged, this, emitElementControlEdited);
     connect(m_elementWidthSpin, &QDoubleSpinBox::valueChanged, this, emitElementControlEdited);

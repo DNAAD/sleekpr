@@ -25,6 +25,7 @@ public:
     explicit ElementPropertiesCommand(DesignerElementPropertyModel model);
 
     TemplateDesignerCommandResult apply(sleekpr::core::TemplateElement& element) const;
+    TemplateDesignerCommandResult apply(sleekpr::core::TemplateDocument& document, const QString& elementId) const;
 
 private:
     DesignerElementPropertyModel m_model;

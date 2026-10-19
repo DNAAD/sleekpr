@@ -42,6 +42,7 @@ class SettingsWindow final : public QWidget
 public:
     using SettingsAppliedCallback = std::function<void(const sleekpr::core::PrintClientSettings&)>;
     using OpenTemplateDesignerCallback = std::function<void()>;
+    using OpenPrintWorkbenchCallback = std::function<void()>;
     using OpenPaperSpecManagerCallback = std::function<void()>;
     using OpenFieldPresetManagerCallback = std::function<void()>;
 
@@ -55,6 +56,7 @@ public:
     // 每次从托盘打开设置窗口时重新读取本地文件，确保界面展示最新配置。
     void reloadFromDisk();
     void setOpenTemplateDesignerCallback(OpenTemplateDesignerCallback callback);
+    void setOpenPrintWorkbenchCallback(OpenPrintWorkbenchCallback callback);
     void setOpenPaperSpecManagerCallback(OpenPaperSpecManagerCallback callback);
     void setOpenFieldPresetManagerCallback(OpenFieldPresetManagerCallback callback);
 
@@ -111,6 +113,7 @@ private:
     sleekpr::core::FileSettingsStore m_settingsStore;
     SettingsAppliedCallback m_onSettingsApplied;
     OpenTemplateDesignerCallback m_openTemplateDesigner;
+    OpenPrintWorkbenchCallback m_openPrintWorkbench;
     OpenPaperSpecManagerCallback m_openPaperSpecManager;
     OpenFieldPresetManagerCallback m_openFieldPresetManager;
     sleekpr::core::PrintClientSettings m_settings;

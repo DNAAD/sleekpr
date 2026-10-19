@@ -97,6 +97,24 @@ QWidget#designerInsertionTools, QWidget#designerSampleDataPanel {
     border: 0;
     border-radius: 0;
 }
+QWidget#workbenchHeader, QWidget#workbenchTemplatePanel, QWidget#workbenchDataPanel,
+QWidget#workbenchPreviewHeader, QWidget#printFieldEditorPanel {
+    background: @surface@;
+    border: 0;
+    border-radius: 0;
+}
+QWidget#printFieldsFormContent, QWidget#printValuesJsonPage, QWidget[printFieldContainer="true"] {
+    background: @surface@;
+}
+QWidget#workbenchHeader, QWidget#workbenchPreviewHeader { border-bottom: 1px solid @border@; }
+QWidget#workbenchTemplatePanel { border-right: 1px solid @border@; }
+QWidget#workbenchDataPanel { border-left: 1px solid @border@; }
+QLabel#workbenchTitle { font-size: 18px; font-weight: 600; }
+QLabel#workbenchPaperSummary, QLabel#workbenchJobSummary { color: @muted@; font-size: 12px; }
+QLabel#workbenchStatusLabel { background: @surface@; border-top: 1px solid @border@; }
+QLabel#workbenchStatusLabel[statusRole="danger"] { background: @dangerSoft@; color: @danger@; }
+QLabel#workbenchStatusLabel[statusRole="warning"] { background: @warningSoft@; color: @warning@; }
+QLabel#workbenchPreviewImage { background: @surface@; }
 QWidget#designerCanvasHeader, QWidget#designerCanvasFooter,
 QWidget#designerContentSection, QWidget#designerGeometrySection,
 QWidget#designerElementCommonSection, QWidget#designerLayoutSection,

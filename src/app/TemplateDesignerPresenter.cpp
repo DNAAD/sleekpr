@@ -1,7 +1,12 @@
 #include "sleekpr/app/TemplateDesignerPresenter.h"
+#include "sleekpr/app/TemplateFieldNames.h"
+#include "sleekpr/app/TemplateElementBindings.h"
 
 #include "sleekpr/core/settings/TemplateElement.h"
 #include "sleekpr/core/templates/TableElement.h"
+#include "sleekpr/core/templates/TemplateInputSchema.h"
+
+#include <QSet>
 
 #include <algorithm>
 
@@ -78,7 +83,8 @@ DesignerTableMergeRegionModel mergeRegionModel(const sleekpr::core::TableMergeRe
 
 DesignerElementPropertyModel TemplateDesignerPresenter::elementPropertyModel(
     const sleekpr::core::TemplateElement& element,
-    bool canEdit) const
+    bool canEdit,
+    const sleekpr::core::TemplateDocument* document) const
 {
     DesignerElementPropertyModel model;
     model.elementId = element.id;
@@ -134,6 +140,30 @@ DesignerElementPropertyModel TemplateDesignerPresenter::elementPropertyModel(
         break;
     }
 
+    const sleekpr::core::TemplateDocument emptyDocument;
+    const auto& namesDocument = document == nullptr ? emptyDocument : *document;
+    model.bindings = TemplateElementBindings::describe(element, namesDocument);
+    if (model.bindings.isEmpty() && element.type != sleekpr::core::TemplateElementType::BoundField) return model;
+    QSet<QString> keys;
+    const auto append = [&](QString key) {
+        key = key.trimmed();
+        if (key.isEmpty() || keys.contains(key)) return;
+        keys.insert(key);
+        model.fieldOptions.append({key, TemplateFieldNames::resolve(namesDocument, key)});
+    };
+    if (document != nullptr) {
+        for (const auto& field : sleekpr::core::TemplateInputSchema::fields(*document)) append(field.definition.key);
+    }
+    for (const auto& field : TemplateFieldNames::builtIns()) append(field.first);
+    if (document != nullptr) {
+        for (auto it = document->sampleData.constBegin(); it != document->sampleData.constEnd(); ++it) append(it.key());
+        for (auto it = document->fieldDisplayNames.constBegin(); it != document->fieldDisplayNames.constEnd(); ++it) append(it.key());
+    }
+    append(element.fieldKey);
+    for (const auto& binding : model.bindings) append(binding.key);
+    if (element.type == sleekpr::core::TemplateElementType::BoundField) {
+        model.fieldDisplayName = TemplateFieldNames::resolve(namesDocument, element.fieldKey);
+    }
     return model;
 }
 
@@ -228,6 +258,12 @@ TemplateDesignerCommandResult TemplateDesignerPresenter::applyElementProperties(
     const DesignerElementPropertyModel& model) const
 {
     return ElementPropertiesCommand(model).apply(element);
+}
+
+TemplateDesignerCommandResult TemplateDesignerPresenter::applyElementProperties(
+    sleekpr::core::TemplateDocument& document, const QString& elementId, const DesignerElementPropertyModel& model) const
+{
+    return ElementPropertiesCommand(model).apply(document, elementId);
 }
 
 TemplateDesignerCommandResult TemplateDesignerPresenter::applyTableProperties(

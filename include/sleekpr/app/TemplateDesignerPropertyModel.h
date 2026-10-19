@@ -8,6 +8,25 @@
 
 namespace sleekpr::app {
 
+struct DesignerFieldOption
+{
+    QString key;
+    QString displayName;
+    bool operator==(const DesignerFieldOption&) const = default;
+};
+
+enum class DesignerBindingSource { Value, ArrayDataPath, ArrayCellTemplate };
+
+struct DesignerFieldBinding
+{
+    DesignerBindingSource source = DesignerBindingSource::Value;
+    QString originalKey;
+    QString key;
+    QString displayName;
+    bool displayNameEdited = false;
+    bool operator==(const DesignerFieldBinding&) const = default;
+};
+
 struct DesignerElementPropertyModel
 {
     QString elementId;
@@ -38,6 +57,13 @@ struct DesignerElementPropertyModel
     double arrayGridRowHeightMm = 0.0;
     QString arrayGridCellTemplate = QStringLiteral("${text}:${value}");
     bool arrayGridDrawBorders = true;
+    // 选项只用于界面展示，value 始终是实际绑定 key，不把中文名称写回模板。
+    QList<DesignerFieldOption> fieldOptions;
+    QString fieldDisplayName;
+    // 只在用户确实改名时保存覆盖，防止修改坐标顺便固化内置名称或创建字段声明。
+    bool fieldDisplayNameEdited = false;
+    QList<DesignerFieldBinding> bindings;
+    bool bindingKeyEditing = false;
 };
 
 struct DesignerTableColumnModel

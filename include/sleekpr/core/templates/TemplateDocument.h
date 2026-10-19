@@ -6,6 +6,7 @@
 
 #include <QList>
 #include <QJsonObject>
+#include <QMap>
 #include <QString>
 
 namespace sleekpr::core {
@@ -71,6 +72,9 @@ struct TemplateDocument
 
     QList<TemplateVersion> versions;
     QList<DeviceProfile> deviceProfiles;
+
+    // 字段名称仅覆盖界面显示，不声明字段，也不改变必填、类型、默认值或打印数据。
+    QMap<QString, QString> fieldDisplayNames;
 };
 
 } // 命名空间 sleekpr::core
