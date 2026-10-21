@@ -38,6 +38,9 @@ public:
     void setOpenDesignerCallback(std::function<void()> callback);
     void setOpenSettingsCallback(std::function<void()> callback);
     void setOpenFieldPresetManagerCallback(std::function<void()> callback);
+    bool hasActivePrintSubmission() const;
+    void setExitPaused(bool);
+    void setSubmissionStateChangedCallback(std::function<void()> callback);
     bool saveCurrentValuesAsPreset(const QString& name, QString* errorMessage = nullptr);
 
 protected:
@@ -105,6 +108,9 @@ private:
     std::function<void()> m_openFieldPresetManager;
     bool m_loading = false;
     bool m_printing = false;
+    bool m_exitPaused = false, m_enabledBeforeExit = true;
+    bool m_resumeJobCheckAfterExit = false;
+    std::function<void()> m_submissionStateChanged;
     bool m_nameRefreshQueued = false;
     bool m_externalRefreshPending = false;
     bool m_prepareOnShow = false;

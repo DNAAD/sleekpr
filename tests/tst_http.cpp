@@ -212,6 +212,9 @@ private slots:
     void localServerRejectsOversizedHeaders();
     void localServerRejectsOversizedBodies();
     void localServerRefreshesLimitsAtRuntime();
+    void exitingAllowsOnlyHealth();
+    void exitGateRejectsBodyCompletedAfterExitStarted();
+    void cancelExitReopensAdmissionWithoutRebind();
 };
 
 void HttpTests::optionsUsesTrustedCorsPolicy()
@@ -1556,6 +1559,54 @@ void HttpTests::previewResponseHonorsExactByteBoundary()
     const auto rejected = PreviewRoutes(path, exact).route(request, settings, {});
     QVERIFY(rejected.has_value());
     QCOMPARE(rejected->statusCode, 413);
+}
+
+void HttpTests::exitingAllowsOnlyHealth()
+{
+    QTemporaryDir dir; const auto path = dir.filePath("settings.json");
+    PrintClientSettings settings; settings.defaultPrinter = QStringLiteral("old"); settings.allowedOrigins = {QStringLiteral("https://manager.example.com")};
+    QVERIFY(FileSettingsStore(path).save(settings)); RecordingLabelPrintEngine engine;
+    LocalHttpRouter router(path, &engine); router.setExiting(true);
+    const QHash<QString, QString> headers{{QStringLiteral("origin"), QStringLiteral("https://manager.example.com")}};
+    QCOMPARE(router.route({"GET", "/health", headers, {}}).statusCode, 200);
+    for (const auto& method : {QStringLiteral("GET"), QStringLiteral("POST"), QStringLiteral("OPTIONS")}) {
+        for (const auto& route : {QStringLiteral("/settings"), QStringLiteral("/printers"), QStringLiteral("/preview/template"),
+                 QStringLiteral("/print/template"), QStringLiteral("/print/tag"), QStringLiteral("/templates"), QStringLiteral("/")}) {
+            const auto response = router.route({method, route, headers, "{}"});
+            QCOMPARE(response.statusCode, 503);
+            const auto json = QJsonDocument::fromJson(response.body).object();
+            QVERIFY(!json.value("success").toBool()); QCOMPARE(json.value("code").toString(), QStringLiteral("CLIENT_EXITING"));
+            QVERIFY(json.contains("data")); QCOMPARE(response.headers.value("Access-Control-Allow-Origin"), QByteArray("https://manager.example.com"));
+        }
+    }
+    QCOMPARE(engine.printCount, 0); QCOMPARE(FileSettingsStore(path).load().defaultPrinter, QStringLiteral("old"));
+    QCOMPARE(router.route({"POST", "/settings", {{"origin", "https://evil.example.com"}}, "{}"}).statusCode, 403);
+    LocalHttpLimits limits; limits.maxContentLengthBytes = 4; router.setLimits(limits);
+    QCOMPARE(router.route({"POST", "/settings", headers, "12345"}).statusCode, 413);
+}
+
+void HttpTests::exitGateRejectsBodyCompletedAfterExitStarted()
+{
+    QTemporaryDir dir; const auto path = dir.filePath("settings.json"); PrintClientSettings settings; settings.defaultPrinter = QStringLiteral("old");
+    QVERIFY(FileSettingsStore(path).save(settings)); QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly)); const auto before = file.readAll(); file.close();
+    RecordingLabelPrintEngine engine; LocalHttpServer server(path, &engine); QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QTcpSocket socket; socket.connectToHost(QHostAddress::LocalHost, server.serverPort()); QVERIFY(socket.waitForConnected());
+    const QByteArray body = R"({"defaultPrinter":"new"})";
+    socket.write("POST /settings HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: " + QByteArray::number(body.size()) + "\r\n\r\n" + body.left(4));
+    socket.flush(); server.setExiting(true); socket.write(body.mid(4)); socket.flush();
+    QTRY_VERIFY(socket.state() == QAbstractSocket::UnconnectedState);
+    const auto response = socket.readAll(); QVERIFY(response.startsWith("HTTP/1.1 503 Service Unavailable")); QVERIFY(response.contains("CLIENT_EXITING"));
+    QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), before); QCOMPARE(engine.printCount, 0);
+}
+
+void HttpTests::cancelExitReopensAdmissionWithoutRebind()
+{
+    QTemporaryDir dir; LocalHttpServer server(dir.filePath("settings.json")); QVERIFY(server.listen(QHostAddress::LocalHost, 0)); const auto port = server.serverPort();
+    server.setExiting(true); server.setExiting(false); QCOMPARE(server.serverPort(), port);
+    QTcpSocket socket; socket.connectToHost(QHostAddress::LocalHost, port); QVERIFY(socket.waitForConnected());
+    socket.write("GET /settings HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"); socket.flush();
+    QTRY_VERIFY(socket.state() == QAbstractSocket::UnconnectedState);
+    QVERIFY(socket.readAll().startsWith("HTTP/1.1 200 OK"));
 }
 
 QTEST_MAIN(HttpTests)

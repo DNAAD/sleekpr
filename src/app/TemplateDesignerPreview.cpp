@@ -45,7 +45,7 @@ void TemplateDesignerWindow::refreshPreview(bool reusePlan)
     m_previewQueue->invalidate();
     setProperty("previewPreparing", false);
     setProperty("previewReady", false);
-    if (!isVisible()) return;
+    if (!isVisible() || m_exitPaused) return;
 
     infrastructure::TemplatePreviewSnapshot snapshot;
     bool dataOk = false;

@@ -44,6 +44,8 @@ QByteArray statusReason(int statusCode)
         return "Payload Too Large";
     case 500:
         return "Internal Server Error";
+    case 503:
+        return "Service Unavailable";
     default:
         return "OK";
     }
@@ -155,6 +157,8 @@ QString LocalHttpServer::errorString() const
 {
     return m_server.errorString();
 }
+
+void LocalHttpServer::setExiting(bool exiting) { m_router.setExiting(exiting); }
 
 quint16 LocalHttpServer::serverPort() const
 {

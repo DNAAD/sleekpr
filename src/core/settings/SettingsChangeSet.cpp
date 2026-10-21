@@ -1,5 +1,6 @@
 #include "sleekpr/core/settings/SettingsChangeSet.h"
 #include "sleekpr/core/settings/PrintClientSettingsJson.h"
+#include "SettingsJsonPath.h"
 
 #include <QSet>
 #include <QHash>
@@ -7,6 +8,8 @@
 
 namespace sleekpr::core {
 namespace {
+using settings_detail::valueAt;
+using settings_detail::setValueAt;
 
 QString arrayIdentity(const QJsonValue& value)
 {
@@ -88,29 +91,6 @@ QJsonValue mergeKnownChanges(const QJsonValue& raw, const QJsonValue& before, co
         return result;
     }
     return after;
-}
-
-QJsonValue valueAt(const QJsonObject& object, const QStringList& path)
-{
-    QJsonValue value(object);
-    for (const auto& part : path) {
-        if (!value.isObject()) return QJsonValue(QJsonValue::Undefined);
-        value = value.toObject().value(part);
-    }
-    return value;
-}
-
-void setValueAt(QJsonObject& object, const QStringList& path, qsizetype index, const QJsonValue& value)
-{
-    const auto& key = path[index];
-    if (index == path.size() - 1) {
-        if (value.isUndefined()) object.remove(key);
-        else object.insert(key, value);
-        return;
-    }
-    auto child = object.value(key).toObject();
-    setValueAt(child, path, index + 1, value);
-    object.insert(key, child);
 }
 
 void appendChanges(SettingsChangeSet& result, const QJsonValue& base, const QJsonValue& edited,

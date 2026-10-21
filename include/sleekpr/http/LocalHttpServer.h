@@ -23,6 +23,7 @@ public:
     // 启动管理端调用的兼容 HTTP 接口；标签预览已迁移到 Qt 原生窗口，不再通过浏览器路由展示。
     bool listen(const QHostAddress& address, quint16 port);
     void setLimits(LocalHttpLimits limits);
+    void setExiting(bool exiting);
     QString errorString() const;
     quint16 serverPort() const;
 

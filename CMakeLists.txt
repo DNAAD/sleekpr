@@ -96,6 +96,9 @@ add_library(sleekpr_core
     src/core/settings/PrintClientSettingsJson.cpp
     src/core/settings/SettingsEditModel.cpp
     src/core/settings/SettingsChangeSet.cpp
+    src/core/settings/SettingsSaveBaseline.cpp
+    src/infrastructure/settings/SettingsSaveSession.cpp
+    src/infrastructure/settings/SettingsPersistenceExecutor.cpp
     src/core/settings/TemplateElementCatalog.cpp
     src/core/templates/DeviceProfileResolver.cpp
     src/core/templates/DefaultPaperSpecs.cpp
@@ -196,7 +199,14 @@ add_executable(sleekpr
     src/app/SettingsWindowPreview.cpp
     src/app/LatestPreviewQueue.cpp
     include/sleekpr/app/LatestPreviewQueue.h
-    src/app/SettingsEditSession.cpp
+    src/app/SettingsWindowPersistence.cpp
+    src/app/SettingsPersistenceService.cpp
+    include/sleekpr/app/SettingsPersistenceService.h
+    src/app/ApplicationExitCoordinator.cpp
+    include/sleekpr/app/ApplicationExitCoordinator.h
+    src/app/ApplicationExitDialog.cpp
+    src/app/ApplicationExitSmokeTest.cpp
+    include/sleekpr/app/ApplicationExitDialog.h
     src/app/SettingsPersistenceNotice.cpp
     src/app/TemplateDesignerPersistence.cpp
     src/app/TemplateDesignerPreview.cpp

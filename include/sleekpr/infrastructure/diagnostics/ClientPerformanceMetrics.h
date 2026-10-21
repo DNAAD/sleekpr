@@ -7,7 +7,7 @@
 
 namespace sleekpr::infrastructure {
 
-enum class PerformanceStage { Planning, Rasterization, Saving, Publication, ExternalRefresh, DeferredRefresh, DesignerRefresh, Count };
+enum class PerformanceStage { Planning, Rasterization, Saving, Publication, ExternalRefresh, DeferredRefresh, DesignerRefresh, SaveEnqueue, Count };
 
 class ClientPerformanceMetrics
 {

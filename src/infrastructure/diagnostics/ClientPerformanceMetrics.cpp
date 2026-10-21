@@ -22,7 +22,7 @@ QJsonObject ClientPerformanceMetrics::snapshot() const
 {
     decltype(m_stages) stages;
     { QMutexLocker lock(&m_mutex); stages = m_stages; }
-    constexpr std::array names{"planning", "rasterization", "saving", "publication", "externalRefresh", "deferredRefresh", "designerRefresh"};
+    constexpr std::array names{"planning", "rasterization", "saving", "publication", "externalRefresh", "deferredRefresh", "designerRefresh", "saveEnqueue"};
     QJsonObject result;
     for (int i = 0; i < static_cast<int>(stages.size()); ++i) {
         auto& samples = stages[i];

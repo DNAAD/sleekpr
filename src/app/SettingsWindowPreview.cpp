@@ -14,6 +14,10 @@ namespace sleekpr::app {
 
 SettingsWindow::~SettingsWindow()
 {
+    if (m_persistenceService) {
+        QObject::disconnect(m_persistenceService, nullptr, this, nullptr);
+        m_persistenceService->detachSession(m_persistenceSession);
+    }
     if (m_previewQueue) m_previewQueue->invalidate();
     // 先解绑子控件失焦及任务完成信号，再让文档成员和控件按各自顺序析构。
     for (auto* child : findChildren<QObject*>()) QObject::disconnect(child, nullptr, this, nullptr);
@@ -55,7 +59,7 @@ void SettingsWindow::renderPreview(const core::PrintClientSettings& settings)
     m_previewNeedsRender = true;
     if (m_previewQueue) m_previewQueue->invalidate();
     setProperty("previewReady", false);
-    if (!m_previewQueue || !isVisible()) return;
+    if (!m_previewQueue || !isVisible() || m_exitPaused) return;
     infrastructure::TemplatePreviewSnapshot snapshot;
     snapshot.planningBudget.maxPages = settings.localHttpLimits.maxPreviewPages.value_or(100);
     const auto key = currentTemplateOverrideKey();

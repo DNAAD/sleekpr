@@ -59,6 +59,32 @@ target_link_libraries(sleekpr_settings_change_set_tests PRIVATE sleekpr_core Qt6
 add_test(NAME sleekpr_settings_change_set_tests COMMAND sleekpr_settings_change_set_tests)
 configure_qt_test_runtime(sleekpr_settings_change_set_tests)
 
+add_executable(sleekpr_settings_save_baseline_tests tst_settings_save_baseline.cpp)
+target_link_libraries(sleekpr_settings_save_baseline_tests PRIVATE sleekpr_core Qt6::Test)
+add_test(NAME sleekpr_settings_save_baseline_tests COMMAND sleekpr_settings_save_baseline_tests)
+configure_qt_test_runtime(sleekpr_settings_save_baseline_tests)
+
+add_executable(sleekpr_settings_save_session_tests tst_settings_save_session.cpp)
+target_link_libraries(sleekpr_settings_save_session_tests PRIVATE sleekpr_core Qt6::Test)
+add_test(NAME sleekpr_settings_save_session_tests COMMAND sleekpr_settings_save_session_tests)
+configure_qt_test_runtime(sleekpr_settings_save_session_tests)
+
+add_executable(sleekpr_settings_persistence_tests tst_settings_persistence.cpp
+    ../src/app/SettingsPersistenceService.cpp ../include/sleekpr/app/SettingsPersistenceService.h)
+target_link_libraries(sleekpr_settings_persistence_tests PRIVATE sleekpr_core Qt6::Test)
+add_test(NAME sleekpr_settings_persistence_tests COMMAND sleekpr_settings_persistence_tests)
+configure_qt_test_runtime(sleekpr_settings_persistence_tests)
+
+add_executable(sleekpr_application_exit_tests tst_application_exit.cpp
+    ../src/app/AppTheme.cpp ../resources/sleekpr-ui.qrc
+    ../src/app/SettingsPersistenceService.cpp ../include/sleekpr/app/SettingsPersistenceService.h
+    ../src/app/ApplicationExitCoordinator.cpp ../include/sleekpr/app/ApplicationExitCoordinator.h
+    ../src/app/ApplicationExitDialog.cpp ../include/sleekpr/app/ApplicationExitDialog.h)
+target_link_libraries(sleekpr_application_exit_tests PRIVATE sleekpr_core Qt6::Widgets Qt6::Test)
+add_test(NAME sleekpr_application_exit_tests COMMAND sleekpr_application_exit_tests)
+configure_qt_test_runtime(sleekpr_application_exit_tests)
+set_target_properties(sleekpr_application_exit_tests PROPERTIES AUTORCC ON)
+
 add_executable(sleekpr_client_performance_tests tst_client_performance_metrics.cpp)
 target_link_libraries(sleekpr_client_performance_tests PRIVATE sleekpr_core Qt6::Test)
 add_test(NAME sleekpr_client_performance_tests COMMAND sleekpr_client_performance_tests)
@@ -84,10 +110,6 @@ target_link_libraries(sleekpr_settings_repository_tests PRIVATE sleekpr_core Qt6
 add_test(NAME sleekpr_settings_repository_tests COMMAND sleekpr_settings_repository_tests)
 configure_qt_test_runtime(sleekpr_settings_repository_tests)
 
-add_executable(sleekpr_settings_edit_session_tests tst_settings_edit_session.cpp ../src/app/SettingsEditSession.cpp)
-target_link_libraries(sleekpr_settings_edit_session_tests PRIVATE sleekpr_core Qt6::Test)
-add_test(NAME sleekpr_settings_edit_session_tests COMMAND sleekpr_settings_edit_session_tests)
-configure_qt_test_runtime(sleekpr_settings_edit_session_tests)
 
 add_executable(sleekpr_preview_queue_tests tst_latest_preview_queue.cpp
     ../src/app/LatestPreviewQueue.cpp ../include/sleekpr/app/LatestPreviewQueue.h)
@@ -128,7 +150,9 @@ add_executable(sleekpr_app_tests
     ../src/app/SettingsWindowPreview.cpp
     ../src/app/LatestPreviewQueue.cpp
     ../include/sleekpr/app/LatestPreviewQueue.h
-    ../src/app/SettingsEditSession.cpp
+    ../src/app/SettingsWindowPersistence.cpp
+    ../src/app/SettingsPersistenceService.cpp
+    ../include/sleekpr/app/SettingsPersistenceService.h
     ../src/app/SettingsPersistenceNotice.cpp
     ../src/app/TemplateDesignerPersistence.cpp
     ../src/app/TemplateDesignerPreview.cpp
@@ -286,7 +310,12 @@ configure_qt_test_runtime(sleekpr_http_tests)
 
 # 直接测试发布程序使用的对象文件，避免独立编译的 UI 测试掩盖增量构建中的类布局混用。
 add_test(NAME sleekpr_designer_launch_test COMMAND sleekpr --smoke-test-designer)
+add_test(NAME sleekpr_safe_exit_launch_test COMMAND sleekpr --smoke-test-safe-exit)
+set_tests_properties(sleekpr_safe_exit_launch_test PROPERTIES TIMEOUT 20)
+configure_qt_test_runtime(sleekpr_safe_exit_launch_test)
 set_tests_properties(sleekpr_designer_launch_test PROPERTIES TIMEOUT 20)
+set_tests_properties(sleekpr_designer_launch_test sleekpr_safe_exit_launch_test PROPERTIES
+    ENVIRONMENT "QT_FORCE_STDERR_LOGGING=1;QT_LOGGING_TO_CONSOLE=1")
 configure_qt_test_runtime(sleekpr_designer_launch_test)
 
 if(MSVC AND CMAKE_GENERATOR STREQUAL "Ninja")

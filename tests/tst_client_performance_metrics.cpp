@@ -13,6 +13,7 @@ private slots:
     void retainsBoundedSamples();
     void concurrentRecordingKeepsCounts();
     void scopeRecordsOnlyKnownStagesAndTiming();
+    void savingAndEnqueueAreMeasuredSeparately();
 };
 
 void ClientPerformanceMetricsTests::recordsDeterministicPercentiles()
@@ -59,6 +60,17 @@ void ClientPerformanceMetricsTests::scopeRecordsOnlyKnownStagesAndTiming()
     QCOMPARE(result.value(QStringLiteral("publication")).toObject().value(QStringLiteral("count")).toInteger(), 1);
     QCOMPARE(result.value(QStringLiteral("publication")).toObject().keys(),
         QStringList({QStringLiteral("count"), QStringLiteral("p50Ms"), QStringLiteral("p95Ms"), QStringLiteral("retained")}));
+}
+
+void ClientPerformanceMetricsTests::savingAndEnqueueAreMeasuredSeparately()
+{
+    ClientPerformanceMetrics metrics;
+    for (int i = 0; i < 600; ++i) metrics.record(PerformanceStage::SaveEnqueue, 1000000);
+    metrics.record(PerformanceStage::Saving, 9000000);
+    const auto result = metrics.snapshot();
+    QCOMPARE(result.value(QStringLiteral("saveEnqueue")).toObject().value(QStringLiteral("retained")).toInt(), 512);
+    QCOMPARE(result.value(QStringLiteral("saveEnqueue")).toObject().value(QStringLiteral("p95Ms")).toDouble(), 1.0);
+    QCOMPARE(result.value(QStringLiteral("saving")).toObject().value(QStringLiteral("p95Ms")).toDouble(), 9.0);
 }
 
 QTEST_GUILESS_MAIN(ClientPerformanceMetricsTests)

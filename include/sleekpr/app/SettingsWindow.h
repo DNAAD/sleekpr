@@ -1,6 +1,9 @@
 #pragma once
 
-#include "sleekpr/app/SettingsEditSession.h"
+#include "sleekpr/app/SettingsPersistenceService.h"
+#include "sleekpr/app/ApplicationExitParticipant.h"
+#include <QPointer>
+#include <QMap>
 #include "sleekpr/core/settings/PrintClientSettings.h"
 #include "sleekpr/core/settings/TemplateElementCatalog.h"
 #include "sleekpr/core/labels/LabelTemplateKey.h"
@@ -50,9 +53,10 @@ public:
     using OpenPaperSpecManagerCallback = std::function<void()>;
     using OpenFieldPresetManagerCallback = std::function<void()>;
 
-    explicit SettingsWindow(QString settingsPath, SettingsAppliedCallback onSettingsApplied, QWidget* parent = nullptr);
+    explicit SettingsWindow(QString settingsPath, SettingsPersistenceService& persistence, SettingsAppliedCallback onSettingsApplied, QWidget* parent = nullptr);
     SettingsWindow(
         QString settingsPath,
+        SettingsPersistenceService& persistence,
         SettingsAppliedCallback onSettingsApplied,
         QString templateLibraryDirectoryPath,
         QWidget* parent = nullptr);
@@ -61,6 +65,11 @@ public:
     // 每次从托盘打开设置窗口时重新读取本地文件，确保界面展示最新配置。
     void reloadFromDisk();
     void requestExternalRefresh(bool includeDevices = false);
+    bool hasUnsavedPersistenceChanges() const;
+    void flushPersistenceEdits();
+    void saveForExit();
+    void setExitPaused(bool);
+    ExitDraftState exitDraftState() const;
     void setOpenTemplateDesignerCallback(OpenTemplateDesignerCallback callback);
     void setOpenPrintWorkbenchCallback(OpenPrintWorkbenchCallback callback);
     void setOpenPaperSpecManagerCallback(OpenPaperSpecManagerCallback callback);
@@ -90,6 +99,9 @@ private:
     core::PrintClientSettings readGeneralSettingsForm() const;
     void confirmPersistenceReload();
     void reloadSettings(bool refreshDevices);
+    void applyPersistenceSnapshot(const core::SettingsReadResult&, bool refreshDevices);
+    void setupPersistence();
+    void refreshPersistenceState();
     bool hasLocalSettingsDraft() const;
     sleekpr::core::LabelTemplateKey currentLabelTemplateKey() const;
     QString currentTemplateOverrideKey() const;
@@ -123,7 +135,19 @@ private:
     bool formMatchesDefault(const sleekpr::core::TemplateElementOverride& formValue, const sleekpr::core::TemplateElementDefinition& element) const;
 
     QString m_settingsPath;
-    SettingsEditSession m_editSession;
+    QPointer<SettingsPersistenceService> m_persistenceService;
+    SettingsSessionId m_persistenceSession = 0;
+    quint64 m_persistenceOutcomeSerial = 0;
+    quint64 m_runtimeApplySequence = 0;
+    quint64 m_modelEditRevision = 0, m_requestedModelRevision = 0;
+    bool m_persistenceInitialized = false, m_exitPaused = false, m_enabledBeforeExit = true;
+    bool m_persistenceLoading = false, m_persistenceWasEnabled = true;
+    bool m_pendingDeviceRefresh = true;
+    core::PrintClientSettings m_expectedSettings;
+    std::optional<core::PrintClientSettings> m_lastRequestedForm;
+    struct SaveContext { core::PrintClientSettings form; quint64 runtimeSequence; quint64 modelRevision; };
+    QMap<quint64, SaveContext> m_saveContexts;
+    QLabel* m_persistenceStateLabel = nullptr;
     LatestPreviewQueue* m_previewQueue = nullptr;
     bool m_previewNeedsRender = true;
     core::PrintClientSettings m_formBaseline;

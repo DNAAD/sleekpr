@@ -7,6 +7,9 @@
 #include "sleekpr/core/settings/PrintClientSettings.h"
 #include "sleekpr/core/settings/SettingsChangeSet.h"
 #include "sleekpr/core/settings/SettingsPersistenceResult.h"
+#include "sleekpr/app/SettingsPersistenceService.h"
+#include "sleekpr/app/ApplicationExitParticipant.h"
+#include <QPointer>
 #include "sleekpr/core/native/NativeDrawCommand.h"
 #include "sleekpr/core/native/NativePrintDrawingPlan.h"
 #include "sleekpr/core/templates/PaperSpec.h"
@@ -63,13 +66,11 @@ class TemplateDesignerWindow final : public QWidget
 {
 public:
     using SettingsChangedCallback = std::function<void(const sleekpr::core::PrintClientSettings&)>;
-    using SettingsSaveHandler = std::function<core::SettingsWriteResult(const core::SettingsChangeSet&)>;
-    using SettingsReloadHandler = std::function<core::SettingsReadResult()>;
-    using SettingsRestoreHandler = std::function<core::SettingsWriteResult(const QByteArray&)>;
-    void setSettingsSaveHandler(SettingsSaveHandler handler);
-    void setSettingsReloadHandler(SettingsReloadHandler handler);
-    void setPersistenceSnapshot(const core::SettingsReadResult& snapshot);
-    void setSettingsRestoreHandler(SettingsRestoreHandler handler);
+    void attachPersistence(SettingsPersistenceService&, SettingsSessionId);
+    void flushPersistenceEdits();
+    bool hasInvalidPersistenceDraft() const;
+    void setExitPaused(bool);
+    ExitDraftState exitDraftState() const;
     bool hasUnsavedPersistenceChanges() const;
     using OpenPaperSpecManagerCallback = std::function<void()>;
     using OpenFieldPresetManagerCallback = std::function<void()>;
@@ -110,6 +111,7 @@ private:
 
     void buildUi();
     void setupPersistenceNotice();
+    void refreshPersistenceState();
     bool persistDraft();
     void reloadPersistedSettings();
     void applyPersistenceReload(const core::SettingsReadResult& snapshot);
@@ -250,11 +252,14 @@ private:
 
     sleekpr::core::PrintClientSettings m_settings;
     SettingsChangedCallback m_onSettingsChanged;
-    SettingsSaveHandler m_settingsSaveHandler;
-    SettingsReloadHandler m_settingsReloadHandler;
-    SettingsRestoreHandler m_settingsRestoreHandler;
-    core::SettingsReadResult m_persistenceBaseline;
-    std::optional<core::SettingsWriteResult> m_persistenceConflict;
+    QPointer<SettingsPersistenceService> m_persistenceService;
+    SettingsSessionId m_persistenceSession = 0;
+    quint64 m_persistenceOutcomeSerial = 0;
+    bool m_persistenceInitialized = false;
+    bool m_persistenceLoading = false, m_persistenceWasEnabled = true;
+    bool m_exitPaused = false;
+    bool m_enabledBeforeExit = true;
+    QLabel* m_persistenceStateLabel = nullptr;
     SettingsPersistenceNotice* m_persistenceNotice = nullptr;
     bool m_persistenceDirty = false;
     LatestPreviewQueue* m_previewQueue = nullptr;

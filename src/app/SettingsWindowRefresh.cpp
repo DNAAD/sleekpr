@@ -8,10 +8,16 @@ namespace sleekpr::app {
 
 bool SettingsWindow::hasLocalSettingsDraft() const
 {
-    if (core::PrintClientSettingsJson::toJson(readGeneralSettingsForm())
-        != core::PrintClientSettingsJson::toJson(m_formBaseline)) return true;
-    return !core::SettingsChangeSet::between(m_editSession.baseline().settings, m_settings,
-        core::SettingsEditScope::AllChangedFields).changes.isEmpty();
+    const auto form = readGeneralSettingsForm();
+    const auto& baseline = m_lastRequestedForm ? *m_lastRequestedForm : m_formBaseline;
+    // 普通表单只比较少量标量，不在 GUI 的通知链中序列化整份模板配置。
+    const auto& a = form.localHttpLimits;
+    const auto& b = baseline.localHttpLimits;
+    return form.defaultPrinter != baseline.defaultPrinter || form.allowedOrigins != baseline.allowedOrigins
+        || form.labelOffset.x != baseline.labelOffset.x || form.labelOffset.y != baseline.labelOffset.y
+        || a.maxHeaderBytes != b.maxHeaderBytes || a.maxContentLengthBytes != b.maxContentLengthBytes
+        || a.maxPreviewBatchItems != b.maxPreviewBatchItems || a.maxPreviewPages != b.maxPreviewPages
+        || a.maxPreviewResponseBytes != b.maxPreviewResponseBytes || m_modelEditRevision != m_requestedModelRevision;
 }
 
 void SettingsWindow::requestExternalRefresh(bool includeDevices)
@@ -22,7 +28,7 @@ void SettingsWindow::requestExternalRefresh(bool includeDevices)
         infrastructure::ClientPerformanceMetrics::applicationMetrics().record(infrastructure::PerformanceStage::DeferredRefresh, 0);
         return;
     }
-    if (hasLocalSettingsDraft()) {
+    if (hasUnsavedPersistenceChanges() || m_exitPaused) {
         m_statusLabel->setText(QString::fromUtf8("检测到外部配置更新，当前草稿已保留；保存时将检查冲突"));
         return;
     }

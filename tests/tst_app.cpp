@@ -49,6 +49,7 @@
 #include "sleekpr/app/TemplateDesignerWindow.h"
 #include "sleekpr/app/WindowActivation.h"
 #include "sleekpr/app/SettingsWindow.h"
+#include "sleekpr/app/SettingsPersistenceService.h"
 #include "sleekpr/core/native/NativeDrawCommand.h"
 #include "sleekpr/core/native/NativePrintDrawingPlan.h"
 #include "sleekpr/core/settings/FileSettingsStore.h"
@@ -252,9 +253,11 @@ void AppTests::openingAndSavingSettingsDoesNotCreateImplicitElementOverride()
     QVERIFY(store.save(PrintClientSettings{}));
 
     int appliedCount = 0;
-    SettingsWindow window(settingsPath, [&appliedCount](const PrintClientSettings&) {
+    SettingsPersistenceService settingsPersistence_window(settingsPath);
+    SettingsWindow window(settingsPath, settingsPersistence_window, [&appliedCount](const PrintClientSettings&) {
         ++appliedCount;
     });
+    QTRY_VERIFY(window.property("persistenceReady").toBool());
 
     QPushButton* saveButton = nullptr;
     for (auto* button : window.findChildren<QPushButton*>()) {
@@ -266,6 +269,7 @@ void AppTests::openingAndSavingSettingsDoesNotCreateImplicitElementOverride()
     QVERIFY(saveButton != nullptr);
 
     saveButton->click();
+    QTRY_VERIFY(settingsPersistence_window.isIdle());
 
     const auto actual = store.load();
     QVERIFY(!actual.templateOverrides.value("default").contains("identifier"));
@@ -585,7 +589,9 @@ void AppTests::settingsWindowShowsPreviewOnlyWithoutElementEditor()
     FileSettingsStore store(settingsPath);
     QVERIFY(store.save(PrintClientSettings{}));
 
-    SettingsWindow window(settingsPath, nullptr);
+    SettingsPersistenceService settingsPersistence_window(settingsPath);
+    SettingsWindow window(settingsPath, settingsPersistence_window, nullptr);
+    QTRY_VERIFY(window.property("persistenceReady").toBool());
     TemplatePreviewLabel* previewLabel = nullptr;
     for (auto* label : window.findChildren<QLabel*>()) {
         previewLabel = dynamic_cast<TemplatePreviewLabel*>(label);
@@ -637,7 +643,9 @@ void AppTests::settingsWindowLoadsTemplateLibraryDocuments()
     TemplateLibraryStore templateStore(templateDirectoryPath);
     QVERIFY(templateStore.saveTemplate(document));
 
-    SettingsWindow window(settingsPath, nullptr, templateDirectoryPath);
+    SettingsPersistenceService settingsPersistence_window(settingsPath);
+    SettingsWindow window(settingsPath, settingsPersistence_window, nullptr, templateDirectoryPath);
+    QTRY_VERIFY(window.property("persistenceReady").toBool());
     auto* templateCombo = window.findChild<QComboBox*>(QStringLiteral("settingsTemplateCombo"));
     TemplatePreviewLabel* previewLabel = nullptr;
     for (auto* label : window.findChildren<QLabel*>()) {
@@ -672,7 +680,9 @@ void AppTests::settingsWindowEditsAllowedOrigins()
     FileSettingsStore store(settingsPath);
     QVERIFY(store.save(settings));
 
-    SettingsWindow window(settingsPath, nullptr);
+    SettingsPersistenceService settingsPersistence_window(settingsPath);
+    SettingsWindow window(settingsPath, settingsPersistence_window, nullptr);
+    QTRY_VERIFY(window.property("persistenceReady").toBool());
     auto* originsEdit = window.findChild<QPlainTextEdit*>(QStringLiteral("allowedOriginsEdit"));
     auto* saveButton = window.findChild<QPushButton*>(QStringLiteral("saveSettingsButton"));
     QVERIFY(originsEdit != nullptr);
@@ -685,6 +695,7 @@ void AppTests::settingsWindowEditsAllowedOrigins()
         " https://branch.example.com \n"
         "https://manager.example.com"));
     saveButton->click();
+    QTRY_VERIFY(settingsPersistence_window.isIdle());
 
     const auto actual = store.load();
     QCOMPARE(actual.allowedOrigins, QStringList({
@@ -709,10 +720,12 @@ void AppTests::settingsWindowSavesLocalHttpLimitSettings()
 
     PrintClientSettings appliedSettings;
     int appliedCount = 0;
-    SettingsWindow window(settingsPath, [&appliedSettings, &appliedCount](const PrintClientSettings& nextSettings) {
+    SettingsPersistenceService settingsPersistence_window(settingsPath);
+    SettingsWindow window(settingsPath, settingsPersistence_window, [&appliedSettings, &appliedCount](const PrintClientSettings& nextSettings) {
         appliedSettings = nextSettings;
         ++appliedCount;
     });
+    QTRY_VERIFY(window.property("persistenceReady").toBool());
 
     auto* headerSpin = window.findChild<QSpinBox*>(QStringLiteral("settingsMaxHeaderKbSpin"));
     auto* bodySpin = window.findChild<QSpinBox*>(QStringLiteral("settingsMaxBodyMbSpin"));
@@ -739,6 +752,7 @@ void AppTests::settingsWindowSavesLocalHttpLimitSettings()
     pagesSpin->setValue(120);
     responseSpin->setValue(6);
     saveButton->click();
+    QTRY_VERIFY(settingsPersistence_window.isIdle());
 
     QCOMPARE(appliedCount, 1);
     QCOMPARE(appliedSettings.localHttpLimits.maxHeaderBytes.value(), qsizetype(24 * 1024));
@@ -763,7 +777,9 @@ void AppTests::settingsWindowUsesCompactLocalHttpLimitGrid()
     const auto settingsPath = dir.filePath("settings.json");
     QVERIFY(FileSettingsStore(settingsPath).save(PrintClientSettings{}));
 
-    SettingsWindow window(settingsPath, nullptr);
+    SettingsPersistenceService settingsPersistence_window(settingsPath);
+    SettingsWindow window(settingsPath, settingsPersistence_window, nullptr);
+    QTRY_VERIFY(window.property("persistenceReady").toBool());
 
     auto* limitsGridPanel = window.findChild<QWidget*>(QStringLiteral("settingsHttpLimitsGrid"));
     QVERIFY(limitsGridPanel != nullptr);
@@ -797,7 +813,9 @@ void AppTests::settingsWindowShowsWorkbenchNavigationAndOverview()
     settings.defaultPrinter = QStringLiteral("Office Label Printer");
     QVERIFY(FileSettingsStore(settingsPath).save(settings));
 
-    SettingsWindow window(settingsPath, nullptr);
+    SettingsPersistenceService settingsPersistence_window(settingsPath);
+    SettingsWindow window(settingsPath, settingsPersistence_window, nullptr);
+    QTRY_VERIFY(window.property("persistenceReady").toBool());
 
     auto* shell = window.findChild<QWidget*>(QStringLiteral("settingsWorkbenchShell"));
     auto* navigationRail = window.findChild<QWidget*>(QStringLiteral("settingsNavigationRail"));
@@ -4991,7 +5009,9 @@ void AppTests::settingsWindowHasPaperSpecManagerEntry()
     QVERIFY(FileSettingsStore(settingsPath).save(PrintClientSettings{}));
 
     int openCount = 0;
-    SettingsWindow window(settingsPath, nullptr);
+    SettingsPersistenceService settingsPersistence_window(settingsPath);
+    SettingsWindow window(settingsPath, settingsPersistence_window, nullptr);
+    QTRY_VERIFY(window.property("persistenceReady").toBool());
     window.setOpenPaperSpecManagerCallback([&openCount] {
         ++openCount;
     });
@@ -5012,7 +5032,9 @@ void AppTests::settingsWindowHasFieldPresetManagerEntry()
     QVERIFY(FileSettingsStore(settingsPath).save(PrintClientSettings{}));
 
     int openCount = 0;
-    SettingsWindow window(settingsPath, nullptr);
+    SettingsPersistenceService settingsPersistence_window(settingsPath);
+    SettingsWindow window(settingsPath, settingsPersistence_window, nullptr);
+    QTRY_VERIFY(window.property("persistenceReady").toBool());
     window.setOpenFieldPresetManagerCallback([&openCount] {
         ++openCount;
     });
@@ -5095,7 +5117,9 @@ void AppTests::settingsWindowHasTemplateDesignerEntry()
     QVERIFY(store.save(PrintClientSettings{}));
 
     int openCount = 0;
-    SettingsWindow window(settingsPath, nullptr);
+    SettingsPersistenceService settingsPersistence_window(settingsPath);
+    SettingsWindow window(settingsPath, settingsPersistence_window, nullptr);
+    QTRY_VERIFY(window.property("persistenceReady").toBool());
     window.setOpenTemplateDesignerCallback([&openCount] {
         ++openCount;
     });

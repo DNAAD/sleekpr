@@ -167,19 +167,20 @@ static QString templateDocumentComboText(const sleekpr::core::TemplateDocument& 
     return name;
 }
 
-SettingsWindow::SettingsWindow(QString settingsPath, SettingsAppliedCallback onSettingsApplied, QWidget* parent)
-    : SettingsWindow(std::move(settingsPath), std::move(onSettingsApplied), QString(), parent)
+SettingsWindow::SettingsWindow(QString settingsPath, SettingsPersistenceService& persistence, SettingsAppliedCallback onSettingsApplied, QWidget* parent)
+    : SettingsWindow(std::move(settingsPath), persistence, std::move(onSettingsApplied), QString(), parent)
 {
 }
 
 SettingsWindow::SettingsWindow(
     QString settingsPath,
+    SettingsPersistenceService& persistence,
     SettingsAppliedCallback onSettingsApplied,
     QString templateLibraryDirectoryPath,
     QWidget* parent)
     : QWidget(parent)
     , m_settingsPath(settingsPath)
-    , m_editSession(settingsPath)
+    , m_persistenceService(&persistence)
     , m_onSettingsApplied(std::move(onSettingsApplied))
     , m_templateLibraryDirectoryPath(std::move(templateLibraryDirectoryPath))
 {
@@ -187,7 +188,7 @@ SettingsWindow::SettingsWindow(
     resize(1100, 740);
     buildUi();
     setupPreviewQueue();
-    reloadFromDisk();
+    setupPersistence();
 }
 
 void SettingsWindow::setOpenTemplateDesignerCallback(OpenTemplateDesignerCallback callback)
@@ -217,12 +218,14 @@ void SettingsWindow::reloadFromDisk()
 
 void SettingsWindow::reloadSettings(bool refreshDevices)
 {
+    m_pendingDeviceRefresh = m_pendingDeviceRefresh || refreshDevices;
+    if (m_persistenceService) m_persistenceService->requestReload(m_persistenceSession);
+}
+
+void SettingsWindow::applyPersistenceSnapshot(const core::SettingsReadResult& snapshot, bool refreshDevices)
+{
     const auto selectedTemplateKey = currentTemplateOverrideKey();
-    const auto snapshot = m_editSession.reload();
-    if (snapshot.status == core::SettingsReadStatus::InvalidJson || snapshot.status == core::SettingsReadStatus::IoError) {
-        m_persistenceNotice->showFailure({core::SettingsWriteStatus::ReadFailed, snapshot, {}, snapshot.message});
-        return;
-    }
+    m_loadingForm = true;
     m_persistenceNotice->clear();
     m_settings = snapshot.settings;
     populateTemplateCombo(selectedTemplateKey);
@@ -239,6 +242,7 @@ void SettingsWindow::reloadSettings(bool refreshDevices)
     m_httpMaxPreviewPagesSpin->setValue(httpLimits.maxPreviewPages);
     m_httpMaxPreviewResponseMbSpin->setValue(bytesToWholeUnit(httpLimits.maxPreviewResponseBytes, 1024 * 1024));
     m_formBaseline = readGeneralSettingsForm();
+    m_loadingForm = false;
 
     renderPreview(m_settings);
     refreshOverview();
@@ -306,14 +310,17 @@ void SettingsWindow::buildUi()
 
     shellLayout->addWidget(contentPanel, 1);
     rootLayout->addWidget(shell, 1);
+    m_persistenceStateLabel = new QLabel(this);
+    m_persistenceStateLabel->setObjectName(QStringLiteral("persistenceStateLabel"));
+    rootLayout->addWidget(m_persistenceStateLabel);
     m_persistenceNotice = new SettingsPersistenceNotice(this);
     rootLayout->addWidget(m_persistenceNotice);
-    m_persistenceNotice->setActions([this] { confirmPersistenceReload(); }, [this] { saveSettings(); }, {}, [this] {
+    m_persistenceNotice->setActions([this] { confirmPersistenceReload(); }, [this] {
+        if (m_persistenceService) m_persistenceService->retry(m_persistenceSession);
+    }, {}, [this] {
         if (QMessageBox::question(this, QString::fromUtf8("恢复备份"), QString::fromUtf8("确认恢复最近有效备份并放弃当前草稿？"),
                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
-        const auto result = m_editSession.restoreBackup(m_persistenceNotice->observedFailureDigest());
-        if (result.ok()) reloadFromDisk();
-        else m_persistenceNotice->showFailure(result);
+        if (m_persistenceService) m_persistenceService->requestRestore(m_persistenceSession, m_persistenceNotice->observedFailureDigest());
     });
 
     connect(saveButton, &QPushButton::clicked, this, [this] { saveSettings(); });
@@ -952,6 +959,7 @@ void SettingsWindow::selectFirstElement()
 
 void SettingsWindow::storeCurrentElementForm()
 {
+    if (!m_loadingForm) ++m_modelEditRevision;
     if (m_currentElementKey.isEmpty()) {
         return;
     }
@@ -1016,7 +1024,7 @@ void SettingsWindow::loadCurrentElementForm()
 void SettingsWindow::collectGeneralSettings()
 {
     const auto form = readGeneralSettingsForm();
-    const auto& saved = m_editSession.baseline().settings;
+    const auto& saved = m_expectedSettings;
     // 显示的默认上限不等于用户显式修改，恢复原值也必须恢复到保存基线。
     const auto edited = [](const auto& value, const auto& shown, const auto& stored) { return value == shown ? stored : value; };
     m_settings.defaultPrinter = edited(form.defaultPrinter, m_formBaseline.defaultPrinter, saved.defaultPrinter);
@@ -1069,42 +1077,10 @@ QString SettingsWindow::currentTemplateOverrideKey() const
     return m_currentTemplateOverrideKey.isEmpty() ? QStringLiteral("default") : m_currentTemplateOverrideKey;
 }
 
-void SettingsWindow::applyWithoutSaving()
-{
-    collectGeneralSettings();
-    renderPreview(m_settings);
-    refreshOverview();
-    if (m_onSettingsApplied) {
-        m_onSettingsApplied(m_settings);
-    }
-    m_statusLabel->setText(QString::fromUtf8("已应用到预览，尚未保存"));
-}
-
-void SettingsWindow::saveSettings()
-{
-    collectGeneralSettings();
-    const auto result = m_editSession.saveEdited(m_settings, core::SettingsEditScope::AllChangedFields);
-    setProperty("settingsSaveStatus", int(result.status));
-    if (!result.ok()) {
-        m_persistenceNotice->showFailure(result);
-        m_statusLabel->setText(QString::fromUtf8("未保存，当前草稿已保留"));
-        return;
-    }
-    reloadFromDisk();
-    if (m_onSettingsApplied) {
-        m_onSettingsApplied(m_settings);
-    }
-    m_statusLabel->setText(QString::fromUtf8("已保存"));
-}
-
-void SettingsWindow::confirmPersistenceReload()
-{
-    if (QMessageBox::question(this, QString::fromUtf8("重新读取配置"), QString::fromUtf8("确认放弃当前未保存草稿并重新读取？"),
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes) reloadFromDisk();
-}
 
 void SettingsWindow::resetCurrentElement()
 {
+    if (!m_loadingForm) ++m_modelEditRevision;
     if (m_currentElementKey.isEmpty()) {
         return;
     }
@@ -1125,6 +1101,7 @@ void SettingsWindow::resetCurrentElement()
 
 void SettingsWindow::resetAllElements()
 {
+    if (!m_loadingForm) ++m_modelEditRevision;
     collectGeneralSettings();
     sleekpr::core::SettingsEditModel::resetAllElements(m_settings, currentTemplateOverrideKey());
     loadCurrentElementForm();
@@ -1137,6 +1114,7 @@ void SettingsWindow::resetAllElements()
 
 void SettingsWindow::addTemplateElement(sleekpr::core::TemplateElementType type)
 {
+    if (!m_loadingForm) ++m_modelEditRevision;
     storeCurrentElementForm();
     collectGeneralSettings();
 
@@ -1179,6 +1157,7 @@ void SettingsWindow::addTemplateElement(sleekpr::core::TemplateElementType type)
 
 void SettingsWindow::deleteCurrentCustomElement()
 {
+    if (!m_loadingForm) ++m_modelEditRevision;
     if (!isCurrentCustomElement()) {
         return;
     }
@@ -1218,6 +1197,7 @@ void SettingsWindow::refreshPreviewOnly()
 
 void SettingsWindow::applyPreviewDragDelta(const QPoint& pixelDelta)
 {
+    if (!m_loadingForm) ++m_modelEditRevision;
     if (m_currentElementKey.isEmpty() || m_previewImageSize.isEmpty()) {
         return;
     }
@@ -1251,6 +1231,7 @@ void SettingsWindow::applyPreviewDragDelta(const QPoint& pixelDelta)
 
 void SettingsWindow::applyPreviewKeyboardNudge(const QPoint& direction, Qt::KeyboardModifiers modifiers)
 {
+    if (!m_loadingForm) ++m_modelEditRevision;
     if (m_currentElementKey.isEmpty() || direction.isNull()) {
         return;
     }

@@ -33,6 +33,8 @@ void LocalHttpRouter::setLimits(LocalHttpLimits limits)
     m_limits = limits;
 }
 
+void LocalHttpRouter::setExiting(bool exiting) { m_exiting = exiting; }
+
 LocalHttpResponse LocalHttpRouter::route(const LocalHttpRequest& request) const
 {
     if (m_limits.maxContentLengthBytes >= 0 && request.body.size() > m_limits.maxContentLengthBytes) {
@@ -47,6 +49,10 @@ LocalHttpResponse LocalHttpRouter::route(const LocalHttpRequest& request) const
     }
 
     const auto extraHeaders = corsHeaders(request, settings);
+    // 退出期间保持监听和安全校验，仅允许健康检查；取消退出无需重新抢占端口。
+    if (m_exiting && !(method == "GET" && request.path == "/health")) {
+        return jsonResponse(failEnvelope("CLIENT_EXITING", QString::fromUtf8("客户端正在完成保存并退出，请稍后重试")), 503, extraHeaders);
+    }
     if (method == "OPTIONS") {
         return emptyResponse(204, extraHeaders);
     }

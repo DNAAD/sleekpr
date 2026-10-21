@@ -41,6 +41,7 @@ void PrintWorkbenchWindow::setupPreviewQueue()
 
 void PrintWorkbenchWindow::prepareNow()
 {
+    if (m_exitPaused) { m_prepareOnShow = true; return; }
     m_prepareTimer->stop();
     m_jobCheckTimer->stop();
     m_prepareQueue->invalidate();
@@ -111,6 +112,31 @@ void PrintWorkbenchWindow::publishPreparedPreview(const infrastructure::PreviewW
         m_summary->setText(QString::fromUtf8("%1 × %2 mm · %3 DPI").arg(plan.paperSize.widthMm()).arg(plan.paperSize.heightMm()).arg(plan.renderDpi));
     }
     updatePrintState();
+}
+
+bool PrintWorkbenchWindow::hasActivePrintSubmission() const { return m_printing; }
+void PrintWorkbenchWindow::setSubmissionStateChangedCallback(std::function<void()> callback)
+{
+    m_submissionStateChanged = std::move(callback);
+}
+void PrintWorkbenchWindow::setExitPaused(bool paused)
+{
+    if (paused == m_exitPaused) return;
+    m_exitPaused = paused;
+    if (paused) {
+        m_enabledBeforeExit = isEnabled(); setEnabled(false);
+        // 取消退出需恢复被截断的工作；份数校验单独恢复，不为它重建基础版式和图片。
+        m_prepareOnShow = m_prepareOnShow || m_prepareTimer->isActive() || (!m_prepared && m_preflightPending);
+        m_resumeJobCheckAfterExit = !m_prepareOnShow && (m_resumeJobCheckAfterExit
+            || m_jobCheckTimer->isActive() || (m_prepared && m_preflightPending));
+        m_prepareTimer->stop(); m_jobCheckTimer->stop();
+        if (m_prepareQueue) m_prepareQueue->invalidate();
+    } else {
+        setEnabled(m_enabledBeforeExit);
+        if (m_externalRefreshPending) requestExternalRefresh();
+        else if (m_prepareOnShow && isVisible()) schedulePreparation();
+        else if (m_resumeJobCheckAfterExit && isVisible()) { m_resumeJobCheckAfterExit = false; scheduleJobCheck(); }
+    }
 }
 
 } // 命名空间 sleekpr::app

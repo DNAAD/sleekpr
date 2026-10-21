@@ -292,6 +292,7 @@ bool PrintWorkbenchWindow::rememberDraft()
 
 void PrintWorkbenchWindow::reloadFromDisk()
 {
+    if (m_exitPaused) { m_externalRefreshPending = true; return; }
     if (m_printing) return;
     if (!rememberDraft()) return;
     const auto preferred = selectedTemplateKey();
@@ -337,6 +338,7 @@ void PrintWorkbenchWindow::populateTemplates(const QString& preferredKey)
 
 void PrintWorkbenchWindow::refreshFieldDisplayNames()
 {
+    if (m_exitPaused) { m_externalRefreshPending = true; return; }
     if (m_fields == nullptr || m_printing || m_activeTemplateKey.isEmpty()) return;
     if (!isVisible()) {
         infrastructure::ClientPerformanceMetrics::applicationMetrics().record(infrastructure::PerformanceStage::DeferredRefresh, 0);
@@ -384,6 +386,7 @@ bool PrintWorkbenchWindow::event(QEvent* event)
             } else {
                 refreshFieldDisplayNames();
                 if (m_prepareOnShow) prepareNow();
+                else if (m_resumeJobCheckAfterExit) { m_resumeJobCheckAfterExit = false; scheduleJobCheck(); }
             }
         });
     }
@@ -506,6 +509,7 @@ void PrintWorkbenchWindow::applyPreset()
 
 void PrintWorkbenchWindow::schedulePreparation()
 {
+    if (m_exitPaused) { m_prepareOnShow = true; return; }
     if (m_loading || m_printing) return;
     m_jobCheckTimer->stop();
     // 输入一变就废弃旧计划，不能在防抖等待期间误打印上一版数据。
@@ -525,6 +529,7 @@ void PrintWorkbenchWindow::schedulePreparation()
 
 void PrintWorkbenchWindow::scheduleJobCheck()
 {
+    if (m_exitPaused) { m_resumeJobCheckAfterExit = true; return; }
     if (m_loading || m_printing) return;
     // 份数不改变基础版式；仅合并任务级检查，避免按键连发时反复渲染标签。
     m_preflightPending = true;
@@ -620,7 +625,7 @@ void PrintWorkbenchWindow::locatePreflightIssue(const core::PrintPreflightIssue&
 
 void PrintWorkbenchWindow::printCurrent()
 {
-    if (m_printing) return;
+    if (m_printing || m_exitPaused) return;
     if (!m_prepared || !m_preparedSnapshot || m_activeTemplateKey.isEmpty()
         || selectedTemplateKey() != m_activeTemplateKey) return;
     // 点击时只重读来源并比较冻结输入，不在 GUI 重复布局；来源变化后重新预览、再次确认。
@@ -643,6 +648,7 @@ void PrintWorkbenchWindow::printCurrent()
     const auto printer = m_printers->currentData().toString();
     const auto copies = m_copies->value();
     m_printing = true;
+    if (m_submissionStateChanged) m_submissionStateChanged();
     m_printButton->setEnabled(false);
     m_templatePanel->setEnabled(false);
     m_dataPanel->setEnabled(false);
@@ -651,6 +657,7 @@ void PrintWorkbenchWindow::printCurrent()
     QTimer::singleShot(0, this, [this, plan = *expanded, printer, copies] {
         const auto submitted = m_printEngine != nullptr && m_printEngine->print(plan, printer);
         m_printing = false;
+        if (m_submissionStateChanged) m_submissionStateChanged();
         m_templatePanel->setEnabled(true);
         m_dataPanel->setEnabled(true);
         m_refreshButton->setEnabled(true);
@@ -679,7 +686,7 @@ bool PrintWorkbenchWindow::saveCurrentValuesAsPreset(const QString& name, QStrin
         showStatus(message, QStringLiteral("danger"));
         return false;
     };
-    if (m_printing) return fail(QString::fromUtf8("打印提交期间不能保存预设"));
+    if (m_printing || m_exitPaused) return fail(QString::fromUtf8("打印提交或退出期间不能保存预设"));
     if (name.trimmed().isEmpty()) return fail(QString::fromUtf8("请填写字段预设名称"));
     if (!m_prepared.has_value()) {
         QStringList errors;

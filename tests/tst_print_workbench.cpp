@@ -25,6 +25,8 @@
 #include <QTemporaryDir>
 #include <QTabWidget>
 #include <QTimer>
+#include <QSemaphore>
+#include <QScopeGuard>
 #include <QtTest>
 
 #include <algorithm>
@@ -127,6 +129,10 @@ private slots:
     void copiesRejectInvalidAndOversizedJobs();
     void workbenchDoesNotPrintSampleData();
     void workbenchPrintsCurrentValuesAndCopiesOnce();
+    void exitPauseKeepsAcceptedPrintSubmission();
+    void exitPauseResumesPendingPreparation_data();
+    void exitPauseResumesPendingPreparation();
+    void exitPauseResumesCopyCheckWithoutRerender();
     void workbenchInvalidJsonDisablesStalePrintPlan();
     void workbenchHandlesMissingPrinterAndEngineFailure();
     void workbenchFitsDesktopAndPreservesDraftOnReload();
@@ -257,6 +263,54 @@ void PrintWorkbenchTests::workbenchPrintsCurrentValuesAndCopiesOnce()
     }
     QVERIFY(status->text().contains(QString::fromUtf8("提交")));
     QVERIFY(!status->text().contains(QString::fromUtf8("打印完成")));
+}
+
+void PrintWorkbenchTests::exitPauseKeepsAcceptedPrintSubmission()
+{
+    QTemporaryDir directory; const auto path = directory.filePath("settings.json");
+    QVERIFY(core::FileSettingsStore(path).save(workbenchSettings())); RecordingPrintEngine engine;
+    app::PrintWorkbenchWindow window(path, &engine, testPrinters); window.show();
+    fillLegacyProductName(window);
+    auto* print = window.findChild<QPushButton*>(QStringLiteral("workbenchPrintButton")); QVERIFY(print); QTRY_VERIFY(print->isEnabled());
+    int stateChanges = 0; window.setSubmissionStateChangedCallback([&] { ++stateChanges; });
+    print->click(); QVERIFY(window.hasActivePrintSubmission()); window.setExitPaused(true);
+    QTRY_COMPARE(engine.calls, 1); QVERIFY(!window.hasActivePrintSubmission()); QCOMPARE(stateChanges, 2);
+    print->click(); QCOMPARE(engine.calls, 1); window.setExitPaused(false);
+}
+
+void PrintWorkbenchTests::exitPauseResumesPendingPreparation_data()
+{
+    QTest::addColumn<bool>("blocked"); QTest::newRow("debounce") << false; QTest::newRow("slow-planning") << true;
+}
+void PrintWorkbenchTests::exitPauseResumesPendingPreparation()
+{
+    QFETCH(bool, blocked); QTemporaryDir dir; const auto path = dir.filePath("settings.json");
+    QVERIFY(core::FileSettingsStore(path).save(workbenchSettings())); RecordingPrintEngine engine;
+    app::PrintWorkbenchWindow window(path, &engine, testPrinters); window.show(); fillLegacyProductName(window);
+    auto* print = window.findChild<QPushButton*>(QStringLiteral("workbenchPrintButton")); QTRY_VERIFY(print->isEnabled());
+    struct Gate { QSemaphore started{0}, release{0}; };
+    auto gate = std::make_shared<Gate>(); const auto cleanup = qScopeGuard([gate] { gate->release.release(2); });
+    if (blocked) {
+        for (int i = 0; i < 2; ++i) infrastructure::PreviewExecutor::applicationInstance().submit([gate] {
+            gate->started.release(); gate->release.acquire(); return infrastructure::PreviewWorkResult{};
+        }, [](auto) {});
+        QTRY_COMPARE(gate->started.available(), 2);
+    }
+    window.findChild<QLineEdit*>(QStringLiteral("printField_productName"))->setText(QStringLiteral("changed"));
+    if (blocked) QTRY_VERIFY(!window.findChild<QTimer*>(QStringLiteral("workbenchPrepareTimer"))->isActive());
+    window.setExitPaused(true); window.setExitPaused(false); gate->release.release(2);
+    QTRY_VERIFY_WITH_TIMEOUT(print->isEnabled(), 2000);
+    print->click(); QTRY_COMPARE(engine.calls, 1); QCOMPARE(engine.lastPlan.pages[0].commands[0].text, QStringLiteral("changed"));
+}
+void PrintWorkbenchTests::exitPauseResumesCopyCheckWithoutRerender()
+{
+    QTemporaryDir dir; const auto path = dir.filePath("settings.json"); QVERIFY(core::FileSettingsStore(path).save(workbenchSettings()));
+    RecordingPrintEngine engine; app::PrintWorkbenchWindow window(path, &engine, testPrinters); window.show(); fillLegacyProductName(window);
+    auto* print = window.findChild<QPushButton*>(QStringLiteral("workbenchPrintButton")); QTRY_VERIFY(print->isEnabled());
+    const auto* image = window.findChild<QLabel*>(QStringLiteral("workbenchPreviewImage")); const auto key = image->pixmap().cacheKey();
+    window.findChild<QSpinBox*>(QStringLiteral("workbenchCopiesSpin"))->setValue(2);
+    window.setExitPaused(true); window.setExitPaused(false); QTRY_VERIFY_WITH_TIMEOUT(print->isEnabled(), 2000);
+    QCOMPARE(image->pixmap().cacheKey(), key); print->click(); QTRY_COMPARE(engine.calls, 1); QCOMPARE(engine.lastPlan.pages.size(), 2);
 }
 
 void PrintWorkbenchTests::workbenchInvalidJsonDisablesStalePrintPlan()

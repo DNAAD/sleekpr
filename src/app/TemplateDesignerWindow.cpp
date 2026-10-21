@@ -340,7 +340,6 @@ TemplateDesignerWindow::TemplateDesignerWindow(
     , m_prePrintCallback(std::move(prePrintCallback))
     , m_templateLibraryDirectoryPath(std::move(templateLibraryDirectoryPath))
 {
-    m_persistenceBaseline.settings = m_settings;
     setWindowTitle(kTableDesignerEnabled
             ? QString::fromUtf8("sleekpr 模板设计器")
             : QString::fromUtf8("sleekpr 标签设计器"));
@@ -359,6 +358,10 @@ TemplateDesignerWindow::TemplateDesignerWindow(
 
 TemplateDesignerWindow::~TemplateDesignerWindow()
 {
+    if (m_persistenceService) {
+        QObject::disconnect(m_persistenceService, nullptr, this, nullptr);
+        m_persistenceService->detachSession(m_persistenceSession);
+    }
     if (m_previewQueue) {
         m_previewQueue->invalidate();
         QObject::disconnect(m_previewQueue, nullptr, this, nullptr);
@@ -1683,7 +1686,7 @@ void TemplateDesignerWindow::saveSampleDataFromEditor()
     }
 
     updateSampleDataErrorLabel(QString());
-    if (m_settingsSaveHandler) notifySettingsChanged();
+    if (m_persistenceService) notifySettingsChanged();
     refreshPreview();
     if (m_statusLabel != nullptr) {
         m_statusLabel->setText(hasUnsavedPersistenceChanges()

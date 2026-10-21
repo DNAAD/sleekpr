@@ -33,11 +33,13 @@ public:
     // 路由层不依赖 socket，单元测试可以直接验证 HTTP 契约和打印调用语义。
     LocalHttpResponse route(const LocalHttpRequest& request) const;
     void setLimits(LocalHttpLimits limits);
+    void setExiting(bool exiting);
 
 private:
     QString m_settingsPath;
     sleekpr::infrastructure::LabelPrintEngine* m_printEngine = nullptr;
     LocalHttpLimits m_limits;
+    bool m_exiting = false;
 };
 
 } // 命名空间 sleekpr::http
