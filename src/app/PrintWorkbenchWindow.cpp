@@ -1,5 +1,9 @@
 // Hallmark 设计复核：理念5、层级5、实现4、场景5、克制5、差异4；沿用原生标签工作区主题。
 #include "sleekpr/app/PrintWorkbenchWindow.h"
+#include "sleekpr/app/BuildInfo.h"
+#include "sleekpr/app/BuildInfoDialog.h"
+#include "sleekpr/app/LatestPreviewQueue.h"
+#include "sleekpr/infrastructure/diagnostics/ClientPerformanceMetrics.h"
 
 #include "sleekpr/app/AppTheme.h"
 #include "sleekpr/app/PrintFieldEditorPanel.h"
@@ -41,26 +45,30 @@ namespace sleekpr::app {
 
 namespace {
 
-bool samePreparedPlan(const sleekpr::infrastructure::PreparedTemplatePrint& left,
-    const sleekpr::infrastructure::PreparedTemplatePrint& right)
+QJsonObject printDescription(sleekpr::core::TemplateDocument document)
 {
-    const auto printDescription = [](sleekpr::core::TemplateDocument document) {
-        // 显示名称不影响输出，不能仅因改名要求再次确认；字段规则和实际绘制命令仍完整比较。
-        document.fieldDisplayNames.clear();
-        for (auto& field : document.fieldSchema) field.displayName.clear();
-        return sleekpr::core::TemplateDocumentJson::toJson(document);
-    };
-    if (printDescription(left.document) != printDescription(right.document)
-        || left.printPlan.renderDpi != right.printPlan.renderDpi || left.printPlan.pages.size() != right.printPlan.pages.size()) return false;
-    const sleekpr::core::NativePlanJsonSerializer serializer;
-    for (int index = 0; index < left.printPlan.pages.size(); ++index) {
-        auto first = left.printPlan.firstPageAsLabelPlan();
-        auto second = right.printPlan.firstPageAsLabelPlan();
-        first.commands = left.printPlan.pages[index].commands;
-        second.commands = right.printPlan.pages[index].commands;
-        if (serializer.toJson(first) != serializer.toJson(second)) return false;
+    // 展示名称不影响输出，但绑定键、规则、内容和设备校准仍完整比较。
+    document.name.clear();
+    document.fieldDisplayNames.clear();
+    for (auto& field : document.fieldSchema) field.displayName.clear();
+    for (auto& layer : document.layers) {
+        layer.name.clear();
+        for (auto& element : layer.elements) element.displayName.clear();
+        for (auto& table : layer.tables) table.displayName.clear();
     }
-    return true;
+    return sleekpr::core::TemplateDocumentJson::toJson(document);
+}
+
+bool samePrintSnapshot(const infrastructure::TemplatePrintSnapshot& left, const infrastructure::TemplatePrintSnapshot& right)
+{
+    return printDescription(left.document) == printDescription(right.document)
+        && left.context.values == right.context.values && left.templateKey == right.templateKey
+        && left.labelPlan.paperSize.widthMm() == right.labelPlan.paperSize.widthMm()
+        && left.labelPlan.paperSize.heightMm() == right.labelPlan.paperSize.heightMm()
+        && left.labelOffset.x == right.labelOffset.x && left.labelOffset.y == right.labelOffset.y
+        && left.deviceProfile.dpi == right.deviceProfile.dpi
+        && left.deviceProfile.offsetX == right.deviceProfile.offsetX && left.deviceProfile.offsetY == right.deviceProfile.offsetY
+        && left.deviceProfile.scaleX == right.deviceProfile.scaleX && left.deviceProfile.scaleY == right.deviceProfile.scaleY;
 }
 
 } // 匿名命名空间
@@ -75,6 +83,7 @@ PrintWorkbenchWindow::PrintWorkbenchWindow(QString settingsPath,
     setMinimumSize(980, 640);
     resize(1280, 800);
     buildUi();
+    setupPreviewQueue();
     reloadFromDisk();
 }
 
@@ -99,6 +108,11 @@ void PrintWorkbenchWindow::buildUi()
     auto* title = new QLabel(QString::fromUtf8("打印工作台"), header);
     title->setObjectName(QStringLiteral("workbenchTitle"));
     headerLayout->addWidget(title);
+    const auto build = BuildInfo::current();
+    auto* identity = new QLabel(QStringLiteral("%1 · %2").arg(build.version, build.configuration), header);
+    identity->setObjectName(QStringLiteral("workbenchBuildIdentity"));
+    identity->setToolTip(QStringLiteral("%1\n%2").arg(build.revision, build.sourceDigest));
+    headerLayout->addWidget(identity);
     headerLayout->addStretch();
     m_refreshButton = new QPushButton(header);
     m_refreshButton->setObjectName(QStringLiteral("workbenchRefreshButton"));
@@ -111,6 +125,11 @@ void PrintWorkbenchWindow::buildUi()
     headerLayout->addWidget(m_refreshButton);
     headerLayout->addWidget(designer);
     headerLayout->addWidget(settings);
+    auto* version = new QPushButton(header);
+    version->setObjectName(QStringLiteral("workbenchBuildInfoButton"));
+    configureIconButton(version, QStyle::SP_MessageBoxInformation, QString::fromUtf8("版本与诊断"));
+    headerLayout->addWidget(version);
+    connect(version, &QPushButton::clicked, this, [this] { BuildInfoDialog(m_settingsPath, this).exec(); });
     root->addWidget(header);
     auto* splitter = new QSplitter(Qt::Horizontal, this);
     splitter->setObjectName(QStringLiteral("workbenchSplitter"));
@@ -214,6 +233,7 @@ void PrintWorkbenchWindow::buildUi()
     root->addWidget(m_status);
     m_status->hide();
     m_prepareTimer = new QTimer(this);
+    m_prepareTimer->setObjectName(QStringLiteral("workbenchPrepareTimer"));
     m_prepareTimer->setSingleShot(true);
     connect(m_prepareTimer, &QTimer::timeout, this, [this] { prepareNow(); });
     m_jobCheckTimer = new QTimer(this);
@@ -318,28 +338,53 @@ void PrintWorkbenchWindow::populateTemplates(const QString& preferredKey)
 void PrintWorkbenchWindow::refreshFieldDisplayNames()
 {
     if (m_fields == nullptr || m_printing || m_activeTemplateKey.isEmpty()) return;
+    if (!isVisible()) {
+        infrastructure::ClientPerformanceMetrics::applicationMetrics().record(infrastructure::PerformanceStage::DeferredRefresh, 0);
+        return;
+    }
     const auto latestSettings = sleekpr::core::FileSettingsStore(m_settingsPath).load();
     const auto document = m_service.findTemplate(latestSettings, m_activeTemplateKey);
     if (!document.has_value()) return;
     m_settings = latestSettings;
+    bool contentChanged = false;
     for (auto& choice : m_templates) {
-        if (choice.key == m_activeTemplateKey) { choice.document = *document; break; }
+        if (choice.key == m_activeTemplateKey) {
+            contentChanged = printDescription(choice.document) != printDescription(*document);
+            choice.document = *document;
+            break;
+        }
     }
-    m_fields->refreshDisplayNames(*document);
+    if (contentChanged) m_fields->setDocument(*document);
+    else m_fields->refreshDisplayNames(*document);
     for (auto& issue : m_preflightReport.issues) {
         if (issue.code == QStringLiteral("INVALID_VALUES")) m_fields->values(nullptr, &issue.message);
     }
-    updatePrintState();
+    if (contentChanged) schedulePreparation();
+    else if (m_prepareOnShow) prepareNow();
+    else updatePrintState();
 }
 
 bool PrintWorkbenchWindow::event(QEvent* event)
 {
     const auto handled = QWidget::event(event);
-    if (event->type() == QEvent::WindowActivate && m_fields != nullptr && !m_nameRefreshQueued) {
+    if (event->type() == QEvent::Hide && m_prepareQueue != nullptr) {
+        m_prepareQueue->invalidate();
+        m_prepareTimer->stop();
+        m_prepareOnShow = !m_prepared.has_value();
+    }
+    if ((event->type() == QEvent::WindowActivate || event->type() == QEvent::Show)
+        && m_fields != nullptr && !m_nameRefreshQueued) {
         m_nameRefreshQueued = true;
         QTimer::singleShot(0, this, [this] {
             m_nameRefreshQueued = false;
-            refreshFieldDisplayNames();
+            if (m_externalRefreshPending) {
+                infrastructure::PerformanceScope timing(infrastructure::PerformanceStage::ExternalRefresh);
+                m_externalRefreshPending = false;
+                reloadFromDisk();
+            } else {
+                refreshFieldDisplayNames();
+                if (m_prepareOnShow) prepareNow();
+            }
         });
     }
     return handled;
@@ -366,6 +411,18 @@ void PrintWorkbenchWindow::populatePrinters()
     }
 }
 
+void PrintWorkbenchWindow::requestExternalRefresh()
+{
+    m_externalRefreshPending = true;
+    if (!isVisible()) {
+        infrastructure::ClientPerformanceMetrics::applicationMetrics().record(infrastructure::PerformanceStage::DeferredRefresh, 0);
+        return;
+    }
+    infrastructure::PerformanceScope timing(infrastructure::PerformanceStage::ExternalRefresh);
+    m_externalRefreshPending = false;
+    reloadFromDisk();
+}
+
 void PrintWorkbenchWindow::selectTemplate()
 {
     if (m_printing) return;
@@ -383,6 +440,12 @@ void PrintWorkbenchWindow::selectTemplate()
     const auto it = std::find_if(m_templates.cbegin(), m_templates.cend(), [&key](const auto& choice) { return choice.key == key; });
     m_activeTemplateKey = key;
     if (it == m_templates.cend()) {
+        // 搜索无匹配也属于切换目标，必须同步撤销在途规划和已冻结的打印输入。
+        m_prepareTimer->stop();
+        m_jobCheckTimer->stop();
+        m_prepareQueue->invalidate();
+        m_pendingSnapshot.reset();
+        m_preparedSnapshot.reset();
         m_prepared.reset();
         m_preview->clear();
         m_summary->clear();
@@ -447,6 +510,8 @@ void PrintWorkbenchWindow::schedulePreparation()
     m_jobCheckTimer->stop();
     // 输入一变就废弃旧计划，不能在防抖等待期间误打印上一版数据。
     m_prepared.reset();
+    m_preparedSnapshot.reset();
+    if (m_prepareQueue) m_prepareQueue->invalidate();
     m_preflightReport = {};
     m_preflightPending = true;
     m_preflight->setPending();
@@ -454,7 +519,8 @@ void PrintWorkbenchWindow::schedulePreparation()
     m_savePresetButton->setEnabled(false);
     m_preview->clear();
     showStatus({});
-    m_prepareTimer->start(180);
+    m_prepareOnShow = !isVisible();
+    if (!m_prepareOnShow) m_prepareTimer->start(180);
 }
 
 void PrintWorkbenchWindow::scheduleJobCheck()
@@ -470,71 +536,19 @@ void PrintWorkbenchWindow::scheduleJobCheck()
     m_jobCheckTimer->start(180);
 }
 
-void PrintWorkbenchWindow::prepareNow()
-{
-    m_prepareTimer->stop();
-    m_jobCheckTimer->stop();
-    m_prepared.reset();
-    m_preflightReport = {};
-    m_preflightPending = false;
-    // 校验信息只由检查面板展示，状态栏留给保存、提交和切换失败等操作结果。
-    showStatus({});
-    m_summary->clear();
-    if (m_activeTemplateKey.isEmpty()) {
-        m_preflightReport.issues.append({core::PrintPreflightSeverity::Error, QStringLiteral("TEMPLATE_NOT_SELECTED"),
-            QString::fromUtf8("请选择可用模板")});
-        if (!m_loadError.isEmpty()) m_preflightReport.issues.append({core::PrintPreflightSeverity::Error,
-            QStringLiteral("CONFIGURATION_ERROR"), m_loadError.trimmed()});
-        updatePrintState();
-        return;
-    }
-    if (!m_loadError.isEmpty()) {
-        m_preflightReport.issues.append({core::PrintPreflightSeverity::Error, QStringLiteral("CONFIGURATION_ERROR"), m_loadError.trimmed()});
-        m_preview->clear();
-        updatePrintState();
-        return;
-    }
-    bool valid = true;
-    QString error;
-    const auto values = m_fields->values(&valid, &error);
-    if (!valid) {
-        const auto fieldKey = m_fields->invalidFieldKey();
-        m_preflightReport.issues.append({core::PrintPreflightSeverity::Error, QStringLiteral("INVALID_VALUES"), error,
-            fieldKey.isEmpty() ? core::PrintPreflightTarget::Json : core::PrintPreflightTarget::Field, fieldKey});
-        m_preview->clear();
-        updatePrintState();
-        return;
-    }
-    sleekpr::infrastructure::TemplatePrintInput input;
-    input.templateId = m_activeTemplateKey;
-    input.values = values;
-    input.fieldPresetId = m_presetsCombo->currentData().toString();
-    input.printerName = m_printers->currentData().toString();
-    input.requireCompleteValues = true;
-    QString code;
-    m_prepared = m_service.prepare(m_settings, input, &code, &error, &m_preflightReport);
-    if (!m_prepared.has_value()) {
-        m_preview->clear();
-        m_summary->clear();
-    } else {
-        m_preview->setPlan(m_prepared->printPlan);
-        const auto& plan = m_prepared->printPlan;
-        m_summary->setText(QString::fromUtf8("%1 × %2 mm · %3 DPI").arg(plan.paperSize.widthMm()).arg(plan.paperSize.heightMm()).arg(plan.renderDpi));
-    }
-    updatePrintState();
-}
-
 void PrintWorkbenchWindow::updatePrintState()
 {
     const auto printerAvailable = !m_printers->currentData().toString().isEmpty();
     QString error;
-    const auto expanded = m_prepared.has_value()
-        ? sleekpr::core::PrintCopyPlanner::repeat(m_prepared->printPlan, m_copies->value(), &error)
-        : std::optional<sleekpr::core::NativePrintDrawingPlan>{};
-    m_printButton->setEnabled(!m_printing && !m_preflightPending && printerAvailable && m_printEngine != nullptr && expanded.has_value());
+    const auto selected = !m_activeTemplateKey.isEmpty() && selectedTemplateKey() == m_activeTemplateKey;
+    const auto pageCount = selected && m_prepared.has_value()
+        ? sleekpr::core::PrintCopyPlanner::validateCopies(m_prepared->printPlan, m_copies->value(), &error)
+        : std::optional<int>{};
+    m_printButton->setEnabled(!m_printing && !m_preflightPending && printerAvailable && m_printEngine != nullptr
+        && pageCount.has_value() && m_preview->hasCurrentImage());
     m_savePresetButton->setEnabled(!m_printing && m_prepared.has_value());
-    m_jobSummary->setText(expanded.has_value()
-            ? QString::fromUtf8("%1 份，共 %2 页").arg(m_copies->value()).arg(expanded->pages.size()) : QString());
+    m_jobSummary->setText(pageCount.has_value()
+            ? QString::fromUtf8("%1 份，共 %2 页").arg(m_copies->value()).arg(*pageCount) : QString());
     refreshPreflight(error);
 }
 
@@ -542,6 +556,9 @@ void PrintWorkbenchWindow::refreshPreflight(const QString& jobError)
 {
     if (m_preflightPending) { m_preflight->setPending(); return; }
     auto report = m_preflightReport;
+    if (!m_preview->previewError().isEmpty()) {
+        report.issues.append({core::PrintPreflightSeverity::Error, m_preview->previewErrorCode(), m_preview->previewError()});
+    }
     if (m_printers->currentData().toString().isEmpty()) {
         report.issues.append({core::PrintPreflightSeverity::Error, QStringLiteral("PRINTER_UNAVAILABLE"),
             QString::fromUtf8("请选择可用打印机"), core::PrintPreflightTarget::Printer});
@@ -604,17 +621,23 @@ void PrintWorkbenchWindow::locatePreflightIssue(const core::PrintPreflightIssue&
 void PrintWorkbenchWindow::printCurrent()
 {
     if (m_printing) return;
-    // 点击时再次同步解析输入，打印使用本次不可变计划，不使用旧预览快照。
-    const auto previous = m_prepared;
+    if (!m_prepared || !m_preparedSnapshot || m_activeTemplateKey.isEmpty()
+        || selectedTemplateKey() != m_activeTemplateKey) return;
+    // 点击时只重读来源并比较冻结输入，不在 GUI 重复布局；来源变化后重新预览、再次确认。
     m_settings = sleekpr::core::FileSettingsStore(m_settingsPath).load();
-    prepareNow();
-    if (!m_printButton->isEnabled() || !m_prepared.has_value()) return;
-    if (previous.has_value() && !samePreparedPlan(*previous, *m_prepared)) {
-        // 文件可能已被设计器或接口修改；先展示新输出，让用户核对后再次点击，避免打印未见过的版式。
+    bool valid = false;
+    QString error;
+    const auto values = m_fields->values(&valid, &error);
+    infrastructure::TemplatePrintInput input{m_activeTemplateKey, values, m_presetsCombo->currentData().toString(),
+        m_printers->currentData().toString(), true};
+    const auto latest = valid ? m_service.resolveSnapshot(m_settings, input) : std::nullopt;
+    if (!latest || !samePrintSnapshot(*m_preparedSnapshot, *latest)) {
+        prepareNow();
         showStatus(QString::fromUtf8("模板或设备参数已更新，请核对新预览后再次打印"), QStringLiteral("warning"));
         return;
     }
-    QString error;
+    updatePrintState();
+    if (!m_printButton->isEnabled()) return;
     const auto expanded = sleekpr::core::PrintCopyPlanner::repeat(m_prepared->printPlan, m_copies->value(), &error);
     if (!expanded.has_value()) { refreshPreflight(error); return; }
     const auto printer = m_printers->currentData().toString();
@@ -658,15 +681,29 @@ bool PrintWorkbenchWindow::saveCurrentValuesAsPreset(const QString& name, QStrin
     };
     if (m_printing) return fail(QString::fromUtf8("打印提交期间不能保存预设"));
     if (name.trimmed().isEmpty()) return fail(QString::fromUtf8("请填写字段预设名称"));
-    prepareNow();
     if (!m_prepared.has_value()) {
         QStringList errors;
         for (const auto& issue : m_preflightReport.issues) {
             if (issue.severity == core::PrintPreflightSeverity::Error) errors.append(preflightMessage(issue));
         }
         // 返回错误不依赖状态栏文字，界面已经由检查面板给出详细原因。
-        if (errorMessage != nullptr) *errorMessage = errors.isEmpty() ? QString::fromUtf8("当前数据未通过打印前检查")
+        if (errorMessage != nullptr) *errorMessage = errors.isEmpty() ? QString::fromUtf8("数据检查尚未完成，请稍后保存")
             : errors.join(QString::fromUtf8("；"));
+        return false;
+    }
+
+    bool valid = false;
+    QString valuesError;
+    const auto values = m_fields->values(&valid, &valuesError);
+    const auto latestSettings = core::FileSettingsStore(m_settingsPath).load();
+    const infrastructure::TemplatePrintInput input{m_activeTemplateKey, values, m_presetsCombo->currentData().toString(),
+        m_printers->currentData().toString(), true};
+    const auto latest = valid ? m_service.resolveSnapshot(latestSettings, input) : std::nullopt;
+    if (!latest || !m_preparedSnapshot || !samePrintSnapshot(*m_preparedSnapshot, *latest)) {
+        // 预设保存复用当前已通过检查的快照，不能重新启动异步规划后把空结果误判为校验失败。
+        m_settings = latestSettings;
+        prepareNow();
+        if (errorMessage) *errorMessage = valid ? QString::fromUtf8("数据已更新，请等待检查完成后保存") : valuesError;
         return false;
     }
 

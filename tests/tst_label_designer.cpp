@@ -7,6 +7,11 @@
 #include "sleekpr/app/TemplateInspectorPanel.h"
 #include "sleekpr/app/PrintFieldEditorPanel.h"
 #include "sleekpr/app/SettingsWindow.h"
+#include "sleekpr/app/BuildInfoDialog.h"
+#include "sleekpr/app/PrintWorkbenchWindow.h"
+#include "sleekpr/infrastructure/settings/SettingsRepository.h"
+#include "sleekpr/infrastructure/preview/PreviewExecutor.h"
+#include "sleekpr/infrastructure/diagnostics/ClientPerformanceMetrics.h"
 #include "sleekpr/core/templates/TemplateDocumentJson.h"
 #include "sleekpr/core/templates/TemplateLibraryStore.h"
 #include "sleekpr/core/templates/PaperSpecStore.h"
@@ -14,10 +19,14 @@
 #include "sleekpr/core/templates/TemplateInputSchema.h"
 
 #include <QFile>
+#include <QElapsedTimer>
+#include <QSaveFile>
 #include <QAction>
 #include <QClipboard>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QMessageBox>
 #include <QInputDialog>
 #include <QFormLayout>
 #include <QLineEdit>
@@ -91,6 +100,22 @@ private slots:
     void arrayReferenceRefreshKeepsTemplateCursor();
     void partialKeyCollisionDoesNotRemoveEditor();
     void clearedLegacyQrStillAcceptsBindingKeyChange();
+    void designerConflictKeepsDraftAndHistory();
+    void designerSaveFailureDoesNotAdvanceBaseline();
+    void failedDesignerCloseKeepsDraft();
+    void sampleSaveFailureNeverReportsSaved();
+    void restoreAfterExternalCorruptionUsesObservedDigest();
+    void defaultDesignerIsNotDirtyUntilEdited();
+    void invalidSampleDraftRequiresCloseConfirmation();
+    void pendingSettingsTimerIsUnsaved();
+    void corruptSettingsCannotBeAutoRecreatedByEditing();
+    void reloadConflictRequiresConfirmation();
+    void settingsSavePreservesExternalTemplateAndUneditedLimits();
+    void hiddenSettingsDoesNotRenderOnTemplateChange();
+    void visibleSettingsDraftSurvivesExternalChange();
+    void settingsPreviewIsAsynchronous();
+    void versionEntriesAndRuntimeDiagnostics();
+    void designerEditDispatchMetrics();
 };
 
 namespace {
@@ -447,6 +472,402 @@ void LabelDesignerTests::clearedLegacyQrStillAcceptsBindingKeyChange()
     QVERIFY2(result.errorMessage.isEmpty(), qPrintable(result.errorMessage));
     QCOMPARE(element.fieldKey, QStringLiteral("serial"));
     QVERIFY(element.payload.isEmpty());
+}
+
+void LabelDesignerTests::designerConflictKeepsDraftAndHistory()
+{
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("settings.json"));
+    sleekpr::infrastructure::SettingsRepository repository(path);
+    const auto settings = selectionTestSettings();
+    QVERIFY(repository.replace(settings).ok());
+    int notifications = 0;
+    int attempts = 0;
+    TemplateDesignerWindow window(settings, [&](const auto&) { ++notifications; }, directory.path());
+    window.setPersistenceSnapshot(repository.read());
+    window.setSettingsSaveHandler([&](const auto& changes) { ++attempts; return repository.apply(changes); });
+    auto external = settings;
+    external.templateDocuments[QStringLiteral("default")].name = QStringLiteral("external");
+    QVERIFY(repository.replace(external).ok());
+    auto* x = window.findChild<QDoubleSpinBox*>(QStringLiteral("elementXSpin"));
+    auto* apply = window.findChild<QPushButton*>(QStringLiteral("applyElementPropertiesButton"));
+    QVERIFY(x != nullptr && apply != nullptr);
+    x->setValue(7);
+    apply->click();
+    QCOMPARE(attempts, 1);
+    QCOMPARE(notifications, 0);
+    QCOMPARE(window.property("settingsSaveStatus").toInt(), int(SettingsWriteStatus::Conflict));
+    QCOMPARE(x->value(), 7.0);
+    x->setValue(8);
+    apply->click();
+    QCOMPARE(attempts, 1);
+    window.findChild<QPushButton*>(QStringLiteral("designerUndoButton"))->click();
+    QCOMPARE(x->value(), 7.0);
+    window.findChild<QPushButton*>(QStringLiteral("designerRedoButton"))->click();
+    QCOMPARE(x->value(), 8.0);
+    QCOMPARE(repository.read().settings.templateDocuments.value(QStringLiteral("default")).name, QStringLiteral("external"));
+    QCOMPARE(attempts, 1);
+}
+
+void LabelDesignerTests::designerSaveFailureDoesNotAdvanceBaseline()
+{
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("settings.json"));
+    sleekpr::infrastructure::SettingsRepository repository(path);
+    const auto settings = selectionTestSettings();
+    QVERIFY(repository.replace(settings).ok());
+    bool fail = true;
+    int notifications = 0;
+    int attempts = 0;
+    TemplateDesignerWindow window(settings, [&](const auto&) { ++notifications; }, directory.path());
+    window.setPersistenceSnapshot(repository.read());
+    window.setSettingsSaveHandler([&](const auto& changes) {
+        ++attempts;
+        if (fail) return SettingsWriteResult{SettingsWriteStatus::WriteFailed, repository.read(), {}, QString::fromUtf8("模拟写入失败")};
+        return repository.apply(changes);
+    });
+    auto* x = window.findChild<QDoubleSpinBox*>(QStringLiteral("elementXSpin"));
+    auto* apply = window.findChild<QPushButton*>(QStringLiteral("applyElementPropertiesButton"));
+    QVERIFY(x != nullptr && apply != nullptr);
+    x->setValue(7);
+    apply->click();
+    QCOMPARE(attempts, 1);
+    QCOMPARE(notifications, 0);
+    QCOMPARE(window.property("settingsSaveStatus").toInt(), int(SettingsWriteStatus::WriteFailed));
+    QCOMPARE(repository.read().settings.templateDocuments.value(QStringLiteral("default")).layers.first().elements.first().x, 5.0);
+    fail = false;
+    x->setValue(8);
+    apply->click();
+    QCOMPARE(attempts, 2);
+    QCOMPARE(notifications, 1);
+    QCOMPARE(repository.read().settings.templateDocuments.value(QStringLiteral("default")).layers.first().elements.first().x, 8.0);
+}
+
+void LabelDesignerTests::failedDesignerCloseKeepsDraft()
+{
+    QTemporaryDir directory;
+    TemplateDesignerWindow window(selectionTestSettings(), [](const auto&) {}, directory.path());
+    window.setSettingsSaveHandler([](const auto&) {
+        return SettingsWriteResult{SettingsWriteStatus::WriteFailed, {}, {}, QString::fromUtf8("模拟写入失败")};
+    });
+    window.show();
+    auto* x = window.findChild<QDoubleSpinBox*>(QStringLiteral("elementXSpin"));
+    x->setValue(7);
+    window.findChild<QPushButton*>(QStringLiteral("applyElementPropertiesButton"))->click();
+    bool asked = false;
+    QTimer::singleShot(0, [&] {
+        if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+            asked = true;
+            box->button(QMessageBox::No)->click();
+        }
+    });
+    window.close();
+    QVERIFY(asked);
+    QVERIFY(window.isVisible());
+    QCOMPARE(x->value(), 7.0);
+}
+
+void LabelDesignerTests::sampleSaveFailureNeverReportsSaved()
+{
+    QTemporaryDir directory;
+    TemplateDesignerWindow window(selectionTestSettings(), [](const auto&) {}, directory.path());
+    window.setSettingsSaveHandler([](const auto&) {
+        return SettingsWriteResult{SettingsWriteStatus::WriteFailed, {}, {}, QString::fromUtf8("模拟写入失败")};
+    });
+    window.findChild<QPlainTextEdit*>(QStringLiteral("templateSampleDataEdit"))->setPlainText(QStringLiteral("{\"value\":1}"));
+    window.findChild<QPushButton*>(QStringLiteral("saveTemplateSampleDataButton"))->click();
+    const auto* status = window.findChild<QLabel*>(QStringLiteral("designerStatusLabel"));
+    QVERIFY(status != nullptr);
+    QVERIFY(status->text().contains(QString::fromUtf8("未保存")));
+}
+
+void LabelDesignerTests::restoreAfterExternalCorruptionUsesObservedDigest()
+{
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("settings.json"));
+    sleekpr::infrastructure::SettingsRepository repository(path);
+    auto settings = selectionTestSettings();
+    QVERIFY(repository.replace(settings).ok());
+    settings.labelOffset.x = 1;
+    QVERIFY(repository.replace(settings).ok());
+    TemplateDesignerWindow window(settings, [](const auto&) {}, directory.path());
+    window.setPersistenceSnapshot(repository.read());
+    window.setSettingsSaveHandler([&](const auto& changes) { return repository.apply(changes); });
+    window.setSettingsRestoreHandler([&](const QByteArray& digest) { return repository.restoreBackup(digest); });
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("{broken");
+    file.close();
+    window.findChild<QDoubleSpinBox*>(QStringLiteral("elementXSpin"))->setValue(7);
+    window.findChild<QPushButton*>(QStringLiteral("applyElementPropertiesButton"))->click();
+    QCOMPARE(window.property("settingsSaveStatus").toInt(), int(SettingsWriteStatus::ReadFailed));
+    QTimer::singleShot(0, [] {
+        if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) box->button(QMessageBox::Yes)->click();
+    });
+    window.findChild<QPushButton*>(QStringLiteral("persistenceRestoreButton"))->click();
+    QCOMPARE(repository.read().status, SettingsReadStatus::Ready);
+    QCOMPARE(window.findChild<QDoubleSpinBox*>(QStringLiteral("elementXSpin"))->value(), 5.0);
+}
+
+void LabelDesignerTests::defaultDesignerIsNotDirtyUntilEdited()
+{
+    QTemporaryDir directory;
+    sleekpr::infrastructure::SettingsRepository repository(directory.filePath(QStringLiteral("settings.json")));
+    TemplateDesignerWindow window(repository.read().settings, [](const auto&) {}, directory.path());
+    window.setPersistenceSnapshot(repository.read());
+    window.setSettingsSaveHandler([&](const auto& changes) { return repository.apply(changes); });
+    QVERIFY(!window.hasUnsavedPersistenceChanges());
+}
+
+void LabelDesignerTests::invalidSampleDraftRequiresCloseConfirmation()
+{
+    QTemporaryDir directory;
+    sleekpr::infrastructure::SettingsRepository repository(directory.filePath(QStringLiteral("settings.json")));
+    QVERIFY(repository.replace(selectionTestSettings()).ok());
+    TemplateDesignerWindow window(repository.read().settings, [](const auto&) {}, directory.path());
+    window.setPersistenceSnapshot(repository.read());
+    window.setSettingsSaveHandler([&](const auto& changes) { return repository.apply(changes); });
+    window.show();
+    auto* editor = window.findChild<QPlainTextEdit*>(QStringLiteral("templateSampleDataEdit"));
+    QVERIFY(editor);
+    const QString draft = QString::fromUtf8("{\n  \"商品名称\":");
+    editor->setPlainText(draft);
+    QVERIFY(window.hasUnsavedPersistenceChanges());
+    // 其他有效属性保存成功，也不能清除未应用的 JSON 原文状态。
+    auto* x = window.findChild<QDoubleSpinBox*>(QStringLiteral("elementXSpin"));
+    x->setValue(7);
+    window.findChild<QPushButton*>(QStringLiteral("applyElementPropertiesButton"))->click();
+    QVERIFY(window.hasUnsavedPersistenceChanges());
+    QCOMPARE(editor->toPlainText(), draft);
+    bool asked = false;
+    QTimer::singleShot(0, [&] {
+        if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+            asked = true;
+            box->button(QMessageBox::No)->click();
+        }
+    });
+    window.close();
+    QVERIFY(asked);
+    QVERIFY(window.isVisible());
+    QCOMPARE(editor->toPlainText(), draft);
+    window.hide();
+    window.show();
+    QCOMPARE(editor->toPlainText(), draft);
+}
+
+void LabelDesignerTests::pendingSettingsTimerIsUnsaved()
+{
+    QTemporaryDir directory;
+    TemplateDesignerWindow window(selectionTestSettings(), [](const auto&) {}, directory.path());
+    window.setSettingsSaveHandler([](const auto&) { return SettingsWriteResult{}; });
+    auto* timer = window.findChild<QTimer*>(QStringLiteral("designerSettingsChangedTimer"));
+    QVERIFY(timer);
+    timer->start(10000);
+    QVERIFY(window.hasUnsavedPersistenceChanges());
+    timer->stop();
+}
+
+void LabelDesignerTests::corruptSettingsCannotBeAutoRecreatedByEditing()
+{
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("settings.json"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("{broken");
+    file.close();
+    sleekpr::infrastructure::SettingsRepository repository(path);
+    int attempts = 0;
+    TemplateDesignerWindow window(selectionTestSettings(), [](const auto&) {}, directory.path());
+    window.setPersistenceSnapshot(repository.read());
+    window.setSettingsSaveHandler([&](const auto& changes) { ++attempts; return repository.apply(changes); });
+    window.findChild<QDoubleSpinBox*>(QStringLiteral("elementXSpin"))->setValue(7);
+    window.findChild<QPushButton*>(QStringLiteral("applyElementPropertiesButton"))->click();
+    QCOMPARE(attempts, 0);
+    QCOMPARE(window.property("settingsSaveStatus").toInt(), int(SettingsWriteStatus::ReadFailed));
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.readAll(), QByteArray("{broken"));
+}
+
+void LabelDesignerTests::reloadConflictRequiresConfirmation()
+{
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("settings.json"));
+    sleekpr::infrastructure::SettingsRepository repository(path);
+    const auto settings = selectionTestSettings();
+    QVERIFY(repository.replace(settings).ok());
+    TemplateDesignerWindow window(settings, [](const auto&) {}, directory.path());
+    window.setPersistenceSnapshot(repository.read());
+    window.setSettingsSaveHandler([&](const auto& changes) { return repository.apply(changes); });
+    window.setSettingsReloadHandler([&] { return repository.read(); });
+    auto external = settings;
+    external.templateDocuments[QStringLiteral("default")].name = QStringLiteral("external");
+    QVERIFY(repository.replace(external).ok());
+    auto* x = window.findChild<QDoubleSpinBox*>(QStringLiteral("elementXSpin"));
+    x->setValue(7);
+    window.findChild<QPushButton*>(QStringLiteral("applyElementPropertiesButton"))->click();
+    auto* reload = window.findChild<QPushButton*>(QStringLiteral("persistenceReloadButton"));
+    QVERIFY(reload != nullptr);
+    bool asked = false;
+    QTimer::singleShot(0, [&] {
+        auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        asked = box != nullptr;
+        if (box != nullptr) box->button(QMessageBox::No)->click();
+    });
+    reload->click();
+    QVERIFY(asked);
+    QCOMPARE(x->value(), 7.0);
+    QTimer::singleShot(0, [] {
+        if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) box->button(QMessageBox::Yes)->click();
+    });
+    reload->click();
+    QCOMPARE(x->value(), 5.0);
+    x->setValue(6);
+    window.findChild<QPushButton*>(QStringLiteral("applyElementPropertiesButton"))->click();
+    QCOMPARE(repository.read().settings.templateDocuments.value(QStringLiteral("default")).name, QStringLiteral("external"));
+    QCOMPARE(repository.read().settings.templateDocuments.value(QStringLiteral("default")).layers.first().elements.first().x, 6.0);
+}
+
+void LabelDesignerTests::settingsSavePreservesExternalTemplateAndUneditedLimits()
+{
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("settings.json"));
+    sleekpr::infrastructure::SettingsRepository repository(path);
+    const auto settings = selectionTestSettings();
+    QVERIFY(repository.replace(settings).ok());
+    SettingsWindow window(path, [](const auto&) {});
+    auto external = settings;
+    external.localHttpLimits.maxPreviewPages = 12;
+    external.templateDocuments[QStringLiteral("default")].name = QStringLiteral("external");
+    QVERIFY(repository.replace(external).ok());
+    auto* offset = window.findChild<QDoubleSpinBox*>(QStringLiteral("settingsOffsetXSpin"));
+    QVERIFY(offset != nullptr);
+    offset->setValue(2);
+    window.findChild<QPushButton*>(QStringLiteral("saveSettingsButton"))->click();
+    const auto actual = repository.read().settings;
+    QCOMPARE(actual.templateDocuments.value(QStringLiteral("default")).name, QStringLiteral("external"));
+    QCOMPARE(actual.localHttpLimits.maxPreviewPages.value(), 12);
+    QCOMPARE(actual.labelOffset.x, 2.0);
+}
+
+void LabelDesignerTests::hiddenSettingsDoesNotRenderOnTemplateChange()
+{
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("settings.json"));
+    sleekpr::infrastructure::SettingsRepository repository(path);
+    auto settings = selectionTestSettings();
+    QVERIFY(repository.replace(settings).ok());
+    SettingsWindow window(path, {});
+    window.show();
+    auto* preview = window.findChild<QLabel*>(QStringLiteral("settingsPreviewLabel"));
+    QTRY_VERIFY(!preview->pixmap().isNull());
+    window.hide();
+    const auto imageKey = preview->pixmap().cacheKey();
+    settings.templateDocuments[QStringLiteral("default")].layers.first().elements.first().x = 8;
+    QVERIFY(repository.replace(settings).ok());
+    window.requestExternalRefresh();
+    QCOMPARE(preview->pixmap().cacheKey(), imageKey);
+}
+
+void LabelDesignerTests::visibleSettingsDraftSurvivesExternalChange()
+{
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("settings.json"));
+    sleekpr::infrastructure::SettingsRepository repository(path);
+    auto settings = selectionTestSettings();
+    QVERIFY(repository.replace(settings).ok());
+    SettingsWindow window(path, {});
+    window.show();
+    auto* x = window.findChild<QDoubleSpinBox*>(QStringLiteral("settingsOffsetXSpin"));
+    x->setValue(2);
+    settings.templateDocuments[QStringLiteral("default")].name = QStringLiteral("external");
+    QVERIFY(repository.replace(settings).ok());
+    window.requestExternalRefresh();
+    QCOMPARE(x->value(), 2.0);
+}
+
+void LabelDesignerTests::settingsPreviewIsAsynchronous()
+{
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("settings.json"));
+    QVERIFY(sleekpr::infrastructure::SettingsRepository(path).replace(selectionTestSettings()).ok());
+    SettingsWindow window(path, {});
+    auto* image = window.findChild<QLabel*>(QStringLiteral("settingsPreviewLabel"));
+    QVERIFY(image->pixmap().isNull());
+    window.show();
+    QVERIFY(image->pixmap().isNull());
+    QTRY_VERIFY(!image->pixmap().isNull());
+}
+
+void LabelDesignerTests::versionEntriesAndRuntimeDiagnostics()
+{
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("settings.json"));
+    auto settings = selectionTestSettings();
+    settings.defaultPrinter = QStringLiteral("secret-printer-do-not-copy");
+    QVERIFY(sleekpr::infrastructure::SettingsRepository(path).replace(settings).ok());
+    BuildInfoDialog dialog(path);
+    const auto data = dialog.diagnosticJson();
+    QCOMPARE(data.value(QStringLiteral("programPath")).toString(), QCoreApplication::applicationFilePath());
+    QCOMPARE(data.value(QStringLiteral("settingsPath")).toString(), path);
+    QVERIFY(!QJsonDocument(data).toJson().contains("secret-printer-do-not-copy"));
+    SettingsWindow settingsWindow(path, {});
+    QVERIFY(settingsWindow.findChild<QPushButton*>(QStringLiteral("settingsBuildInfoButton")) != nullptr);
+    PrintWorkbenchWindow workbench(path, nullptr, [] { return QStringList{}; });
+    QVERIFY(workbench.findChild<QPushButton*>(QStringLiteral("workbenchBuildInfoButton")) != nullptr);
+}
+
+void LabelDesignerTests::designerEditDispatchMetrics()
+{
+    if (qEnvironmentVariableIsEmpty("SLEEKPR_DISPATCH_METRICS")) QSKIP("仅显式采样时运行固定数据性能记录");
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("settings.json"));
+    sleekpr::infrastructure::SettingsRepository repository(path);
+    auto settings = selectionTestSettings();
+    auto& layer = settings.templateDocuments[QStringLiteral("default")].layers.first();
+    layer.elements.clear();
+    for (int i = 0; i < 32; ++i) {
+        auto element = TemplateDesignerFactory::createElement(TemplateElementType::FixedText);
+        element.id = QStringLiteral("perf-%1").arg(i);
+        element.layerId = layer.id;
+        element.text = QStringLiteral("ABCDEFGHIJK12345678");
+        element.x = (i % 8) * 9;
+        element.y = (i / 8) * 6;
+        element.width = 9;
+        element.height = 5;
+        element.autoFitFont = true;
+        layer.elements.append(element);
+    }
+    QVERIFY(repository.replace(settings).ok());
+    SettingsWindow hiddenSettings(path, {});
+    TemplateDesignerWindow window(settings, [&](const auto&) { hiddenSettings.requestExternalRefresh(); }, directory.path());
+    window.setPersistenceSnapshot(repository.read());
+    window.setSettingsSaveHandler([&](const auto& changes) { return repository.apply(changes); });
+    window.show();
+    auto* preview = window.findChild<QLabel*>(QStringLiteral("designerPreviewLabel"));
+    QTRY_VERIFY(!preview->pixmap().isNull());
+    auto* x = window.findChild<QDoubleSpinBox*>(QStringLiteral("elementXSpin"));
+    auto* apply = window.findChild<QPushButton*>(QStringLiteral("applyElementPropertiesButton"));
+    QList<double> samples;
+    for (int i = 0; i < 20; ++i) {
+        QElapsedTimer elapsed;
+        elapsed.start();
+        x->setValue(1 + i * 0.1);
+        apply->click();
+        samples.append(elapsed.nsecsElapsed() / 1000000.0);
+        QTest::qWait(20);
+    }
+    std::sort(samples.begin(), samples.end());
+    QTRY_VERIFY(window.property("previewReady").toBool());
+    const QJsonObject result{{QStringLiteral("mode"), QStringLiteral("Debug")}, {QStringLiteral("elements"), 32},
+        {QStringLiteral("samples"), samples.size()}, {QStringLiteral("dispatchP50Ms"), samples.at(9)},
+        {QStringLiteral("dispatchP95Ms"), samples.at(18)},
+        {QStringLiteral("stages"), sleekpr::infrastructure::ClientPerformanceMetrics::applicationMetrics().snapshot()}};
+    QSaveFile output(qEnvironmentVariable("SLEEKPR_DISPATCH_METRICS"));
+    QVERIFY(output.open(QIODevice::WriteOnly));
+    const auto json = QJsonDocument(result).toJson();
+    QCOMPARE(output.write(json), json.size());
+    QVERIFY(output.commit());
+    qInfo().noquote() << QJsonDocument(result).toJson(QJsonDocument::Compact);
 }
 
 void LabelDesignerTests::initTestCase()
@@ -1199,7 +1620,7 @@ void LabelDesignerTests::canvasMarqueeResizeClipboardAndAlignment()
     QTest::keyClick(preview, Qt::Key_C, Qt::ControlModifier);
     QTest::keyClick(preview, Qt::Key_V, Qt::ControlModifier);
     QTRY_COMPARE(changed.templateDocuments[QStringLiteral("default")].layers.first().elements.size(), 4);
-    QCOMPARE(preview->designAidCommandCount(), 4);
+    QTRY_COMPARE(preview->designAidCommandCount(), 4);
     const auto pasted = changed.templateDocuments[QStringLiteral("default")].layers.first().elements.last();
     QVERIFY(pasted.id != resized.id);
     QCOMPARE(pasted.width, resized.width);
@@ -1373,5 +1794,11 @@ void LabelDesignerTests::settingsOffersPrintWorkbenchEntry()
     QVERIFY2(button != nullptr, "设置页必须提供独立打印工作台入口");
 }
 
-QTEST_MAIN(LabelDesignerTests)
+int main(int argc, char** argv)
+{
+    QApplication application(argc, argv);
+    sleekpr::infrastructure::PreviewExecutor executor;
+    LabelDesignerTests tests;
+    return QTest::qExec(&tests, argc, argv);
+}
 #include "tst_label_designer.moc"

@@ -45,6 +45,39 @@ option(SLEEKPR_ENABLE_TABLE_DESIGNER "启用延后的复杂表格设计器" OFF)
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Network Gui Widgets PrintSupport Test)
 qt_standard_project_setup()
 
+if(CMAKE_CONFIGURATION_TYPES)
+    set(SLEEKPR_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/$<CONFIG>")
+    set(_sleekpr_metadata_configurations ${CMAKE_CONFIGURATION_TYPES})
+else()
+    if(NOT CMAKE_BUILD_TYPE)
+        set(CMAKE_BUILD_TYPE Debug CACHE STRING "构建模式" FORCE)
+    endif()
+    set(SLEEKPR_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    set(_sleekpr_metadata_configurations ${CMAKE_BUILD_TYPE})
+endif()
+
+foreach(configuration IN LISTS _sleekpr_metadata_configurations)
+    if(CMAKE_CONFIGURATION_TYPES)
+        set(initial_header "${CMAKE_CURRENT_BINARY_DIR}/generated/${configuration}/sleekpr/BuildVersion.h")
+    else()
+        set(initial_header "${SLEEKPR_GENERATED_INCLUDE_DIR}/sleekpr/BuildVersion.h")
+    endif()
+    execute_process(COMMAND "${CMAKE_COMMAND}" "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}" "-DOUTPUT_HEADER=${initial_header}"
+        "-DVERSION=${PROJECT_VERSION}" "-DCONFIGURATION=${configuration}"
+        "-DTEMPLATE=${CMAKE_CURRENT_SOURCE_DIR}/packaging/BuildVersion.h.in"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateBuildInfo.cmake" COMMAND_ERROR_IS_FATAL ANY)
+endforeach()
+
+# 每次构建探测，但 configure_file 只在内容变化时更新头文件，不把时钟写进二进制。
+add_custom_target(sleekpr_build_metadata ALL
+    COMMAND "${CMAKE_COMMAND}" "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DOUTPUT_HEADER=${SLEEKPR_GENERATED_INCLUDE_DIR}/sleekpr/BuildVersion.h"
+        "-DVERSION=${PROJECT_VERSION}" "-DCONFIGURATION=$<CONFIG>"
+        "-DTEMPLATE=${CMAKE_CURRENT_SOURCE_DIR}/packaging/BuildVersion.h.in"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateBuildInfo.cmake"
+    BYPRODUCTS "${SLEEKPR_GENERATED_INCLUDE_DIR}/sleekpr/BuildVersion.h"
+    VERBATIM)
+
 add_library(sleekpr_core
     src/core/labels/LabelRenderPlanner.cpp
     src/core/labels/TemplateOverrideKey.cpp
@@ -54,13 +87,15 @@ add_library(sleekpr_core
     src/core/printing/LabelPaperSize.cpp
     src/core/printing/PrintUnitConverter.cpp
     src/core/printing/PrintCopyPlanner.cpp
+    src/core/printing/PreviewResourceBudget.cpp
     src/core/security/AllowedOriginParser.cpp
     src/core/security/LocalCorsPolicy.cpp
     src/core/security/PrivateNetworkAccessPolicy.cpp
-    src/core/settings/FileSettingsStore.cpp
+    src/infrastructure/settings/FileSettingsStore.cpp
     src/core/settings/PrinterSelectionResolver.cpp
     src/core/settings/PrintClientSettingsJson.cpp
     src/core/settings/SettingsEditModel.cpp
+    src/core/settings/SettingsChangeSet.cpp
     src/core/settings/TemplateElementCatalog.cpp
     src/core/templates/DeviceProfileResolver.cpp
     src/core/templates/DefaultPaperSpecs.cpp
@@ -82,6 +117,8 @@ add_library(sleekpr_core
     src/core/templates/TemplateInputSchema.cpp
     src/core/templates/TemplateRenderContextBuilder.cpp
     src/infrastructure/preview/LabelPreviewImageRenderer.cpp
+    src/infrastructure/preview/PreviewExecutor.cpp
+    src/infrastructure/preview/TemplatePreviewJob.cpp
     src/infrastructure/preview/LabelPreviewService.cpp
     src/infrastructure/preview/PreviewLabelFactory.cpp
     src/infrastructure/preview/QrCodeMatrix.cpp
@@ -89,6 +126,8 @@ add_library(sleekpr_core
     src/infrastructure/printing/QrModulePixelLayout.cpp
     src/infrastructure/printing/QtLabelPrintEngine.cpp
     src/infrastructure/printing/TemplatePrintService.cpp
+    src/infrastructure/settings/SettingsRepository.cpp
+    src/infrastructure/diagnostics/ClientPerformanceMetrics.cpp
     src/infrastructure/rendering/TextAutoFitSizer.cpp
 )
 
@@ -109,6 +148,7 @@ add_library(sleekpr_http
     src/http/LocalHttpRouteSupport.cpp
     src/http/LocalHttpRouter.cpp
     src/http/PreviewRoutes.cpp
+    src/http/PreviewResponseBudget.cpp
     src/http/PrintRoutes.cpp
     src/http/SettingsRoutes.cpp
     src/http/TemplateRequestPlanner.cpp
@@ -143,12 +183,23 @@ add_executable(sleekpr
     include/sleekpr/app/FieldBindingSelector.h
     src/app/PaperSpecManagerWindow.cpp
     src/app/PrintWorkbenchWindow.cpp
+    src/app/PrintWorkbenchPreview.cpp
     src/app/PrintPreviewPanel.cpp
     src/app/PrintFieldEditorPanel.cpp
     include/sleekpr/app/PrintFieldEditorPanel.h
     src/app/PrintPreflightPanel.cpp
     include/sleekpr/app/PrintPreflightPanel.h
     src/app/SettingsWindow.cpp
+    src/app/BuildInfo.cpp
+    src/app/BuildInfoDialog.cpp
+    src/app/SettingsWindowRefresh.cpp
+    src/app/SettingsWindowPreview.cpp
+    src/app/LatestPreviewQueue.cpp
+    include/sleekpr/app/LatestPreviewQueue.h
+    src/app/SettingsEditSession.cpp
+    src/app/SettingsPersistenceNotice.cpp
+    src/app/TemplateDesignerPersistence.cpp
+    src/app/TemplateDesignerPreview.cpp
     src/app/TemplateDesignerFactory.cpp
     src/app/TemplateInspectorPanel.cpp
     include/sleekpr/app/TemplateInspectorPanel.h
@@ -174,6 +225,13 @@ add_executable(sleekpr
 # 桌面客户端使用 Windows GUI 子系统，双击 exe 时不弹出控制台黑框。
 set_target_properties(sleekpr PROPERTIES WIN32_EXECUTABLE TRUE)
 set_target_properties(sleekpr PROPERTIES AUTORCC ON)
+add_dependencies(sleekpr sleekpr_build_metadata)
+target_include_directories(sleekpr PRIVATE "${SLEEKPR_GENERATED_INCLUDE_DIR}")
+if(WIN32)
+    enable_language(RC)
+    configure_file(packaging/WindowsVersion.rc.in "${CMAKE_CURRENT_BINARY_DIR}/generated/WindowsVersion.rc" @ONLY)
+    target_sources(sleekpr PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/WindowsVersion.rc")
+endif()
 target_compile_definitions(sleekpr PRIVATE
     SLEEKPR_ENABLE_TABLE_DESIGNER=$<BOOL:${SLEEKPR_ENABLE_TABLE_DESIGNER}>
 )
@@ -204,66 +262,27 @@ if(WIN32)
         add_custom_target(deploy_sleekpr
             COMMAND "${WINDEPLOYQT_EXECUTABLE}" "$<TARGET_FILE:sleekpr>"
             DEPENDS sleekpr
-            COMMENT "Deploying Qt runtime beside sleekpr.exe"
+            COMMENT "部署 Qt 运行时到当前构建目录"
             VERBATIM
         )
 
-        set(SLEEKPR_RELEASE_BUILD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build-release")
-        set(SLEEKPR_RELEASE_DIST_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/dist")
-        set(SLEEKPR_RELEASE_STAGE_DIR "${SLEEKPR_RELEASE_DIST_ROOT}/sleekpr-release")
-        set(SLEEKPR_RELEASE_ARCHIVE "${SLEEKPR_RELEASE_DIST_ROOT}/sleekpr-${PROJECT_VERSION}-windows-x64.zip")
-
-        set(SLEEKPR_RELEASE_CONFIGURE_ARGS
-            -S "${CMAKE_CURRENT_SOURCE_DIR}"
-            -B "${SLEEKPR_RELEASE_BUILD_DIR}"
-            -G "${CMAKE_GENERATOR}"
-            "-DCMAKE_BUILD_TYPE=Release"
-            "-DCMAKE_PREFIX_PATH=${SLEEKPR_QT_PREFIX}"
-            "-DSLEEKPR_ENABLE_RELEASE_ORCHESTRATOR=OFF"
-            "-DSLEEKPR_ENABLE_TABLE_DESIGNER=OFF"
-        )
-        if(CMAKE_GENERATOR_PLATFORM)
-            list(APPEND SLEEKPR_RELEASE_CONFIGURE_ARGS -A "${CMAKE_GENERATOR_PLATFORM}")
-        endif()
-        if(CMAKE_GENERATOR_TOOLSET)
-            list(APPEND SLEEKPR_RELEASE_CONFIGURE_ARGS -T "${CMAKE_GENERATOR_TOOLSET}")
-        endif()
-
         if(SLEEKPR_ENABLE_RELEASE_ORCHESTRATOR)
-            # 外层目标只负责编排独立 Release 构建，真正打包动作由 build-release 中的内部目标完成。
+            # 所有正式发布入口走同一验收脚本，不再在 CMake 中无条件清空目录或先发布后测试。
+            find_program(SLEEKPR_PACKAGE_POWERSHELL NAMES powershell.exe powershell pwsh.exe pwsh REQUIRED)
             add_custom_target(package_sleekpr_release
-                COMMAND "${CMAKE_COMMAND}" -E rm -rf "${SLEEKPR_RELEASE_BUILD_DIR}"
-                COMMAND "${CMAKE_COMMAND}" ${SLEEKPR_RELEASE_CONFIGURE_ARGS}
-                # 先构建默认目标，确保 Release 测试程序也会生成，便于后续 CTest 验证。
-                COMMAND "${CMAKE_COMMAND}" --build "${SLEEKPR_RELEASE_BUILD_DIR}" --config Release
-                COMMAND "${CMAKE_COMMAND}" --build "${SLEEKPR_RELEASE_BUILD_DIR}" --config Release --target package_sleekpr_release_current
-                COMMENT "Building and packaging sleekpr Release archive"
+                COMMAND "${SLEEKPR_PACKAGE_POWERSHELL}" -NoProfile -ExecutionPolicy Bypass
+                    -File "${CMAKE_CURRENT_SOURCE_DIR}/package-portable.ps1" -QtRoot "${SLEEKPR_QT_PREFIX}"
+                COMMENT "构建、验收并安全发布 Release 绿色包"
                 VERBATIM
             )
         endif()
 
         if(CMAKE_CONFIGURATION_TYPES OR CMAKE_BUILD_TYPE STREQUAL "Release")
-            # 内部目标仅在 Release 构建目录中打包当前产物，避免把 Debug exe 放进正式包。
-            add_custom_target(deploy_sleekpr_release_current
-                COMMAND "${CMAKE_COMMAND}" -E rm -rf "${SLEEKPR_RELEASE_STAGE_DIR}"
-                COMMAND "${CMAKE_COMMAND}" -E make_directory "${SLEEKPR_RELEASE_STAGE_DIR}"
-                COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:sleekpr>" "${SLEEKPR_RELEASE_STAGE_DIR}/sleekpr.exe"
-                COMMAND "${WINDEPLOYQT_EXECUTABLE}" --release --no-translations --dir "${SLEEKPR_RELEASE_STAGE_DIR}" "${SLEEKPR_RELEASE_STAGE_DIR}/sleekpr.exe"
-                COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE" "${SLEEKPR_RELEASE_STAGE_DIR}/LICENSE"
-                COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/packaging/README-PORTABLE.txt" "${SLEEKPR_RELEASE_STAGE_DIR}/README-PORTABLE.txt"
-                DEPENDS sleekpr
-                COMMENT "Deploying sleekpr Release runtime into dist/sleekpr-release"
-                VERBATIM
-            )
-
-            add_custom_target(package_sleekpr_release_current
-                COMMAND "${CMAKE_COMMAND}" -E rm -f "${SLEEKPR_RELEASE_ARCHIVE}"
-                COMMAND "${CMAKE_COMMAND}" -E tar cf "${SLEEKPR_RELEASE_ARCHIVE}" --format=zip "sleekpr-release"
-                WORKING_DIRECTORY "${SLEEKPR_RELEASE_DIST_ROOT}"
-                DEPENDS deploy_sleekpr_release_current
-                COMMENT "Creating sleekpr Release zip package"
-                VERBATIM
-            )
+            foreach(legacy_target IN ITEMS deploy_sleekpr_release_current package_sleekpr_release_current)
+                add_custom_target(${legacy_target}
+                    COMMAND "${CMAKE_COMMAND}" -E echo "旧内部发布入口已禁用，请运行 package-portable.ps1 完成测试和暂存验收。"
+                    COMMAND "${CMAKE_COMMAND}" -E false VERBATIM)
+            endforeach()
         endif()
     endif()
 endif()

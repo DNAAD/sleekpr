@@ -16,13 +16,14 @@ class QPushButton;
 class QSpinBox;
 class QTimer;
 
-namespace sleekpr::infrastructure { class LabelPrintEngine; }
+namespace sleekpr::infrastructure { class LabelPrintEngine; struct PreviewWorkResult; }
 
 namespace sleekpr::app {
 
 class PrintFieldEditorPanel;
 class PrintPreviewPanel;
 class PrintPreflightPanel;
+class LatestPreviewQueue;
 
 class PrintWorkbenchWindow final : public QWidget
 {
@@ -30,7 +31,9 @@ public:
     using PrinterNamesProvider = std::function<QStringList()>;
     explicit PrintWorkbenchWindow(QString settingsPath, sleekpr::infrastructure::LabelPrintEngine* printEngine,
         PrinterNamesProvider printers = {}, QWidget* parent = nullptr);
+    ~PrintWorkbenchWindow() override;
     void reloadFromDisk();
+    void requestExternalRefresh();
     void refreshFieldDisplayNames();
     void setOpenDesignerCallback(std::function<void()> callback);
     void setOpenSettingsCallback(std::function<void()> callback);
@@ -48,6 +51,8 @@ private:
     void schedulePreparation();
     void scheduleJobCheck();
     void prepareNow();
+    void setupPreviewQueue();
+    void publishPreparedPreview(const infrastructure::PreviewWorkResult& result);
     void printCurrent();
     void updatePrintState();
     void showStatus(const QString& text, const QString& role = {});
@@ -71,6 +76,9 @@ private:
     QString m_activeTemplateKey;
     QString m_loadError;
     std::optional<sleekpr::infrastructure::PreparedTemplatePrint> m_prepared;
+    std::optional<infrastructure::TemplatePrintSnapshot> m_preparedSnapshot;
+    std::optional<infrastructure::TemplatePrintSnapshot> m_pendingSnapshot;
+    LatestPreviewQueue* m_prepareQueue = nullptr;
     QListWidget* m_templateList = nullptr;
     QLineEdit* m_search = nullptr;
     PrintFieldEditorPanel* m_fields = nullptr;
@@ -98,6 +106,8 @@ private:
     bool m_loading = false;
     bool m_printing = false;
     bool m_nameRefreshQueued = false;
+    bool m_externalRefreshPending = false;
+    bool m_prepareOnShow = false;
 };
 
 } // 命名空间 sleekpr::app

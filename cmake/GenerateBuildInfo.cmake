@@ -1,0 +1,61 @@
+set(BUILD_VERSION "${VERSION}")
+set(BUILD_REVISION "unknown")
+set(BUILD_CONFIGURATION "${CONFIGURATION}")
+set(BUILD_SOURCE_DIRTY -1)
+set(BUILD_WORKSPACE_DIRTY -1)
+
+set(source_scopes src include resources cmake packaging tests CMakeLists.txt package-portable.ps1 quick-start.ps1 quick-start.cmd)
+file(GLOB_RECURSE source_files RELATIVE "${SOURCE_ROOT}" LIST_DIRECTORIES FALSE
+    "${SOURCE_ROOT}/src/*" "${SOURCE_ROOT}/include/*" "${SOURCE_ROOT}/resources/*"
+    "${SOURCE_ROOT}/cmake/*" "${SOURCE_ROOT}/packaging/*" "${SOURCE_ROOT}/tests/*")
+file(GLOB root_build_files RELATIVE "${SOURCE_ROOT}" LIST_DIRECTORIES FALSE
+    "${SOURCE_ROOT}/CMakeLists.txt" "${SOURCE_ROOT}/*.cmake" "${SOURCE_ROOT}/*.ps1" "${SOURCE_ROOT}/*.cmd")
+list(APPEND source_files ${root_build_files})
+list(APPEND source_scopes ${root_build_files})
+list(REMOVE_DUPLICATES source_files)
+list(SORT source_files)
+set(fingerprint "")
+foreach(relative IN LISTS source_files)
+    if(EXISTS "${SOURCE_ROOT}/${relative}" AND NOT IS_DIRECTORY "${SOURCE_ROOT}/${relative}")
+        file(SHA256 "${SOURCE_ROOT}/${relative}" digest)
+        string(APPEND fingerprint "${relative}|${digest}\n")
+    endif()
+endforeach()
+# 指纹同时覆盖验收代码；文档目录独立反映在 workspaceDirty，不写入源码指纹。
+string(SHA256 BUILD_SOURCE_DIGEST "${fingerprint}")
+
+find_program(git_program git)
+if(git_program)
+    execute_process(COMMAND "${git_program}" -C "${SOURCE_ROOT}" rev-parse HEAD
+        RESULT_VARIABLE revision_status OUTPUT_VARIABLE revision ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE ENCODING UTF-8)
+    string(LENGTH "${revision}" revision_length)
+    if(revision_status EQUAL 0 AND revision MATCHES "^[0-9a-fA-F]+$" AND revision_length GREATER_EQUAL 40)
+        set(BUILD_REVISION "${revision}")
+        execute_process(COMMAND "${git_program}" -C "${SOURCE_ROOT}" diff --quiet HEAD -- ${source_scopes}
+            RESULT_VARIABLE source_status ERROR_QUIET)
+        execute_process(COMMAND "${git_program}" -C "${SOURCE_ROOT}" ls-files --others --exclude-standard -- ${source_scopes}
+            RESULT_VARIABLE untracked_status OUTPUT_VARIABLE untracked ERROR_QUIET ENCODING UTF-8)
+        if(source_status EQUAL 0 AND untracked_status EQUAL 0)
+            if(untracked STREQUAL "")
+                set(BUILD_SOURCE_DIRTY 0)
+            else()
+                set(BUILD_SOURCE_DIRTY 1)
+            endif()
+        elseif(source_status EQUAL 1)
+            set(BUILD_SOURCE_DIRTY 1)
+        endif()
+        execute_process(COMMAND "${git_program}" -C "${SOURCE_ROOT}" status --porcelain=v1 --untracked-files=all -- .
+            RESULT_VARIABLE workspace_status OUTPUT_VARIABLE workspace ERROR_QUIET ENCODING UTF-8)
+        if(workspace_status EQUAL 0)
+            if(workspace STREQUAL "")
+                set(BUILD_WORKSPACE_DIRTY 0)
+            else()
+                set(BUILD_WORKSPACE_DIRTY 1)
+            endif()
+        endif()
+    endif()
+endif()
+
+get_filename_component(output_directory "${OUTPUT_HEADER}" DIRECTORY)
+file(MAKE_DIRECTORY "${output_directory}")
+configure_file("${TEMPLATE}" "${OUTPUT_HEADER}" @ONLY)

@@ -1,13 +1,18 @@
 #include "sleekpr/app/AppTheme.h"
+#include "sleekpr/app/BuildInfo.h"
 #include "sleekpr/app/FieldPresetManagerWindow.h"
 #include "sleekpr/app/PaperSpecManagerWindow.h"
 #include "sleekpr/app/PrintWorkbenchWindow.h"
 #include "sleekpr/app/SettingsWindow.h"
+#include "sleekpr/app/SettingsEditSession.h"
 #include "sleekpr/app/TemplateDesignerWindow.h"
 #include "sleekpr/app/WindowActivation.h"
 #include "sleekpr/core/settings/FileSettingsStore.h"
 #include "sleekpr/http/LocalHttpServer.h"
 #include "sleekpr/infrastructure/printing/QtLabelPrintEngine.h"
+#include "sleekpr/infrastructure/preview/PreviewExecutor.h"
+#include "sleekpr/infrastructure/diagnostics/ClientPerformanceMetrics.h"
+#include <QJsonDocument>
 
 #include <QAction>
 #include <QApplication>
@@ -30,6 +35,8 @@
 #endif
 
 #include <memory>
+#include <cstdio>
+#include <cstring>
 
 namespace {
 
@@ -57,11 +64,25 @@ QString fieldPresetFilePath(const QString& settingsFilePath)
 
 int main(int argc, char* argv[])
 {
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--build-info-json") == 0) {
+            // 诊断必须早于设置目录、HTTP 和托盘初始化，不能为了识别版本启动另一个客户端。
+            QCoreApplication diagnostic(argc, argv);
+            const auto json = QJsonDocument(sleekpr::app::BuildInfo::current().toJson()).toJson(QJsonDocument::Compact);
+            const auto written = std::fwrite(json.constData(), 1, static_cast<size_t>(json.size()), stdout);
+            std::fflush(stdout);
+            return written == static_cast<size_t>(json.size()) ? 0 : 1;
+        }
+    }
     QApplication app(argc, argv);
+    // 应用作用域执行器先于所有窗口创建、晚于窗口销毁，并在 QApplication 清理字体服务前收束线程。
+    sleekpr::infrastructure::PreviewExecutor previewExecutor;
     QApplication::setApplicationName("sleekpr");
+    QApplication::setApplicationVersion(sleekpr::app::BuildInfo::current().version);
     QApplication::setOrganizationName("zytxt");
     QApplication::setQuitOnLastWindowClosed(false);
     sleekpr::app::applySleekprTheme(app);
+    qInfo().noquote() << "sleekpr build:" << QJsonDocument(sleekpr::app::BuildInfo::current().toJson()).toJson(QJsonDocument::Compact);
 
     const auto designerSmokeTest = app.arguments().contains(QStringLiteral("--smoke-test-designer"));
     std::unique_ptr<QTemporaryDir> smokeSettings;
@@ -99,7 +120,7 @@ int main(int argc, char* argv[])
         if (fieldPresetManagerWindow == nullptr) {
             fieldPresetManagerWindow = std::make_unique<sleekpr::app::FieldPresetManagerWindow>(presetPath,
                 [&printWorkbenchWindow] {
-                    if (printWorkbenchWindow != nullptr) printWorkbenchWindow->reloadFromDisk();
+                    if (printWorkbenchWindow != nullptr) printWorkbenchWindow->requestExternalRefresh();
                 });
         }
         fieldPresetManagerWindow->reloadFromDisk();
@@ -107,19 +128,24 @@ int main(int argc, char* argv[])
     };
     settingsWindow.setOpenFieldPresetManagerCallback(openFieldPresets);
     const auto openDesigner = [&settingsFilePath, &settingsWindow, &paperSpecManagerWindow, &openFieldPresets, &templateDesignerWindow, &printWorkbenchWindow, designerSmokeTest] {
-        const auto latestSettings = sleekpr::core::FileSettingsStore(settingsFilePath).load();
+        // 保存失败的隐藏窗口仍拥有草稿，不允许重复打开入口直接析构它。
+        if (templateDesignerWindow != nullptr && templateDesignerWindow->hasUnsavedPersistenceChanges()) {
+            sleekpr::app::showAndActivateWindow(*templateDesignerWindow);
+            return;
+        }
+        const auto session = std::make_shared<sleekpr::app::SettingsEditSession>(settingsFilePath);
         templateDesignerWindow = std::make_unique<sleekpr::app::TemplateDesignerWindow>(
-            latestSettings,
-            [&settingsFilePath, &settingsWindow, &printWorkbenchWindow](const sleekpr::core::PrintClientSettings& settings) {
-                // 设计器变更直接写回统一配置文件，设置窗口预览和 HTTP 打印接口都读取同一份模板。
-                if (!sleekpr::core::FileSettingsStore(settingsFilePath).save(settings)) {
-                    QMessageBox::warning(&settingsWindow, QString::fromUtf8("保存失败"), QString::fromUtf8("无法写入模板设计器设置"));
-                    return;
-                }
-                settingsWindow.reloadFromDisk();
+            session->baseline().settings,
+            [&settingsWindow, &printWorkbenchWindow](const sleekpr::core::PrintClientSettings&) {
+                // 这里只通知成功提交，写入和失败处理由编辑会话负责。
+                settingsWindow.requestExternalRefresh();
                 if (printWorkbenchWindow != nullptr) printWorkbenchWindow->refreshFieldDisplayNames();
             },
             templateLibraryDirectoryPath(settingsFilePath));
+        templateDesignerWindow->setPersistenceSnapshot(session->baseline());
+        templateDesignerWindow->setSettingsSaveHandler([session](const sleekpr::core::SettingsChangeSet& changes) { return session->saveChanges(changes); });
+        templateDesignerWindow->setSettingsReloadHandler([session] { return session->reload(); });
+        templateDesignerWindow->setSettingsRestoreHandler([session](const QByteArray& digest) { return session->restoreBackup(digest); });
         if (designerSmokeTest) templateDesignerWindow->setAttribute(Qt::WA_DontShowOnScreen);
         templateDesignerWindow->setOpenPaperSpecManagerCallback([&settingsFilePath, &paperSpecManagerWindow, &templateDesignerWindow] {
             const auto paperSpecPath = QFileInfo(settingsFilePath).absoluteDir().filePath(QStringLiteral("paper-specs.json"));
@@ -173,11 +199,11 @@ int main(int argc, char* argv[])
             printWorkbenchWindow->setOpenDesignerCallback(openDesigner);
             printWorkbenchWindow->setOpenFieldPresetManagerCallback(openFieldPresets);
             printWorkbenchWindow->setOpenSettingsCallback([&settingsWindow] {
-                settingsWindow.reloadFromDisk();
+                settingsWindow.requestExternalRefresh(true);
                 sleekpr::app::showAndActivateWindow(settingsWindow);
             });
         } else {
-            printWorkbenchWindow->reloadFromDisk();
+            printWorkbenchWindow->requestExternalRefresh();
         }
         sleekpr::app::showAndActivateWindow(*printWorkbenchWindow);
     };
@@ -188,7 +214,7 @@ int main(int argc, char* argv[])
 
     QAction settingsAction(QString::fromUtf8("设置"), &app);
     QObject::connect(&settingsAction, &QAction::triggered, &settingsWindow, [&settingsWindow] {
-        settingsWindow.reloadFromDisk();
+        settingsWindow.requestExternalRefresh(true);
         sleekpr::app::showAndActivateWindow(settingsWindow);
     });
 
@@ -248,5 +274,11 @@ int main(int argc, char* argv[])
         if (printWorkbenchWindow != nullptr) sleekpr::app::showAndActivateWindow(*printWorkbenchWindow);
     });
 
-    return app.exec();
+    const auto result = app.exec();
+    previewExecutor.shutdown();
+    if (qEnvironmentVariableIsSet("SLEEKPR_PERF_TRACE")) {
+        qInfo().noquote() << "sleekpr performance:" << QJsonDocument(
+            sleekpr::infrastructure::ClientPerformanceMetrics::applicationMetrics().snapshot()).toJson(QJsonDocument::Compact);
+    }
+    return result;
 }

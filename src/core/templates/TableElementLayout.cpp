@@ -426,8 +426,10 @@ void appendColumnCells(TableLayoutPage* page,
                        const QJsonObject& rootValues,
                        const QString& rowKey,
                        bool header,
-                       const QHash<int, double>* detailRowHeightsByIndex = nullptr)
+                       const QHash<int, double>* detailRowHeightsByIndex = nullptr,
+                       PreviewPlanningBudget* budget = nullptr)
 {
+    if (budget && !budget->ensureCells(table.columns.size())) return;
     const auto widths = resolvedColumnWidths(table);
     const auto columns = columnIndexById(table);
     const auto rowOffset = sourceRowIndex < 0 ? 0 : sourceRowIndex;
@@ -451,6 +453,7 @@ void appendColumnCells(TableLayoutPage* page,
             continue;
         }
 
+        if (budget && !budget->consumeCells(1)) return;
         auto cell = makeCell(
             table,
             column,
@@ -575,7 +578,8 @@ void appendHeaderBandsToPage(TableLayoutPage* page,
                              const QList<TableRowBand>& headers,
                              const QJsonObject& rootValues,
                              int pageNumber,
-                             double* currentY)
+                             double* currentY,
+                             PreviewPlanningBudget* budget)
 {
     if (!shouldRepeatHeaderOnPage(table, pageNumber)) {
         return;
@@ -585,7 +589,8 @@ void appendHeaderBandsToPage(TableLayoutPage* page,
         const auto rowKey = pageNumber == 1
             ? rowBand.id
             : QStringLiteral("page%1.%2").arg(pageNumber).arg(rowBand.id);
-        appendColumnCells(page, table, rowBand.id, -1, *currentY, staticRowBandHeight(rowBand), nullptr, rootValues, rowKey, true);
+        appendColumnCells(page, table, rowBand.id, -1, *currentY, staticRowBandHeight(rowBand), nullptr, rootValues, rowKey, true, nullptr, budget);
+        if (budget && !budget->ok()) return;
         *currentY += staticRowBandHeight(rowBand);
     }
 }
@@ -700,12 +705,14 @@ void appendDetailRowToPage(TableLayoutPage* page,
                            const QJsonObject& rootValues,
                            int rowIndex,
                            const QHash<int, double>& detailHeightsByIndex,
-                           double* currentY)
+                           double* currentY,
+                           PreviewPlanningBudget* budget)
 {
     const auto rowKey = QStringLiteral("row%1").arg(rowIndex);
     for (const auto& rowBand : details) {
         const auto rowHeight = resolvedRowHeight(table, rowBand, row);
-        appendColumnCells(page, table, rowBand.id, rowIndex, *currentY, rowHeight, &row, rootValues, rowKey, false, &detailHeightsByIndex);
+        appendColumnCells(page, table, rowBand.id, rowIndex, *currentY, rowHeight, &row, rootValues, rowKey, false, &detailHeightsByIndex, budget);
+        if (budget && !budget->ok()) return;
         *currentY += rowHeight;
     }
     ++page->rowCount;
@@ -715,23 +722,30 @@ void appendStaticBandToPage(TableLayoutPage* page,
                             const TableElement& table,
                             const TableRowBand& rowBand,
                             const QJsonObject& rootValues,
-                            double* currentY)
+                            double* currentY,
+                            PreviewPlanningBudget* budget)
 {
     const auto rowHeight = staticRowBandHeight(rowBand);
-    appendColumnCells(page, table, rowBand.id, -1, *currentY, rowHeight, nullptr, rootValues, rowBand.id, false);
+    appendColumnCells(page, table, rowBand.id, -1, *currentY, rowHeight, nullptr, rootValues, rowBand.id, false, nullptr, budget);
     *currentY += rowHeight;
 }
 
-} // namespace
+} // 匿名命名空间
 
 bool TableLayoutResult::success() const
 {
     return errorMessage.isEmpty();
 }
 
-TableLayoutResult TableElementLayout::layout(const TableElement& table, const TemplateRenderContext& context)
+TableLayoutResult TableElementLayout::layout(const TableElement& table, const TemplateRenderContext& context, PreviewPlanningBudget* budget)
 {
     TableLayoutResult result;
+    const auto budgetFailure = [&] {
+        result.pages.clear();
+        result.errorMessage = budget->message;
+        return result;
+    };
+    if (budget && !budget->ensurePages(1)) return budgetFailure();
     const auto tableId = table.id.trimmed();
     if (tableId.isEmpty()) {
         result.errorMessage = QString::fromUtf8("表格 id 不能为空");
@@ -759,6 +773,17 @@ TableLayoutResult TableElementLayout::layout(const TableElement& table, const Te
     const auto headers = headerBands(table);
     const auto details = detailBands(table);
     const auto trailingBands = staticTrailingBands(table);
+    if (budget) {
+        if (!budget->ensureCells(0)) return budgetFailure();
+        const auto candidateBands = (budget->maxCells - budget->usedCells) / table.columns.size();
+        // 行高测量会扫描候选明细，必须在建立行高哈希和单元格列表前排除明显超量的数据。
+        if (headers.size() > candidateBands || trailingBands.size() > candidateBands - headers.size()
+            || (!details.isEmpty() && rows.size() > (candidateBands - headers.size() - trailingBands.size()) / details.size())) {
+            budget->exceeded = PreviewPlanningLimit::Cells;
+            budget->message = QString::fromUtf8("表格候选单元格超过预览预算，请减少数据或拆分批次");
+            return budgetFailure();
+        }
+    }
     const auto detailHeightsByIndex = detailRowHeightsByIndex(table, details, rows);
 
     int pageNumber = 1;
@@ -767,26 +792,35 @@ TableLayoutResult TableElementLayout::layout(const TableElement& table, const Te
     page.firstRowIndex = 0;
 
     double currentY = 0.0;
-    appendHeaderBandsToPage(&page, table, headers, context.values, pageNumber, &currentY);
+    appendHeaderBandsToPage(&page, table, headers, context.values, pageNumber, &currentY, budget);
+    if (budget && !budget->ok()) return budgetFailure();
 
     auto finishCurrentPage = [&result, &page]() {
         result.pages.append(page);
     };
 
     auto startNextPage = [&](int firstRowIndex) -> bool {
-        finishCurrentPage();
-        ++pageNumber;
         QString pageLimitError;
-        if (!canStartPage(table, pageNumber, &pageLimitError)) {
+        if (!canStartPage(table, pageNumber + 1, &pageLimitError)) {
+            // 原生截断策略先决定是否结束；不能把主动截断误报成预览页数超限。
+            finishCurrentPage();
+            ++pageNumber;
             result.errorMessage = pageLimitError;
             return false;
         }
+        if (budget && !budget->ensurePages(pageNumber + 1)) {
+            result.errorMessage = budget->message;
+            return false;
+        }
+        finishCurrentPage();
+        ++pageNumber;
 
         page = TableLayoutPage{};
         page.pageNumber = pageNumber;
         page.firstRowIndex = firstRowIndex;
         currentY = 0.0;
-        appendHeaderBandsToPage(&page, table, headers, context.values, pageNumber, &currentY);
+        appendHeaderBandsToPage(&page, table, headers, context.values, pageNumber, &currentY, budget);
+        if (budget && !budget->ok()) { result.errorMessage = budget->message; return false; }
         return true;
     };
 
@@ -886,7 +920,8 @@ TableLayoutResult TableElementLayout::layout(const TableElement& table, const Te
             }
         }
 
-        appendDetailRowToPage(&page, table, details, row, context.values, rowIndex, detailHeightsByIndex, &currentY);
+        appendDetailRowToPage(&page, table, details, row, context.values, rowIndex, detailHeightsByIndex, &currentY, budget);
+        if (budget && !budget->ok()) return budgetFailure();
     }
 
     for (const auto& rowBand : trailingBands) {
@@ -912,7 +947,8 @@ TableLayoutResult TableElementLayout::layout(const TableElement& table, const Te
             }
         }
 
-        appendStaticBandToPage(&page, table, rowBand, context.values, &currentY);
+        appendStaticBandToPage(&page, table, rowBand, context.values, &currentY, budget);
+        if (budget && !budget->ok()) return budgetFailure();
     }
 
     if (!page.cells.isEmpty() || result.pages.isEmpty()) {
@@ -921,4 +957,4 @@ TableLayoutResult TableElementLayout::layout(const TableElement& table, const Te
     return result;
 }
 
-} // namespace sleekpr::core
+} // 命名空间 sleekpr::core

@@ -9,6 +9,8 @@
 #include <QStringList>
 
 #include <algorithm>
+#include <limits>
+#include <stdexcept>
 
 namespace sleekpr::core {
 namespace {
@@ -388,7 +390,7 @@ QString interpolateArrayGridCellText(const TemplateElement& element, const QJson
 
 NativeDrawCommand arrayGridBorderCommand(
     const TemplateElement& element,
-    int cellIndex,
+    qsizetype cellIndex,
     double x,
     double y,
     double width,
@@ -407,7 +409,7 @@ NativeDrawCommand arrayGridBorderCommand(
 
 NativeDrawCommand arrayGridTextCommand(
     const TemplateElement& element,
-    int cellIndex,
+    qsizetype cellIndex,
     double x,
     double y,
     double width,
@@ -438,23 +440,31 @@ QList<NativeDrawCommand> arrayGridCommands(
     const TemplateElement& element,
     const TemplateRenderContext& context,
     double offsetX,
-    double offsetY)
+    double offsetY,
+    PreviewPlanningBudget* budget)
 {
     QList<NativeDrawCommand> commands;
     const auto rows = std::max(1, element.arrayGridRows);
     const auto columns = std::max(1, element.arrayGridColumns);
-    const auto totalCells = rows * columns;
-    commands.reserve(totalCells * 2);
-
     const auto arrayValue = valueAtPath(context.values, element.dataPath);
     const auto items = arrayValue.isArray() ? arrayValue.toArray() : QJsonArray{};
+    const auto capacity = static_cast<quint64>(rows) * static_cast<quint64>(columns);
+    const auto requestedCells = element.arrayGridDrawBorders ? capacity : std::min(capacity, static_cast<quint64>(items.size()));
+    if (requestedCells > static_cast<quint64>(std::numeric_limits<qsizetype>::max())) {
+        if (budget) { budget->consumeCells(-1); return {}; }
+        throw std::length_error("数组网格容量超出可表示范围");
+    }
+    const auto totalCells = static_cast<qsizetype>(requestedCells);
+    // 展开前先扣单元格预算；限制初始预留不等于限制正常打印输出。
+    if (budget && !budget->consumeCells(totalCells)) return {};
+    commands.reserve(std::min<qsizetype>(totalCells, 2048) * 2);
     const auto cellWidth = element.width / columns;
     const auto defaultCellHeight = element.height / rows;
     const auto rowStep = element.arrayGridRowHeightMm > 0.0
         ? element.arrayGridRowHeightMm
         : defaultCellHeight;
 
-    for (int cellIndex = 0; cellIndex < totalCells; ++cellIndex) {
+    for (qsizetype cellIndex = 0; cellIndex < totalCells; ++cellIndex) {
         const auto rowIndex = cellIndex / columns;
         const auto columnIndex = cellIndex % columns;
         const auto cellX = element.x + offsetX + columnIndex * cellWidth;
@@ -462,6 +472,7 @@ QList<NativeDrawCommand> arrayGridCommands(
         const auto cellY = element.y + offsetY + rowIndex * rowStep;
 
         if (element.arrayGridDrawBorders) {
+            if (budget && !budget->consumeCommands(1)) return {};
             commands.append(arrayGridBorderCommand(element, cellIndex, cellX, cellY, cellWidth, defaultCellHeight));
         }
         if (cellIndex >= items.size()) {
@@ -470,6 +481,7 @@ QList<NativeDrawCommand> arrayGridCommands(
 
         const auto text = interpolateArrayGridCellText(element, items.at(cellIndex));
         if (!text.trimmed().isEmpty()) {
+            if (budget && !budget->consumeCommands(1)) return {};
             commands.append(arrayGridTextCommand(element, cellIndex, cellX, cellY, cellWidth, defaultCellHeight, text));
         }
     }
@@ -482,16 +494,18 @@ QList<NativeDrawCommand> renderTemplateElements(
     const QList<TemplateElement>& elements,
     const TemplateRenderContext& context,
     double offsetX,
-    double offsetY)
+    double offsetY,
+    PreviewPlanningBudget* budget)
 {
     QList<NativeDrawCommand> result;
-    result.reserve(elements.size());
+    result.reserve(std::min<qsizetype>(elements.size(), 2048));
 
     for (const auto& element : elements) {
         const auto elementKey = element.id.trimmed();
         if (elementKey.isEmpty() || !element.visible) {
             continue;
         }
+        if (element.type != TemplateElementType::ArrayGrid && budget && !budget->consumeCommands(1)) return {};
 
         switch (element.type) {
         case TemplateElementType::FixedText: {
@@ -515,7 +529,8 @@ QList<NativeDrawCommand> renderTemplateElements(
             result.append(rectangleCommand(element, offsetX, offsetY));
             break;
         case TemplateElementType::ArrayGrid:
-            result.append(arrayGridCommands(element, context, offsetX, offsetY));
+            result.append(arrayGridCommands(element, context, offsetX, offsetY, budget));
+            if (budget && !budget->ok()) return {};
             break;
         }
     }
@@ -559,16 +574,19 @@ TemplatePrintRenderResult renderPrintInternal(
     const LabelOffset& labelOffset,
     const DeviceProfile& profile,
     const TemplateRenderContext& context,
-    bool stopOnTableError)
+    bool stopOnTableError,
+    PreviewPlanningBudget* budget)
 {
     TemplatePrintRenderResult result;
     result.plan.paperSize = labelPlan.paperSize;
     result.plan.renderDpi = usableRenderDpi(profile.dpi);
+    if (budget && !budget->ensurePages(1)) { result.errorMessage = budget->message; return result; }
 
     const auto renderElements = visibleElementsInRenderOrder(document);
     const auto offsetX = labelOffset.x + profile.offsetX;
     const auto offsetY = labelOffset.y + profile.offsetY;
-    const auto baseCommands = renderTemplateElements(labelPlan, renderElements, context, offsetX, offsetY);
+    const auto baseCommands = renderTemplateElements(labelPlan, renderElements, context, offsetX, offsetY, budget);
+    if (budget && !budget->ok()) { result.errorMessage = budget->message; return result; }
 
     NativePrintPage firstPage;
     firstPage.pageNumber = 1;
@@ -577,7 +595,7 @@ TemplatePrintRenderResult renderPrintInternal(
 
     const auto renderTables = visibleTablesInRenderOrder(document);
     for (const auto& table : renderTables) {
-        const auto tableResult = TableElementRenderer::renderPages(table, context, offsetX, offsetY);
+        const auto tableResult = TableElementRenderer::renderPages(table, context, offsetX, offsetY, budget);
         if (!tableResult.success()) {
             if (stopOnTableError) {
                 // 正式打印和 HTTP 预览不能静默丢表格；必须把表格数据错误返回给调用方。
@@ -591,6 +609,11 @@ TemplatePrintRenderResult renderPrintInternal(
         }
 
         while (result.plan.pages.size() < tableResult.pages.size()) {
+            if (budget && (!budget->ensurePages(result.plan.pages.size() + 1) || !budget->consumeCommands(baseCommands.size()))) {
+                result.errorMessage = budget->message;
+                result.plan.pages.clear();
+                return result;
+            }
             NativePrintPage page;
             page.pageNumber = result.plan.pages.size() + 1;
             // 当前模型还没有元素的首页/每页/末页作用域配置，非表格元素先按每页固定内容重复。
@@ -603,6 +626,11 @@ TemplatePrintRenderResult renderPrintInternal(
         }
     }
 
+    if (budget && !budget->consumePages(result.plan.pages.size())) {
+        result.errorMessage = budget->message;
+        result.plan.pages.clear();
+        return result;
+    }
     applyDeviceScale(result.plan, profile);
     return result;
 }
@@ -635,7 +663,7 @@ NativePrintDrawingPlan TemplateDocumentRenderer::renderPrint(
     const DeviceProfile& profile,
     const TemplateRenderContext& context) const
 {
-    return renderPrintInternal(document, labelPlan, labelOffset, profile, context, false).plan;
+    return renderPrintInternal(document, labelPlan, labelOffset, profile, context, false, nullptr).plan;
 }
 
 TemplatePrintRenderResult TemplateDocumentRenderer::tryRenderPrint(
@@ -643,9 +671,10 @@ TemplatePrintRenderResult TemplateDocumentRenderer::tryRenderPrint(
     const LabelRenderPlan& labelPlan,
     const LabelOffset& labelOffset,
     const DeviceProfile& profile,
-    const TemplateRenderContext& context) const
+    const TemplateRenderContext& context,
+    PreviewPlanningBudget* budget) const
 {
-    return renderPrintInternal(document, labelPlan, labelOffset, profile, context, true);
+    return renderPrintInternal(document, labelPlan, labelOffset, profile, context, true, budget);
 }
 
 } // 命名空间 sleekpr::core

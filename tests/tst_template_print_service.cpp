@@ -5,6 +5,7 @@
 #include "sleekpr/core/templates/TemplateDocumentJson.h"
 #include "sleekpr/core/templates/TemplateInputSchema.h"
 #include "sleekpr/core/templates/TemplateLibraryStore.h"
+#include "sleekpr/core/printing/PrintCopyPlanner.h"
 
 #include <QDir>
 #include <QFile>
@@ -63,6 +64,9 @@ private slots:
     void catalogReportsLibraryPathThatIsNotDirectory();
     void findTemplatePreservesLegacyAliasesAndDefault();
     void prepareKeepsSchemaFreeValues();
+    void snapshotFreezesPresetPaperAndDocument();
+    void copyValidationDoesNotMaterializePages();
+    void previewBudgetFailureIsStructuredWhilePrintingRemainsUnbounded();
     void prepareBlocksRequiredFieldsWithoutUsingSamples();
     void prepareUsesRequestThenPresetThenDefault();
     void prepareNeverMergesSampleData();
@@ -232,6 +236,92 @@ void TemplatePrintServiceTests::prepareKeepsSchemaFreeValues()
     QCOMPARE(prepared->printPlan.pages.size(), 1);
     QCOMPARE(prepared->printPlan.pages.first().commands.first().text, QStringLiteral("request-name"));
     QVERIFY(code.isEmpty());
+}
+
+void TemplatePrintServiceTests::snapshotFreezesPresetPaperAndDocument()
+{
+    QTemporaryDir dir;
+    infrastructure::TemplatePrintService service(dir.filePath(QStringLiteral("settings.json")));
+    core::TemplateLibraryStore library(dir.filePath(QStringLiteral("templates")));
+    auto document = productTemplate();
+    document.paperSpecId = QStringLiteral("custom-paper");
+    core::FieldDefinition field;
+    field.key = QStringLiteral("productName");
+    document.fieldSchema = {field};
+    QVERIFY(library.saveTemplate(document));
+    core::PaperSpecStore papers(dir.filePath(QStringLiteral("paper-specs.json")));
+    core::PaperSpec paper;
+    paper.id = document.paperSpecId;
+    paper.name = QStringLiteral("冻结纸张");
+    paper.widthMm = 80;
+    paper.heightMm = 30;
+    paper.defaultDpi = 203;
+    paper.marginLeftMm = 2;
+    QVERIFY(papers.savePaperSpec(paper));
+    core::FieldPreset preset;
+    preset.id = QStringLiteral("product-data");
+    preset.name = QStringLiteral("冻结字段");
+    preset.templateId = document.id;
+    preset.values = {{QStringLiteral("productName"), QStringLiteral("frozen")}};
+    QVERIFY(service.saveFieldPreset(preset));
+    auto input = productInput();
+    input.templateId = document.id;
+    input.fieldPresetId = preset.id;
+    input.values = {};
+    core::PrintClientSettings settings;
+    const auto snapshot = service.resolveSnapshot(settings, input);
+    QVERIFY(snapshot.has_value());
+    document.layers.first().elements.first().x = 10;
+    QVERIFY(library.saveTemplate(document));
+    preset.values = {{QStringLiteral("productName"), QStringLiteral("external")}};
+    QVERIFY(service.saveFieldPreset(preset));
+    paper.widthMm = 100;
+    paper.defaultDpi = 300;
+    QVERIFY(papers.savePaperSpec(paper));
+    const auto prepared = service.prepareSnapshot(*snapshot);
+    QVERIFY(prepared.has_value());
+    QCOMPARE(prepared->printPlan.paperSize.widthMm(), 80.0);
+    QCOMPARE(prepared->printPlan.renderDpi, 203.0);
+    QCOMPARE(prepared->printPlan.pages.first().commands.first().text, QStringLiteral("frozen"));
+    QCOMPARE(prepared->printPlan.pages.first().commands.first().x, 3.0);
+    const auto latest = service.prepare(settings, input);
+    QVERIFY(latest.has_value());
+    QCOMPARE(latest->printPlan.paperSize.widthMm(), 100.0);
+    QCOMPARE(latest->printPlan.pages.first().commands.first().text, QStringLiteral("external"));
+}
+
+void TemplatePrintServiceTests::copyValidationDoesNotMaterializePages()
+{
+    core::NativePrintDrawingPlan plan;
+    plan.pages = {{1, {}}, {2, {}}};
+    const auto* originalStorage = plan.pages.constData();
+    QString error;
+    const auto pages = core::PrintCopyPlanner::validateCopies(plan, 100, &error);
+    QVERIFY2(pages.has_value(), qPrintable(error));
+    QCOMPARE(*pages, 200);
+    QCOMPARE(plan.pages.constData(), originalStorage);
+    QCOMPARE(plan.pages.size(), 2);
+    QCOMPARE(core::PrintCopyPlanner::repeat(plan, 100)->pages.size(), *pages);
+    QVERIFY(!core::PrintCopyPlanner::validateCopies(plan, 101, &error).has_value());
+    QVERIFY(!error.isEmpty());
+}
+
+void TemplatePrintServiceTests::previewBudgetFailureIsStructuredWhilePrintingRemainsUnbounded()
+{
+    QTemporaryDir directory;
+    infrastructure::TemplatePrintService service(directory.filePath(QStringLiteral("settings.json")));
+    core::PrintClientSettings settings;
+    settings.templateDocuments.insert(QStringLiteral("default"), productTemplate());
+    const auto snapshot = service.resolveSnapshot(settings, productInput());
+    QVERIFY(snapshot.has_value());
+    core::PreviewPlanningBudget budget;
+    budget.maxCommands = 0;
+    QString code, error;
+    core::PrintPreflightReport report;
+    QVERIFY(!service.prepareSnapshot(*snapshot, &report, &code, &error, &budget).has_value());
+    QCOMPARE(code, QStringLiteral("REQUEST_TOO_LARGE"));
+    QVERIFY(!error.isEmpty());
+    QVERIFY(service.prepare(settings, productInput()).has_value());
 }
 
 void TemplatePrintServiceTests::prepareBlocksRequiredFieldsWithoutUsingSamples()

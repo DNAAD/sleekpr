@@ -17,7 +17,8 @@ std::optional<TemplateRequestPlan> buildTemplateRequestPlan(
     const QJsonObject& root,
     const QString& selectedPrinter,
     QString* errorCode,
-    QString* errorMessage)
+    QString* errorMessage,
+    core::PreviewPlanningBudget* budget)
 {
     const auto fail = [errorCode, errorMessage](const QString& code, const QString& message) {
         if (errorCode != nullptr) {
@@ -44,7 +45,7 @@ std::optional<TemplateRequestPlan> buildTemplateRequestPlan(
     }
     input.values = valuesValue.toObject();
 
-    const auto prepared = service.prepare(settings, input, errorCode, errorMessage);
+    const auto prepared = service.prepare(settings, input, errorCode, errorMessage, nullptr, budget);
     if (!prepared.has_value()) {
         return std::nullopt;
     }

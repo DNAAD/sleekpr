@@ -10,6 +10,7 @@
 )
 
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'packaging\ExecutableBuildInfo.psm1') -Force
 
 function Resolve-ExistingPath {
     param(
@@ -150,8 +151,19 @@ if (-not (Test-Path -LiteralPath $exePath)) {
     throw "未找到可启动程序：$exePath"
 }
 
+Write-Host "目标程序：$exePath"
+$identity = Read-ExecutableBuildInfo -ExecutablePath $exePath
+if ($null -eq $identity) {
+    Write-Warning '目标程序未提供安全的构建标识；本次不探测启动，使用 -Rebuild 可更新到新版本。'
+} else {
+    Write-Host ('构建标识：' + ($identity | ConvertTo-Json -Depth 6 -Compress))
+    if ($identity.configuration -ne $Mode) {
+        Write-Warning ('目标程序实际为 ' + $identity.configuration + '，与所选模式 ' + $Mode + ' 不一致，请使用 -Rebuild。')
+    }
+}
+
 if ($NoLaunch) {
-    Write-Host "已验证可启动程序存在：$exePath"
+    Write-Host "已识别目标程序，未启动：$exePath"
     exit 0
 }
 

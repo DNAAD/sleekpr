@@ -2,6 +2,7 @@
 #include "sleekpr/app/PrintPreviewPanel.h"
 #include "sleekpr/core/native/NativePlanJsonSerializer.h"
 #include "sleekpr/core/templates/TemplateDocumentRenderer.h"
+#include "sleekpr/infrastructure/preview/PreviewExecutor.h"
 
 #include <QComboBox>
 #include <QCoreApplication>
@@ -12,11 +13,25 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QThread>
 #include <QtTest>
 
 using namespace sleekpr;
 
 namespace {
+
+void delayPreviewPool()
+{
+    const int delay = qBound(0, qEnvironmentVariableIntValue("SLEEKPR_TEST_PREVIEW_DELAY_MS"), 1000);
+    if (delay == 0) return;
+    // 在提交实际预览前占住两个工作槽，避免窗口创建耗时掩盖测试中的固定等待竞态。
+    for (int i = 0; i < 2; ++i) {
+        infrastructure::PreviewExecutor::applicationInstance().submit([delay] {
+            QThread::msleep(delay);
+            return infrastructure::PreviewWorkResult{};
+        }, [](auto) {});
+    }
+}
 
 core::TemplateDocument locatorDocument()
 {
@@ -68,6 +83,14 @@ core::NativePrintDrawingPlan calibratedPlan()
 QLabel* previewImage(app::PrintPreviewPanel& panel)
 {
     return panel.findChild<QLabel*>(QStringLiteral("workbenchPreviewImage"));
+}
+
+bool previewReady(app::PrintPreviewPanel& panel)
+{
+    const auto* image = previewImage(panel);
+    // 诊断页没有正式打印计划，只要求当前诊断底图已就绪。
+    return image && !image->pixmap().isNull()
+        && (panel.property("printPreflightDiagnostic").toBool() || panel.hasCurrentImage());
 }
 
 QJsonArray serializedPages(const core::NativePrintDrawingPlan& plan)
@@ -143,6 +166,8 @@ class PrintPreviewTests final : public QObject
 
 private slots:
     void initTestCase() { app::applySleekprTheme(*qApp); }
+    void previewRasterizationIsAsynchronous();
+    void budgetFailureClearsOldImageAndCurrentState();
     void highlightsAllTargetsWithoutChangingPlanOrPixmap();
     void highlightsUseRendererCalibratedCoordinates();
     void arrayGridHighlightsEveryCommandWithoutPrefixCollision();
@@ -171,8 +196,9 @@ void PrintPreviewTests::highlightsAllTargetsWithoutChangingPlanOrPixmap()
     panel.resize(720, 360);
     panel.show();
     QVERIFY(QTest::qWaitForWindowExposed(&panel));
+    delayPreviewPool();
     panel.setPlan(plan);
-    QTest::qWait(30);
+    QTRY_VERIFY(previewReady(panel));
     auto* image = previewImage(panel);
     QVERIFY(image != nullptr && !image->pixmap().isNull());
     const auto baseline = paintedImage(*image);
@@ -191,7 +217,7 @@ void PrintPreviewTests::highlightsAllTargetsWithoutChangingPlanOrPixmap()
     QCOMPARE(serializedPages(plan), original);
 
     panel.setElementHighlight(locatorDocument(), {QStringLiteral("first"), QStringLiteral("second")});
-    QTest::qWait(20);
+    QTRY_VERIFY(previewReady(panel));
     QCOMPARE(image->pixmap().cacheKey(), cacheKey);
     panel.clearElementHighlight();
     QCOMPARE(panel.property("printPreflightHighlightCount").toInt(), 0);
@@ -221,7 +247,7 @@ void PrintPreviewTests::highlightsUseRendererCalibratedCoordinates()
     panel.show();
     QVERIFY(QTest::qWaitForWindowExposed(&panel));
     panel.setPlan(plan);
-    QTest::qWait(30);
+    QTRY_VERIFY(previewReady(panel));
     auto* image = previewImage(panel);
     QVERIFY(image != nullptr);
     const auto baseline = paintedImage(*image);
@@ -268,7 +294,7 @@ void PrintPreviewTests::arrayGridHighlightsEveryCommandWithoutPrefixCollision()
     panel.show();
     QVERIFY(QTest::qWaitForWindowExposed(&panel));
     panel.setPlan(plan);
-    QTest::qWait(30);
+    QTRY_VERIFY(previewReady(panel));
     auto* image = previewImage(panel);
     QVERIFY(image != nullptr);
     const auto baseline = paintedImage(*image);
@@ -310,7 +336,7 @@ void PrintPreviewTests::rotatedCommandUsesItsBoundingShape()
     panel.show();
     QVERIFY(QTest::qWaitForWindowExposed(&panel));
     panel.setPlan(plan);
-    QTest::qWait(30);
+    QTRY_VERIFY(previewReady(panel));
     auto* image = previewImage(panel);
     QVERIFY(image != nullptr);
     const auto baseline = paintedImage(*image);
@@ -329,7 +355,7 @@ void PrintPreviewTests::highlightTracksZoomAndWindowResize()
     panel.show();
     QVERIFY(QTest::qWaitForWindowExposed(&panel));
     panel.setPlan(calibratedPlan());
-    QTest::qWait(30);
+    QTRY_VERIFY(previewReady(panel));
     auto* image = previewImage(panel);
     auto* zoom = panel.findChild<QComboBox*>(QStringLiteral("workbenchPreviewZoom"));
     QVERIFY(image != nullptr && zoom != nullptr);
@@ -337,7 +363,7 @@ void PrintPreviewTests::highlightTracksZoomAndWindowResize()
     panel.setElementHighlight(locatorDocument(), {QStringLiteral("first")});
     zoom->setCurrentIndex(zoom->findData(2.0));
     QTRY_VERIFY(image->pixmap().size() != initialSize);
-    QTest::qWait(30);
+    QTRY_VERIFY(previewReady(panel));
     auto highlighted = paintedImage(*image);
     auto cacheKey = image->pixmap().cacheKey();
     panel.clearElementHighlight();
@@ -347,11 +373,11 @@ void PrintPreviewTests::highlightTracksZoomAndWindowResize()
 
     panel.setElementHighlight(locatorDocument(), {QStringLiteral("first")});
     zoom->setCurrentIndex(0);
-    QTest::qWait(30);
+    QTRY_VERIFY(previewReady(panel));
     const auto beforeResize = image->pixmap().size();
     panel.resize(540, 420);
     QTRY_VERIFY(image->pixmap().size() != beforeResize);
-    QTest::qWait(30);
+    QTRY_VERIFY(previewReady(panel));
     QCOMPARE(panel.property("printPreflightHighlightCount").toInt(), 1);
     highlighted = paintedImage(*image);
     cacheKey = image->pixmap().cacheKey();
@@ -375,7 +401,7 @@ void PrintPreviewTests::locatingEnsuresTargetIsVisible()
     auto* scroll = panel.findChild<QScrollArea*>(QStringLiteral("workbenchPreviewScrollArea"));
     QVERIFY(image != nullptr && zoom != nullptr && scroll != nullptr);
     zoom->setCurrentIndex(zoom->findData(2.0));
-    QTest::qWait(30);
+    QTRY_VERIFY(previewReady(panel));
     scroll->horizontalScrollBar()->setValue(0);
     scroll->verticalScrollBar()->setValue(0);
     const auto displayed = image->pixmap().deviceIndependentSize();
@@ -396,7 +422,7 @@ void PrintPreviewTests::firstPageHighlightDoesNotLeakOntoOtherPages()
     panel.show();
     QVERIFY(QTest::qWaitForWindowExposed(&panel));
     panel.setPlan(plan);
-    QTest::qWait(30);
+    QTRY_VERIFY(previewReady(panel));
     auto* image = previewImage(panel);
     auto* next = panel.findChild<QPushButton*>(QStringLiteral("workbenchPageNextButton"));
     auto* previous = panel.findChild<QPushButton*>(QStringLiteral("workbenchPagePreviousButton"));
@@ -404,7 +430,7 @@ void PrintPreviewTests::firstPageHighlightDoesNotLeakOntoOtherPages()
     panel.setElementHighlight(locatorDocument(), {QStringLiteral("first")});
 
     next->click();
-    QTest::qWait(20);
+    QTRY_VERIFY(previewReady(panel));
     QVERIFY(previous->isEnabled() && !next->isEnabled());
     const auto secondPage = paintedImage(*image);
     const auto cacheKey = image->pixmap().cacheKey();
@@ -424,7 +450,7 @@ void PrintPreviewTests::setPlanClearsPreviousTargets()
     panel.show();
     QVERIFY(QTest::qWaitForWindowExposed(&panel));
     panel.setPlan(calibratedPlan());
-    QTest::qWait(30);
+    QTRY_VERIFY(previewReady(panel));
     auto* image = previewImage(panel);
     QVERIFY(image != nullptr);
     const auto baseline = paintedImage(*image);
@@ -447,7 +473,7 @@ void PrintPreviewTests::emptyElementFallbackScalesAfterOffset()
     panel.show();
     QVERIFY(QTest::qWaitForWindowExposed(&panel));
     panel.setPlan(plan);
-    QTest::qWait(30);
+    QTRY_VERIFY(previewReady(panel));
     auto* image = previewImage(panel);
     QVERIFY(image != nullptr);
     const auto baseline = paintedImage(*image);
@@ -483,7 +509,7 @@ void PrintPreviewTests::diagnosticIsNotPrintPreviewAndNeverUsesOldData()
     document.layers[0].elements[1].payload = QStringLiteral("https://example.test/private");
 
     panel.setDiagnosticDocument(document, QSizeF(80, 30));
-    QTest::qWait(30);
+    QTRY_VERIFY(previewReady(panel));
 
     auto* image = previewImage(panel);
     QVERIFY(image != nullptr);
@@ -499,7 +525,7 @@ void PrintPreviewTests::diagnosticIsNotPrintPreviewAndNeverUsesOldData()
     document.layers[0].elements[1].payload = QStringLiteral("different-qr-data");
     document.sampleData = {{QStringLiteral("shared"), QStringLiteral("NEVER-USE-SAMPLE")}};
     panel.setDiagnosticDocument(document, QSizeF(80, 30));
-    QTest::qWait(20);
+    QTRY_VERIFY(previewReady(panel));
     QCOMPARE(paintedImage(*image), diagnostic);
 
     panel.setPlan(calibratedPlan());
@@ -516,7 +542,7 @@ void PrintPreviewTests::diagnosticUsesOnlyCurrentTemplate()
     auto document = locatorDocument();
     document.layers[0].elements.removeLast();
     panel.setDiagnosticDocument(document, QSizeF(80, 30));
-    QTest::qWait(30);
+    QTRY_VERIFY(previewReady(panel));
     auto* image = previewImage(panel);
     QVERIFY(image != nullptr);
     const auto oldDocument = paintedImage(*image);
@@ -524,7 +550,7 @@ void PrintPreviewTests::diagnosticUsesOnlyCurrentTemplate()
     document.layers[0].elements[0].y = 18;
 
     panel.setDiagnosticDocument(document, QSizeF(80, 30));
-    QTest::qWait(20);
+    QTRY_VERIFY(previewReady(panel));
 
     const auto current = paintedImage(*image);
     QVERIFY(changedNear(oldDocument, current, paperPoint(*image, current, QPointF(2, 4))));
@@ -539,7 +565,7 @@ void PrintPreviewTests::diagnosticFallbackScalesAfterOffset()
     panel.show();
     QVERIFY(QTest::qWaitForWindowExposed(&panel));
     panel.setDiagnosticDocument(locatorDocument(), QSizeF(80, 30), 3, 1, 2, 1.5);
-    QTest::qWait(30);
+    QTRY_VERIFY(previewReady(panel));
     auto* image = previewImage(panel);
     QVERIFY(image != nullptr);
     const auto baseline = paintedImage(*image);
@@ -565,7 +591,7 @@ void PrintPreviewTests::clearHighlightRetainsDiagnosticUntilClear()
     panel.show();
     QVERIFY(QTest::qWaitForWindowExposed(&panel));
     panel.setDiagnosticDocument(locatorDocument(), QSizeF(80, 30));
-    QTest::qWait(30);
+    QTRY_VERIFY(previewReady(panel));
     auto* image = previewImage(panel);
     auto* next = panel.findChild<QPushButton*>(QStringLiteral("workbenchPageNextButton"));
     auto* previous = panel.findChild<QPushButton*>(QStringLiteral("workbenchPagePreviousButton"));
@@ -613,7 +639,7 @@ void PrintPreviewTests::fullyOutsideElementShowsPaperEdgeIndicator()
     QVERIFY(QTest::qWaitForWindowExposed(&panel));
     if (diagnostic) panel.setDiagnosticDocument(document, QSizeF(80, 30));
     else panel.setPlan(plan);
-    QTest::qWait(30);
+    QTRY_VERIFY(previewReady(panel));
     auto* image = previewImage(panel);
     QVERIFY(image != nullptr);
     const auto baseline = paintedImage(*image);
@@ -675,5 +701,43 @@ void PrintPreviewTests::diagnosticTitleRemainsFullyVisibleInNarrowPanel()
     }
 }
 
-QTEST_MAIN(PrintPreviewTests)
+void PrintPreviewTests::previewRasterizationIsAsynchronous()
+{
+    app::PrintPreviewPanel panel;
+    panel.setPlan(calibratedPlan());
+    auto* image = previewImage(panel);
+    QVERIFY(image->pixmap().isNull());
+    panel.show();
+    QVERIFY(image->pixmap().isNull());
+    QTRY_VERIFY(!image->pixmap().isNull());
+    auto* zoom = panel.findChild<QComboBox*>(QStringLiteral("workbenchPreviewZoom"));
+    zoom->setCurrentIndex(zoom->findData(1.5));
+    QVERIFY(!panel.property("printPreviewCurrent").toBool());
+    QTRY_VERIFY(panel.property("printPreviewCurrent").toBool());
+}
+
+void PrintPreviewTests::budgetFailureClearsOldImageAndCurrentState()
+{
+    app::PrintPreviewPanel panel;
+    panel.show();
+    auto* zoom = panel.findChild<QComboBox*>(QStringLiteral("workbenchPreviewZoom"));
+    zoom->setCurrentIndex(zoom->findData(1.0));
+    auto plan = calibratedPlan();
+    panel.setPlan(plan);
+    QTRY_VERIFY(panel.hasCurrentImage());
+    plan.paperSize = core::LabelPaperSize(5000, 30);
+    panel.setPlan(plan);
+    QTRY_VERIFY(!panel.previewError().isEmpty());
+    QVERIFY(!panel.hasCurrentImage());
+    QVERIFY(previewImage(panel)->pixmap().isNull());
+    QCOMPARE(panel.previewErrorCode(), QStringLiteral("REQUEST_TOO_LARGE"));
+}
+
+int main(int argc, char** argv)
+{
+    QApplication application(argc, argv);
+    infrastructure::PreviewExecutor executor;
+    PrintPreviewTests tests;
+    return QTest::qExec(&tests, argc, argv);
+}
 #include "tst_print_preview.moc"

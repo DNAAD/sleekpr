@@ -2,6 +2,7 @@
 
 #include "sleekpr/core/templates/TableElement.h"
 #include "sleekpr/core/templates/TemplateRenderContext.h"
+#include "sleekpr/core/printing/PreviewResourceBudget.h"
 
 #include <QList>
 #include <QRectF>
@@ -62,7 +63,8 @@ class TableElementLayout
 {
 public:
     // 布局层只输出毫米坐标和语义单元格，不直接生成绘图命令，方便后续复用到预览、打印和设计器命中。
-    static TableLayoutResult layout(const TableElement& table, const TemplateRenderContext& context);
+    static TableLayoutResult layout(const TableElement& table, const TemplateRenderContext& context,
+        PreviewPlanningBudget* budget = nullptr);
 };
 
-} // namespace sleekpr::core
+} // 命名空间 sleekpr::core

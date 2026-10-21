@@ -4,11 +4,11 @@
 
 namespace sleekpr::core {
 
-std::optional<NativePrintDrawingPlan> PrintCopyPlanner::repeat(const NativePrintDrawingPlan& source,
+std::optional<int> PrintCopyPlanner::validateCopies(const NativePrintDrawingPlan& source,
     int copies, QString* errorMessage)
 {
     if (errorMessage != nullptr) errorMessage->clear();
-    const auto fail = [errorMessage](const QString& message) -> std::optional<NativePrintDrawingPlan> {
+    const auto fail = [errorMessage](const QString& message) -> std::optional<int> {
         if (errorMessage != nullptr) *errorMessage = message;
         return std::nullopt;
     };
@@ -24,9 +24,17 @@ std::optional<NativePrintDrawingPlan> PrintCopyPlanner::repeat(const NativePrint
     if (source.pages.size() > MaxJobPages / copies) {
         return fail(QString::fromUtf8("单次打印不能超过 %1 页").arg(MaxJobPages));
     }
+    return static_cast<int>(source.pages.size()) * copies;
+}
+
+std::optional<NativePrintDrawingPlan> PrintCopyPlanner::repeat(const NativePrintDrawingPlan& source,
+    int copies, QString* errorMessage)
+{
+    const auto pageCount = validateCopies(source, copies, errorMessage);
+    if (!pageCount) return std::nullopt;
     auto result = source;
     result.pages.clear();
-    result.pages.reserve(source.pages.size() * copies);
+    result.pages.reserve(*pageCount);
     for (int copy = 0; copy < copies; ++copy) {
         for (auto page : source.pages) {
             page.pageNumber = result.pages.size() + 1;

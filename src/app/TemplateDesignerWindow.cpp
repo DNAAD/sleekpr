@@ -1,4 +1,6 @@
 #include "sleekpr/app/TemplateDesignerWindow.h"
+#include "sleekpr/app/LatestPreviewQueue.h"
+#include "sleekpr/infrastructure/diagnostics/ClientPerformanceMetrics.h"
 #include "sleekpr/app/TemplateElementBindings.h"
 #include "sleekpr/app/DesignerFeatures.h"
 
@@ -77,7 +79,6 @@ constexpr auto kDefaultPaperSpecId = "label-80x30";
 constexpr int kControlAutoApplyDelayMs = 80;
 constexpr int kPreviewRefreshDelayMs = 16;
 constexpr int kSettingsChangedDelayMs = 240;
-constexpr double kDesignerInteractivePreviewDpi = 152.4;
 constexpr double kColumnResizeHandleTolerancePx = 6.0;
 constexpr double kColumnResizeMinimumWidthMm = 2.0;
 constexpr double kMinimumCanvasRowHeightMm = 0.1;
@@ -339,6 +340,7 @@ TemplateDesignerWindow::TemplateDesignerWindow(
     , m_prePrintCallback(std::move(prePrintCallback))
     , m_templateLibraryDirectoryPath(std::move(templateLibraryDirectoryPath))
 {
+    m_persistenceBaseline.settings = m_settings;
     setWindowTitle(kTableDesignerEnabled
             ? QString::fromUtf8("sleekpr 模板设计器")
             : QString::fromUtf8("sleekpr 标签设计器"));
@@ -357,6 +359,10 @@ TemplateDesignerWindow::TemplateDesignerWindow(
 
 TemplateDesignerWindow::~TemplateDesignerWindow()
 {
+    if (m_previewQueue) {
+        m_previewQueue->invalidate();
+        QObject::disconnect(m_previewQueue, nullptr, this, nullptr);
+    }
     // 关闭窗口会让子编辑器失焦，先断开自动应用，避免成员析构后再读取文档。
     if (m_inspectorPanel != nullptr) QObject::disconnect(m_inspectorPanel, nullptr, this, nullptr);
     QObject::disconnect(qApp, nullptr, this, nullptr);
@@ -392,6 +398,7 @@ void TemplateDesignerWindow::showEvent(QShowEvent* event)
     if (m_fitToCanvas) {
         fitPreviewToCanvas();
     }
+    if (m_previewDirty) refreshPreview(true);
 }
 
 void TemplateDesignerWindow::resizeEvent(QResizeEvent* event)
@@ -444,7 +451,7 @@ void TemplateDesignerWindow::fitPreviewToCanvas()
     m_zoomCombo->setCurrentIndex(index);
     if (!indexChanged && std::abs(m_previewZoomFactor - scale) > 0.0001) {
         m_previewZoomFactor = scale;
-        refreshPreview();
+        refreshPreview(true);
     }
     m_workspacePanel->fitCanvasButton()->setChecked(true);
 }
@@ -559,6 +566,7 @@ void TemplateDesignerWindow::buildUi()
     connect(m_sampleDataEdit, &QPlainTextEdit::destroyed, this, [this] { m_sampleDataEdit = nullptr; });
     m_sampleDataErrorLabel = workspacePanel->sampleDataErrorLabel();
     m_statusLabel = workspacePanel->statusLabel();
+    setupPreviewQueue();
     m_previewRefreshTimer = new QTimer(this);
     m_previewRefreshTimer->setObjectName(QStringLiteral("designerPreviewRefreshTimer"));
     m_previewRefreshTimer->setSingleShot(true);
@@ -632,6 +640,7 @@ void TemplateDesignerWindow::buildUi()
     shellLayout->addWidget(mainSplitter, 1);
     rootLayout->addWidget(workspacePanel->toolbarWidget());
     rootLayout->addWidget(shell, 1);
+    setupPersistenceNotice();
 
     connect(addLayerButton, &QPushButton::clicked, this, [this] { addLayer(); });
     connect(deleteLayerButton, &QPushButton::clicked, this, [this] { deleteCurrentLayer(); });
@@ -755,7 +764,7 @@ void TemplateDesignerWindow::buildUi()
             }
         }
         m_previewZoomFactor = std::max(0.1, m_zoomCombo->itemData(index).toDouble());
-        refreshPreview();
+        refreshPreview(true);
     });
     // 适合画布仅改变视图倍率，不修改模板毫米坐标或真实打印尺寸。
     connect(workspacePanel->fitCanvasButton(), &QPushButton::clicked, this, [this] {
@@ -1662,6 +1671,7 @@ void TemplateDesignerWindow::prePrintCurrentTemplate()
 
 void TemplateDesignerWindow::saveSampleDataFromEditor()
 {
+    flushPendingPropertyEdits();
     bool sampleDataOk = true;
     QString sampleDataErrorMessage;
     if (!syncSampleDataFromEditor(&sampleDataOk, &sampleDataErrorMessage)) {
@@ -1673,9 +1683,11 @@ void TemplateDesignerWindow::saveSampleDataFromEditor()
     }
 
     updateSampleDataErrorLabel(QString());
+    if (m_settingsSaveHandler) notifySettingsChanged();
     refreshPreview();
     if (m_statusLabel != nullptr) {
-        m_statusLabel->setText(QString::fromUtf8("已保存模拟数据"));
+        m_statusLabel->setText(hasUnsavedPersistenceChanges()
+                ? QString::fromUtf8("未保存，当前草稿已保留") : QString::fromUtf8("已保存模拟数据"));
     }
 }
 
@@ -1992,93 +2004,9 @@ void TemplateDesignerWindow::refreshPaperSpecSelector()
     }
 }
 
-void TemplateDesignerWindow::refreshPreview()
-{
-    ensureCurrentTemplateDocument();
-    if (m_previewLabel == nullptr) {
-        return;
-    }
-    if (m_previewRefreshTimer != nullptr && m_previewRefreshTimer->isActive()) {
-        m_previewRefreshTimer->stop();
-    }
-
-    const auto labelItem = sleekpr::infrastructure::PreviewLabelFactory::createDemoLabel(
-        sleekpr::core::LabelTemplateKey::Default80x30);
-    auto labelPlan = sleekpr::core::LabelRenderPlanner().createPlan(labelItem);
-    const auto paperSize = currentPaperSizeMm();
-    labelPlan.paperSize = sleekpr::core::LabelPaperSize(paperSize.width(), paperSize.height());
-    const auto& document = m_settings.templateDocuments[m_templateKey];
-    const auto printerName = m_deviceProfilePrinterEdit == nullptr ? QString() : m_deviceProfilePrinterEdit->text();
-    const auto profile = sleekpr::core::DeviceProfileResolver::resolve(document.deviceProfiles, printerName);
-    bool sampleDataOk = true;
-    QString sampleDataErrorMessage;
-    const auto renderContext = sampleRenderContext(&sampleDataOk, &sampleDataErrorMessage);
-    const auto drawingPlan = sleekpr::core::TemplateDocumentRenderer().render(
-        document,
-        labelPlan,
-        m_settings.labelOffset,
-        profile,
-        renderContext);
-    m_previewCommands = drawingPlan.commands;
-
-    const auto previewDpi = drawingPlan.renderDpi > 0.0
-        ? std::min(drawingPlan.renderDpi, kDesignerInteractivePreviewDpi)
-        : kDesignerInteractivePreviewDpi;
-    m_previewBaseDpi = previewDpi;
-    // 按显示比例和屏幕像素比重新生成 Qt 图像，放大时不再放大低分辨率位图。
-    const auto deviceRatio = std::max(1.0, m_previewLabel->devicePixelRatioF());
-    const auto rasterDpi = previewDpi * std::max(1.0, m_previewZoomFactor) * deviceRatio;
-    const auto image = sleekpr::infrastructure::LabelPreviewImageRenderer().renderImage(drawingPlan, rasterDpi);
-    auto previewPixmap = QPixmap::fromImage(image);
-    const auto displayPixels = QSize(
-        std::max(1, qRound(paperSize.width() * previewDpi / 25.4 * m_previewZoomFactor * deviceRatio)),
-        std::max(1, qRound(paperSize.height() * previewDpi / 25.4 * m_previewZoomFactor * deviceRatio)));
-    if (previewPixmap.size() != displayPixels && !previewPixmap.isNull()) {
-        previewPixmap = previewPixmap.scaled(displayPixels, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-    }
-    previewPixmap.setDevicePixelRatio(deviceRatio);
-    m_previewLabel->setPixmap(previewPixmap);
-    m_previewLabel->setRulerPaperSizeMm(paperSize);
-    m_previewLabel->setDesignAidCommands(m_previewCommands);
-    m_previewLabel->setDesignAidSelectedElementKey(currentElementId());
-    QList<TablePaginationOverlay> paginationOverlays;
-    if (kTableDesignerEnabled && sampleDataOk) {
-        if (const auto* table = currentTable()) {
-            paginationOverlays = TemplateTablePaginationOverlayPlanner::planForTable(
-                *table,
-                sleekpr::core::TableElementLayout::layout(*table, renderContext));
-        }
-    }
-    m_tablePaginationOverlays = paginationOverlays;
-    m_previewLabel->setTablePaginationOverlays(m_tablePaginationOverlays);
-    const auto previewOrigin = m_previewLabel->printableImageOriginPx();
-    // 预览控件尺寸包含外置标尺边距，打印图层本身仍保持渲染图原始比例，避免标签变形。
-    const auto logicalSize = previewPixmap.deviceIndependentSize().toSize();
-    // 小对象手柄会外置到最小交互框，纸张右下方需保留空间，避免贴边对象的手柄被裁掉。
-    const auto interactionMargin = m_canvasEditor == nullptr ? 0 : 24;
-    m_previewLabel->setFixedSize(logicalSize.width() + previewOrigin.x() + interactionMargin,
-        logicalSize.height() + previewOrigin.y() + interactionMargin);
-    if (m_canvasEditor != nullptr) {
-        m_canvasEditor->refreshOverlay();
-    }
-    if (m_workspacePanel != nullptr) {
-        m_workspacePanel->setPaperSummary(paperSize);
-    }
-
-    const auto validation = sleekpr::core::TemplateDocumentValidator().validate(document, paperSize);
-    if (!sampleDataOk && m_statusLabel != nullptr) {
-        updateSampleDataErrorLabel(sampleDataErrorMessage);
-        m_statusLabel->setText(sampleDataErrorMessage);
-    } else if (validation.hasErrors() && m_statusLabel != nullptr) {
-        updateSampleDataErrorLabel(QString());
-        m_statusLabel->setText(QString::fromUtf8("模板校验失败：%1").arg(validation.firstErrorMessage()));
-    } else {
-        updateSampleDataErrorLabel(QString());
-    }
-}
-
 void TemplateDesignerWindow::refreshAll()
 {
+    infrastructure::PerformanceScope timing(infrastructure::PerformanceStage::DesignerRefresh);
     const auto selection = m_canvasEditor == nullptr ? QStringList{} : m_canvasEditor->selection();
     ScopedBoolFlag syncing(m_syncingCanvasSelection);
     const auto layerId = currentLayerId();
@@ -2099,6 +2027,11 @@ void TemplateDesignerWindow::refreshAll()
 
 void TemplateDesignerWindow::schedulePreviewRefresh(int delayMs)
 {
+    m_previewDirty = true;
+    m_previewPlanDirty = true;
+    m_cachedPreviewPlan.reset();
+    if (m_previewQueue) m_previewQueue->invalidate();
+    setProperty("previewReady", false);
     if (m_previewRefreshTimer == nullptr) {
         refreshPreview();
         return;
@@ -2163,6 +2096,8 @@ void TemplateDesignerWindow::applySelectedPaperSpec()
 
 void TemplateDesignerWindow::refreshSampleDataEditor()
 {
+    // 同一模板的属性全量刷新不能覆盖尚未解析的编辑器原文。
+    if (m_sampleDataDraftDirty && m_sampleDataDraftTemplateKey == m_templateKey) return;
     ensureCurrentTemplateDocument();
     if (m_sampleDataEdit == nullptr) {
         return;
@@ -2174,6 +2109,7 @@ void TemplateDesignerWindow::refreshSampleDataEditor()
         : document.sampleData;
     const QSignalBlocker blocker(m_sampleDataEdit);
     m_sampleDataEdit->setPlainText(sampleDataJson(sampleData));
+    m_sampleDataDraftDirty = false;
     updateSampleDataErrorLabel(QString());
 }
 
@@ -2182,7 +2118,7 @@ void TemplateDesignerWindow::notifySettingsChanged()
     if (m_settingsChangedTimer != nullptr && m_settingsChangedTimer->isActive()) {
         m_settingsChangedTimer->stop();
     }
-    if (m_onSettingsChanged) {
+    if (persistDraft() && m_onSettingsChanged) {
         m_onSettingsChanged(m_settings);
     }
     if (!m_state.isRestoringDocumentHistory()) {
@@ -2377,6 +2313,9 @@ bool TemplateDesignerWindow::syncSampleDataFromEditor(bool* ok, QString* errorMe
     bool parseOk = true;
     QString parseErrorMessage;
     const auto sampleData = sampleDataFromEditor(&parseOk, &parseErrorMessage);
+    // 原文未通过解析时独立保留草稿状态，其他有效属性保存不能把它标成已保存。
+    m_sampleDataDraftDirty = !parseOk;
+    if (!parseOk) m_sampleDataDraftTemplateKey = m_templateKey;
     if (ok != nullptr) {
         *ok = parseOk;
     }

@@ -3,6 +3,7 @@
 #include "sleekpr/core/labels/LabelRenderPlan.h"
 #include "sleekpr/core/native/NativePrintDrawingPlan.h"
 #include "sleekpr/core/settings/PrintClientSettings.h"
+#include "sleekpr/core/printing/PreviewResourceBudget.h"
 
 #include <QJsonObject>
 #include <QString>
@@ -24,7 +25,8 @@ std::optional<TemplateRequestPlan> buildTemplateRequestPlan(
     const QJsonObject& root,
     const QString& selectedPrinter,
     QString* errorCode,
-    QString* errorMessage);
+    QString* errorMessage,
+    core::PreviewPlanningBudget* budget = nullptr);
 
 sleekpr::core::NativePrintDrawingPlan createPrintPlan(
     const sleekpr::core::LabelRenderPlan& labelPlan,

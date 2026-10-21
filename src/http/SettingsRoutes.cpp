@@ -1,6 +1,7 @@
 #include "sleekpr/http/SettingsRoutes.h"
 
 #include "sleekpr/core/settings/FileSettingsStore.h"
+#include "sleekpr/infrastructure/settings/SettingsRepository.h"
 #include "sleekpr/core/settings/PrintClientSettingsJson.h"
 #include "sleekpr/http/LocalHttpRouteSupport.h"
 
@@ -72,12 +73,14 @@ std::optional<LocalHttpResponse> SettingsRoutes::route(
         }
 
         const auto nextSettings = sleekpr::core::PrintClientSettingsJson::fromJson(document.object());
-        if (!sleekpr::core::FileSettingsStore(m_settingsPath).save(nextSettings)) {
+        // 旧接口保持显式整体替换，但与桌面差量保存共用文件锁和备份边界。
+        const auto result = sleekpr::infrastructure::SettingsRepository(m_settingsPath).replace(nextSettings);
+        if (!result.ok()) {
             return jsonResponse(failEnvelope("SAVE_FAILED", "Unable to save settings"), 500, extraHeaders);
         }
         return jsonResponse(
             okEnvelope(sleekpr::core::PrintClientSettingsJson::toJson(
-                sleekpr::core::FileSettingsStore(m_settingsPath).load())),
+                result.snapshot.settings)),
             200,
             extraHeaders);
     }

@@ -8,6 +8,7 @@
 #include "sleekpr/core/printing/PrintCopyPlanner.h"
 #include "sleekpr/core/native/NativePlanJsonSerializer.h"
 #include "sleekpr/infrastructure/printing/LabelPrintEngine.h"
+#include "sleekpr/infrastructure/preview/PreviewExecutor.h"
 
 #include <QComboBox>
 #include <QCheckBox>
@@ -23,6 +24,7 @@
 #include <QSpinBox>
 #include <QTemporaryDir>
 #include <QTabWidget>
+#include <QTimer>
 #include <QtTest>
 
 #include <algorithm>
@@ -132,7 +134,7 @@ private slots:
     void workbenchRequiresReviewAfterExternalTemplateChange();
     void workbenchDoesNotApplyAnotherTemplatesPreset();
     void workbenchReportsCorruptPresetStore();
-    void previewCanRenderBeforeWindowIsShown();
+    void previewDefersUntilWindowIsShown();
     void workbenchInfersMissingFieldsWithoutPreset();
     void workbenchOffersPresetActions();
     void workbenchSavesPresetForCurrentTemplate();
@@ -152,6 +154,9 @@ private slots:
     void workbenchActivationRefreshesLibraryFieldNames();
     void workbenchChecksUseDisplayNamesWithoutDuplicateStatus();
     void workbenchArrayProblemsUseDisplayNames();
+    void hiddenWorkbenchRefreshesOnceOnShow();
+    void stalePreviewNeverEnablesPrint();
+    void clearingSelectionInvalidatesInFlightPreview();
 };
 
 void PrintWorkbenchTests::copiesPreservePageOrderAndPhysicalPlan()
@@ -197,6 +202,7 @@ void PrintWorkbenchTests::workbenchDoesNotPrintSampleData()
     QVERIFY(core::FileSettingsStore(path).save(workbenchSettings()));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
     auto* print = window.findChild<QPushButton*>(QStringLiteral("workbenchPrintButton"));
     auto* status = window.findChild<QLabel*>(QStringLiteral("workbenchStatusLabel"));
     auto* name = window.findChild<QLineEdit*>(QStringLiteral("printField_productName"));
@@ -204,7 +210,7 @@ void PrintWorkbenchTests::workbenchDoesNotPrintSampleData()
     QVERIFY(name->text().isEmpty());
     QVERIFY(!print->isEnabled());
     auto* issues = window.findChild<QListWidget*>(QStringLiteral("printPreflightIssues"));
-    QVERIFY(issues != nullptr && issues->count() > 0);
+    QTRY_VERIFY(issues != nullptr && issues->count() > 0);
     QVERIFY(issues->item(0)->text().contains(QString::fromUtf8("品名")));
     QVERIFY(status->isHidden());
     print->click();
@@ -260,6 +266,7 @@ void PrintWorkbenchTests::workbenchInvalidJsonDisablesStalePrintPlan()
     QVERIFY(core::FileSettingsStore(path).save(workbenchSettings(false)));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
     useJsonInput(window);
     auto* json = window.findChild<QPlainTextEdit*>(QStringLiteral("printValuesJsonEdit"));
     auto* print = window.findChild<QPushButton*>(QStringLiteral("workbenchPrintButton"));
@@ -282,11 +289,13 @@ void PrintWorkbenchTests::workbenchHandlesMissingPrinterAndEngineFailure()
     QVERIFY(core::FileSettingsStore(path).save(workbenchSettings(false)));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow unavailable(path, &engine, [] { return QStringList{}; });
+    unavailable.show();
     auto* button = unavailable.findChild<QPushButton*>(QStringLiteral("workbenchPrintButton"));
     QVERIFY(button != nullptr && !button->isEnabled());
     button->click();
     QCOMPARE(engine.calls, 0);
     app::PrintWorkbenchWindow failing(path, &engine, testPrinters);
+    failing.show();
     fillLegacyProductName(failing);
     engine.succeeds = false;
     button = failing.findChild<QPushButton*>(QStringLiteral("workbenchPrintButton"));
@@ -305,6 +314,7 @@ void PrintWorkbenchTests::workbenchFitsDesktopAndPreservesDraftOnReload()
     QVERIFY(core::FileSettingsStore(path).save(workbenchSettings()));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
     window.resize(1024, 720);
     window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&window));
@@ -338,6 +348,7 @@ void PrintWorkbenchTests::workbenchSearchCannotPrintHiddenTemplate()
     QVERIFY(core::FileSettingsStore(path).save(workbenchSettings(false)));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
     fillLegacyProductName(window);
     auto* search = window.findChild<QLineEdit*>(QStringLiteral("workbenchTemplateSearch"));
     auto* print = window.findChild<QPushButton*>(QStringLiteral("workbenchPrintButton"));
@@ -357,6 +368,7 @@ void PrintWorkbenchTests::workbenchRequiresReviewAfterExternalTemplateChange()
     QVERIFY(core::FileSettingsStore(path).save(settings));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
     fillLegacyProductName(window);
     auto* print = window.findChild<QPushButton*>(QStringLiteral("workbenchPrintButton"));
     auto* status = window.findChild<QLabel*>(QStringLiteral("workbenchStatusLabel"));
@@ -368,6 +380,7 @@ void PrintWorkbenchTests::workbenchRequiresReviewAfterExternalTemplateChange()
     QTest::qWait(20);
     QCOMPARE(engine.calls, 0);
     QVERIFY(status->text().contains(QString::fromUtf8("更新")));
+    QTRY_VERIFY(print->isEnabled());
     print->click();
     QTRY_COMPARE(engine.calls, 1);
     QCOMPARE(engine.lastPlan.pages.first().commands.first().x, 8.0);
@@ -391,6 +404,7 @@ void PrintWorkbenchTests::workbenchDoesNotApplyAnotherTemplatesPreset()
     QVERIFY(core::FieldPresetStore(directory.filePath(QStringLiteral("field-presets.json"))).savePreset(preset));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
     auto* presets = window.findChild<QComboBox*>(QStringLiteral("workbenchPresetCombo"));
     auto* list = window.findChild<QListWidget*>(QStringLiteral("workbenchTemplateList"));
     QVERIFY(presets != nullptr && list != nullptr);
@@ -414,17 +428,18 @@ void PrintWorkbenchTests::workbenchReportsCorruptPresetStore()
     file.close();
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
     auto* print = window.findChild<QPushButton*>(QStringLiteral("workbenchPrintButton"));
     auto* status = window.findChild<QLabel*>(QStringLiteral("workbenchStatusLabel"));
     QVERIFY(print != nullptr && status != nullptr);
     QVERIFY(!print->isEnabled());
     auto* issues = window.findChild<QListWidget*>(QStringLiteral("printPreflightIssues"));
-    QVERIFY(issues != nullptr && issues->count() > 0);
+    QTRY_VERIFY(issues != nullptr && issues->count() > 0);
     QVERIFY(issues->item(0)->text().contains(QString::fromUtf8("预设")));
     QVERIFY(status->isHidden());
 }
 
-void PrintWorkbenchTests::previewCanRenderBeforeWindowIsShown()
+void PrintWorkbenchTests::previewDefersUntilWindowIsShown()
 {
     app::PrintPreviewPanel preview;
     preview.resize(300, 200);
@@ -433,7 +448,9 @@ void PrintWorkbenchTests::previewCanRenderBeforeWindowIsShown()
     preview.setPlan(plan);
     auto* label = preview.findChild<QLabel*>(QStringLiteral("workbenchPreviewImage"));
     QVERIFY(label != nullptr);
-    QVERIFY(!label->pixmap().isNull());
+    QVERIFY(label->pixmap().isNull());
+    preview.show();
+    QTRY_VERIFY(!label->pixmap().isNull());
     QVERIFY(label->pixmap().height() >= 1);
 }
 
@@ -444,6 +461,7 @@ void PrintWorkbenchTests::workbenchInfersMissingFieldsWithoutPreset()
     QVERIFY(core::FileSettingsStore(path).save(workbenchSettings(false)));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
     auto* name = window.findChild<QLineEdit*>(QStringLiteral("printField_productName"));
     auto* print = window.findChild<QPushButton*>(QStringLiteral("workbenchPrintButton"));
     QVERIFY2(name != nullptr, "没有字段定义和预设的旧模板也必须展示实际引用的字段");
@@ -463,7 +481,9 @@ void PrintWorkbenchTests::workbenchSavesPresetForCurrentTemplate()
     QVERIFY(core::FileSettingsStore(path).save(workbenchSettings(false)));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
     fillLegacyProductName(window);
+    QTRY_VERIFY(window.findChild<QPushButton*>(QStringLiteral("workbenchSavePresetButton"))->isEnabled());
     QString error;
     QVERIFY2(window.saveCurrentValuesAsPreset(QString::fromUtf8("门店标签数据"), &error), qPrintable(error));
     const auto presets = core::FieldPresetStore(directory.filePath(QStringLiteral("field-presets.json"))).presets();
@@ -474,6 +494,7 @@ void PrintWorkbenchTests::workbenchSavesPresetForCurrentTemplate()
     QCOMPARE(presets.first().values[QStringLiteral("productName")].toString(), QString::fromUtf8("本次真实数据"));
     QCOMPARE(engine.calls, 0);
     app::PrintWorkbenchWindow reloaded(path, &engine, testPrinters);
+    reloaded.show();
     auto* combo = reloaded.findChild<QComboBox*>(QStringLiteral("workbenchPresetCombo"));
     QVERIFY(combo != nullptr);
     const auto presetIndex = combo->findData(presets.first().id);
@@ -492,6 +513,8 @@ void PrintWorkbenchTests::workbenchRejectsIncompletePreset()
     QVERIFY(core::FileSettingsStore(path).save(workbenchSettings(false)));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
+    QTRY_VERIFY(window.findChild<QListWidget*>(QStringLiteral("printPreflightIssues"))->count() > 0);
     QString error;
     QVERIFY(!window.saveCurrentValuesAsPreset(QStringLiteral("incomplete"), &error));
     QVERIFY(error.contains(QString::fromUtf8("商品名称")));
@@ -510,6 +533,7 @@ void PrintWorkbenchTests::workbenchSavesPresetWithoutPrinter()
     QVERIFY(core::FileSettingsStore(path).save(workbenchSettings(false)));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, [] { return QStringList{}; });
+    window.show();
     fillLegacyProductName(window);
     auto* save = window.findChild<QPushButton*>(QStringLiteral("workbenchSavePresetButton"));
     auto* print = window.findChild<QPushButton*>(QStringLiteral("workbenchPrintButton"));
@@ -529,6 +553,7 @@ void PrintWorkbenchTests::workbenchAllowsExplicitEmptyLegacyField()
     QVERIFY(core::FileSettingsStore(path).save(workbenchSettings(false)));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
     auto* allowEmpty = window.findChild<QCheckBox*>(QStringLiteral("printField_productName_allowEmpty"));
     auto* print = window.findChild<QPushButton*>(QStringLiteral("workbenchPrintButton"));
     QVERIFY(allowEmpty != nullptr && print != nullptr);
@@ -568,8 +593,10 @@ void PrintWorkbenchTests::workbenchReportsAllReferencedFields()
     QVERIFY(core::FileSettingsStore(path).save(settings));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
     auto* issues = window.findChild<QListWidget*>(QStringLiteral("printPreflightIssues"));
     QVERIFY(issues != nullptr);
+    QTRY_VERIFY(issues->count() > 0);
     QStringList messages;
     for (int row = 0; row < issues->count(); ++row) messages.append(issues->item(row)->text());
     QVERIFY(messages.join(QLatin1Char('\n')).contains(QString::fromUtf8("商品名称")));
@@ -608,6 +635,7 @@ void PrintWorkbenchTests::workbenchOffersPresetActions()
     QVERIFY(core::FileSettingsStore(path).save(workbenchSettings(false)));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
     QVERIFY(window.findChild<QPushButton*>(QStringLiteral("workbenchSavePresetButton")) != nullptr);
     auto* manage = window.findChild<QPushButton*>(QStringLiteral("workbenchManagePresetsButton"));
     QVERIFY(manage != nullptr && !manage->isEnabled());
@@ -626,11 +654,12 @@ void PrintWorkbenchTests::workbenchShowsPreflightProblems()
     QVERIFY(core::FileSettingsStore(path).save(workbenchSettings(false)));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
     auto* panel = window.findChild<QWidget*>(QStringLiteral("printPreflightPanel"));
     QVERIFY2(panel != nullptr, "工作台必须提供可定位的打印前检查面板");
     auto* issues = panel->findChild<QListWidget*>(QStringLiteral("printPreflightIssues"));
     QVERIFY(issues != nullptr);
-    QVERIFY(issues->count() > 0);
+    QTRY_VERIFY(issues->count() > 0);
     QVERIFY(issues->item(0)->text().contains(QString::fromUtf8("商品名称")));
     QCOMPARE(engine.calls, 0);
 }
@@ -646,7 +675,7 @@ void PrintWorkbenchTests::workbenchPreflightLocatesFieldAndInvalidatesImmediatel
     QVERIFY(QTest::qWaitForWindowExposed(&window));
     auto* issues = window.findChild<QListWidget*>(QStringLiteral("printPreflightIssues"));
     auto* name = window.findChild<QLineEdit*>(QStringLiteral("printField_productName"));
-    QVERIFY(issues != nullptr && name != nullptr && issues->count() == 1);
+    QTRY_VERIFY(issues != nullptr && name != nullptr && issues->count() == 1);
     QTest::mouseClick(issues->viewport(), Qt::LeftButton, Qt::NoModifier, issues->visualItemRect(issues->item(0)).center());
     QTRY_VERIFY(name->hasFocus());
     auto* preview = window.findChild<QWidget*>(QStringLiteral("workbenchPreviewPanel"));
@@ -671,6 +700,7 @@ void PrintWorkbenchTests::workbenchPreflightLocatesInvalidGeometry()
     QVERIFY(core::FileSettingsStore(path).save(settings));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
     fillLegacyProductName(window);
     window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&window));
@@ -726,13 +756,14 @@ void PrintWorkbenchTests::workbenchPreflightWarningsRemainPrintable()
     QVERIFY(core::FileSettingsStore(path).save(workbenchSettings(false)));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
     auto* empty = window.findChild<QCheckBox*>(QStringLiteral("printField_productName_allowEmpty"));
     auto* print = window.findChild<QPushButton*>(QStringLiteral("workbenchPrintButton"));
     auto* issues = window.findChild<QListWidget*>(QStringLiteral("printPreflightIssues"));
     QVERIFY(empty != nullptr && print != nullptr && issues != nullptr);
     empty->setChecked(true);
     QTRY_VERIFY(print->isEnabled());
-    QCOMPARE(issues->count(), 1);
+    QTRY_COMPARE(issues->count(), 1);
     QVERIFY(issues->item(0)->text().contains(QString::fromUtf8("警告")));
     QCOMPARE(engine.calls, 0);
 }
@@ -812,6 +843,7 @@ void PrintWorkbenchTests::workbenchRefreshesDisplayNameAndPrintsWithOriginalKey(
     QVERIFY(core::FileSettingsStore(path).save(settings));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
     fillLegacyProductName(window);
     auto* input = window.findChild<QLineEdit*>(QStringLiteral("printField_productName"));
     auto* title = fieldTitle(window);
@@ -847,6 +879,7 @@ void PrintWorkbenchTests::workbenchDisplayNameRefreshKeepsInvalidDraft()
     QVERIFY(core::FileSettingsStore(path).save(settings));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
     useJsonInput(window);
     auto* json = window.findChild<QPlainTextEdit*>(QStringLiteral("printValuesJsonEdit"));
     auto* fields = window.findChild<app::PrintFieldEditorPanel*>();
@@ -878,6 +911,7 @@ void PrintWorkbenchTests::workbenchActivationRefreshesLibraryFieldNames()
     QVERIFY(library.saveTemplate(document));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
     auto* list = window.findChild<QListWidget*>(QStringLiteral("workbenchTemplateList"));
     QVERIFY(list != nullptr);
     for (int row = 0; row < list->count(); ++row) {
@@ -907,12 +941,13 @@ void PrintWorkbenchTests::workbenchChecksUseDisplayNamesWithoutDuplicateStatus()
     QVERIFY(core::FileSettingsStore(path).save(settings));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
     auto* issues = window.findChild<QListWidget*>(QStringLiteral("printPreflightIssues"));
     auto* status = window.findChild<QLabel*>(QStringLiteral("workbenchStatusLabel"));
     auto* print = window.findChild<QPushButton*>(QStringLiteral("workbenchPrintButton"));
     auto* empty = window.findChild<QCheckBox*>(QStringLiteral("printField_productName_allowEmpty"));
     QVERIFY(issues != nullptr && status != nullptr && print != nullptr && empty != nullptr);
-    QCOMPARE(issues->count(), 1);
+    QTRY_COMPARE(issues->count(), 1);
     QCOMPARE(issues->item(0)->text(), QString::fromUtf8("错误：缺少字段 商品名称（%2） 的输入值"));
     QVERIFY(status->isHidden());
 
@@ -956,6 +991,7 @@ void PrintWorkbenchTests::workbenchArrayProblemsUseDisplayNames()
     QVERIFY(core::FileSettingsStore(path).save(settings));
     RecordingPrintEngine engine;
     app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
     auto* items = window.findChild<QPlainTextEdit*>(QStringLiteral("printField_items"));
     auto* issues = window.findChild<QListWidget*>(QStringLiteral("printPreflightIssues"));
     QVERIFY(items != nullptr && issues != nullptr);
@@ -968,5 +1004,83 @@ void PrintWorkbenchTests::workbenchArrayProblemsUseDisplayNames()
     QCOMPARE(engine.calls, 0);
 }
 
-QTEST_MAIN(PrintWorkbenchTests)
+void PrintWorkbenchTests::hiddenWorkbenchRefreshesOnceOnShow()
+{
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("settings.json"));
+    auto settings = workbenchSettings();
+    QVERIFY(core::FileSettingsStore(path).save(settings));
+    int calls = 0;
+    RecordingPrintEngine engine;
+    app::PrintWorkbenchWindow window(path, &engine, [&] { ++calls; return testPrinters(); });
+    const auto before = calls;
+    settings.templateDocuments[QStringLiteral("default")].name = QStringLiteral("external");
+    QVERIFY(core::FileSettingsStore(path).save(settings));
+    window.requestExternalRefresh();
+    window.requestExternalRefresh();
+    QCOMPARE(calls, before);
+    window.show();
+    QTRY_COMPARE(calls, before + 1);
+    QCoreApplication::processEvents();
+    QCOMPARE(calls, before + 1);
+}
+
+void PrintWorkbenchTests::stalePreviewNeverEnablesPrint()
+{
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("settings.json"));
+    QVERIFY(core::FileSettingsStore(path).save(workbenchSettings()));
+    RecordingPrintEngine engine;
+    app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
+    auto* name = window.findChild<QLineEdit*>(QStringLiteral("printField_productName"));
+    auto* button = window.findChild<QPushButton*>(QStringLiteral("workbenchPrintButton"));
+    auto* timer = window.findChild<QTimer*>(QStringLiteral("workbenchPrepareTimer"));
+    QVERIFY(name && button && timer);
+    name->setText(QStringLiteral("older"));
+    QVERIFY(QMetaObject::invokeMethod(timer, "timeout", Qt::DirectConnection));
+    QVERIFY(!button->isEnabled());
+    name->setText(QStringLiteral("newest"));
+    QVERIFY(QMetaObject::invokeMethod(timer, "timeout", Qt::DirectConnection));
+    QVERIFY(!button->isEnabled());
+    QTRY_VERIFY(button->isEnabled());
+    button->click();
+    QTRY_COMPARE(engine.calls, 1);
+    QCOMPARE(engine.lastPlan.pages.first().commands.first().text, QStringLiteral("newest"));
+}
+
+void PrintWorkbenchTests::clearingSelectionInvalidatesInFlightPreview()
+{
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("settings.json"));
+    QVERIFY(core::FileSettingsStore(path).save(workbenchSettings()));
+    RecordingPrintEngine engine;
+    app::PrintWorkbenchWindow window(path, &engine, testPrinters);
+    window.show();
+    auto* name = window.findChild<QLineEdit*>(QStringLiteral("printField_productName"));
+    auto* search = window.findChild<QLineEdit*>(QStringLiteral("workbenchTemplateSearch"));
+    auto* timer = window.findChild<QTimer*>(QStringLiteral("workbenchPrepareTimer"));
+    auto* button = window.findChild<QPushButton*>(QStringLiteral("workbenchPrintButton"));
+    QVERIFY(name && search && timer && button);
+    name->setText(QStringLiteral("pending"));
+    QVERIFY(QMetaObject::invokeMethod(timer, "timeout", Qt::DirectConnection));
+    QVERIFY(window.property("previewRequestedGeneration").isValid());
+    search->setText(QStringLiteral("no-matching-template"));
+    // 此用例排在最后，收束应用执行器后精确派发已完成工作，不依赖固定等待时间。
+    auto& executor = infrastructure::PreviewExecutor::applicationInstance();
+    executor.shutdown();
+    QCoreApplication::sendPostedEvents(&executor, QEvent::MetaCall);
+    QVERIFY(!window.property("previewPublishedGeneration").isValid());
+    QVERIFY(!button->isEnabled());
+    button->click();
+    QCOMPARE(engine.calls, 0);
+}
+
+int main(int argc, char** argv)
+{
+    QApplication application(argc, argv);
+    infrastructure::PreviewExecutor executor;
+    PrintWorkbenchTests tests;
+    return QTest::qExec(&tests, argc, argv);
+}
 #include "tst_print_workbench.moc"

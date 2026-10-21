@@ -1,4 +1,5 @@
 #include <QtTest/QtTest>
+#include "sleekpr/infrastructure/preview/PreviewExecutor.h"
 
 #include <QAbstractItemView>
 #include <QAction>
@@ -84,6 +85,12 @@ TemplateDocument createLibraryTestDocument(
     document.templateKey = templateKey;
     document.layers = {layer};
     return document;
+}
+
+bool showAndWaitForPreview(QWidget& window, QLabel* preview)
+{
+    window.show();
+    return QTest::qWaitFor([&] { return preview != nullptr && window.property("previewReady").toBool(); }, 5000);
 }
 
 QByteArray imageBytes(const QPixmap& pixmap)
@@ -587,7 +594,7 @@ void AppTests::settingsWindowShowsPreviewOnlyWithoutElementEditor()
         }
     }
     QVERIFY(previewLabel != nullptr);
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
     QVERIFY(window.findChild<QCheckBox*>(QStringLiteral("snapToGridCheck")) == nullptr);
     QVERIFY(window.findChild<QPushButton*>(QStringLiteral("addFixedTextButton")) == nullptr);
     QVERIFY(window.findChild<QPushButton*>(QStringLiteral("addBoundFieldButton")) == nullptr);
@@ -641,7 +648,7 @@ void AppTests::settingsWindowLoadsTemplateLibraryDocuments()
     }
     QVERIFY(templateCombo != nullptr);
     QVERIFY(previewLabel != nullptr);
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
 
     const auto defaultBytes = imageBytes(previewLabel->pixmap());
     const auto libraryIndex = templateCombo->findData(QStringLiteral("template-shop-label"));
@@ -650,7 +657,7 @@ void AppTests::settingsWindowLoadsTemplateLibraryDocuments()
 
     templateCombo->setCurrentIndex(libraryIndex);
 
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
     QVERIFY(imageBytes(previewLabel->pixmap()) != defaultBytes);
 }
 
@@ -1328,7 +1335,7 @@ void AppTests::templateDesignerWindowShowsDesignerPreview()
         }
     }
     QVERIFY(previewLabel != nullptr);
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
 }
 
 void AppTests::templateDesignerWindowConfiguresRulerPrecision()
@@ -1347,7 +1354,7 @@ void AppTests::templateDesignerWindowConfiguresRulerPrecision()
     QVERIFY(previewLabel != nullptr);
     QVERIFY(previewLabel->isRulerVisible());
     QCOMPARE(previewLabel->rulerPrecisionMm(), 1.0);
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
     QVERIFY(previewLabel->printableImageOriginPx().x() > 0);
     QVERIFY(previewLabel->printableImageOriginPx().y() > 0);
     QCOMPARE(previewLabel->printableImageSizePx(), previewLabel->pixmap().deviceIndependentSize().toSize());
@@ -1385,6 +1392,7 @@ void AppTests::templateDesignerWindowConfiguresDesignAids()
     QVERIFY(!previewLabel->isDesignAidVisible());
 
     addFixedTextButton->click();
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
     QVERIFY(previewLabel->designAidCommandCount() > 0);
 
     designAidCheck->setChecked(true);
@@ -1528,11 +1536,11 @@ void AppTests::templateDesignerWindowRendersPlaceholdersWithSampleData()
     QVERIFY(sampleDataEdit->toPlainText().contains(QStringLiteral("product_name")));
 
     sampleDataEdit->setPlainText(QString::fromUtf8("{\"product_name\":\"足金串搭项链\"}"));
-    QCoreApplication::processEvents();
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
     const auto goldPreview = imageBytes(previewLabel->pixmap());
 
     sampleDataEdit->setPlainText(QString::fromUtf8("{\"product_name\":\"银手镯\"}"));
-    QCoreApplication::processEvents();
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
     const auto silverPreview = imageBytes(previewLabel->pixmap());
 
     QVERIFY(!goldPreview.isEmpty());
@@ -1540,7 +1548,7 @@ void AppTests::templateDesignerWindowRendersPlaceholdersWithSampleData()
 
     sampleDataEdit->setPlainText(QStringLiteral("{"));
     QCoreApplication::processEvents();
-    QVERIFY(statusLabel->text().contains(QString::fromUtf8("模拟数据 JSON 解析失败")));
+    QTRY_VERIFY(statusLabel->text().contains(QString::fromUtf8("模拟数据 JSON 解析失败")));
 }
 
 void AppTests::templateDesignerWindowSavesSampleDataWithDedicatedButton()
@@ -1868,7 +1876,7 @@ void AppTests::templateDesignerPreviewKeepsRenderedAspectRatio()
 
     QVERIFY(previewLabel != nullptr);
     QVERIFY(!previewLabel->hasScaledContents());
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
     const auto origin = previewLabel->printableImageOriginPx();
     QCOMPARE(
         previewLabel->size(),
@@ -1888,7 +1896,11 @@ void AppTests::templateDesignerPreviewUsesInteractiveDpi()
         }
     }
     QVERIFY(previewLabel != nullptr);
-    QVERIFY(!previewLabel->pixmap().isNull());
+    window.show();
+    auto* zoom = window.findChild<QComboBox*>(QStringLiteral("designerZoomCombo"));
+    QVERIFY(zoom != nullptr);
+    zoom->setCurrentIndex(zoom->findData(1.0));
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
 
     // 交互 DPI 控制逻辑画布尺寸，高分屏需要额外物理像素以避免显示发糊。
     QVERIFY(previewLabel->printableImageSizePx().width() <= 640);
@@ -2134,7 +2146,7 @@ void AppTests::templateDesignerWindowSelectsPaperSpecFromStore()
     paperSpecCombo->setCurrentIndex(a4Index);
 
     QCOMPARE(changedSettings.templateDocuments.value("default").paperSpecId, QString("a4-sheet"));
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
     QVERIFY(previewLabel->pixmap().height() > previewLabel->pixmap().width());
 }
 
@@ -2165,7 +2177,8 @@ void AppTests::templateDesignerWindowShowsTemplateValidationIssues()
 
     auto* statusLabel = window.findChild<QLabel*>(QStringLiteral("designerStatusLabel"));
     QVERIFY(statusLabel != nullptr);
-    QVERIFY(statusLabel->text().contains(QString::fromUtf8("模板校验")));
+    window.show();
+    QTRY_VERIFY(statusLabel->text().contains(QString::fromUtf8("模板校验")));
     QVERIFY(statusLabel->text().contains(QStringLiteral("unknownField")));
 }
 
@@ -2275,7 +2288,7 @@ void AppTests::templateDesignerWindowSwitchesInspectorTabWhenCanvasElementSelect
     QVERIFY(arrayGridTab != nullptr);
     QVERIFY(sampleDataEdit != nullptr);
     QVERIFY(previewLabel != nullptr);
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
 
     addLayerButton->click();
     addArrayGridButton->click();
@@ -2290,6 +2303,7 @@ void AppTests::templateDesignerWindowSwitchesInspectorTabWhenCanvasElementSelect
     {"productName": "Ring", "weight": "1.2"}
   ]
 })json"));
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
 
     const auto pointAtMm = [previewLabel](double xMm, double yMm) {
         const auto origin = previewLabel->printableImageOriginPx();
@@ -2519,7 +2533,7 @@ void AppTests::templateDesignerWindowCoalescesAutoApplyPreviewRefresh()
 
     addLayerButton->click();
     addFixedTextButton->click();
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
     const auto beforePreview = imageBytes(previewLabel->pixmap());
 
     valueEdit->setPlainText(QString::fromUtf8("自动应用预览合并刷新"));
@@ -2557,7 +2571,7 @@ void AppTests::templateDesignerWindowTableColumnEditorAffectsPreviewCommands()
 
     addLayerButton->click();
     addTableButton->click();
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
     const auto beforePreview = imageBytes(previewLabel->pixmap());
     const auto beforeCommandCount = previewLabel->designAidCommandCount();
 
@@ -2595,7 +2609,7 @@ void AppTests::templateDesignerWindowAppliesNumericPropertyPromptly()
 
     addLayerButton->click();
     addFixedTextButton->click();
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
     const auto beforePreview = imageBytes(previewLabel->pixmap());
 
     const auto targetX = xSpin->value() + 8.0;
@@ -2639,7 +2653,7 @@ void AppTests::templateDesignerWindowCoalescesDragPreviewRefresh()
 
     addLayerButton->click();
     addFixedTextButton->click();
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
 
     const auto pointAtMm = [previewLabel](double xMm, double yMm) {
         const auto origin = previewLabel->printableImageOriginPx();
@@ -2718,7 +2732,7 @@ void AppTests::templateDesignerWindowDragsTableColumnWidthOnCanvas()
 
     addLayerButton->click();
     addTableButton->click();
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
 
     const auto tableAt = [](const PrintClientSettings& settings) -> TableElement {
         const auto document = settings.templateDocuments.value(QStringLiteral("default"));
@@ -2778,7 +2792,7 @@ void AppTests::templateDesignerWindowShiftDragsTableCellRangeOnCanvas()
 
     addLayerButton->click();
     addTableButton->click();
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
     QVERIFY(elementList->currentItem() != nullptr);
     QCOMPARE(elementList->currentItem()->data(Qt::UserRole + 1).toString(), QStringLiteral("table"));
 
@@ -2836,7 +2850,7 @@ void AppTests::templateDesignerWindowSingleClicksTableCellOnCanvas()
 
     addLayerButton->click();
     addTableButton->click();
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
 
     const auto table = changedSettings.templateDocuments.value(QStringLiteral("default")).layers.last().tables.first();
     const auto pointAtMm = [previewLabel](double xMm, double yMm) {
@@ -2882,7 +2896,7 @@ void AppTests::templateDesignerWindowKeyboardSelectsTableRowAndMerges()
 
     addLayerButton->click();
     addTableButton->click();
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
 
     const auto table = changedSettings.templateDocuments.value(QStringLiteral("default")).layers.last().tables.first();
     const auto pointAtMm = [previewLabel](double xMm, double yMm) {
@@ -2940,7 +2954,7 @@ void AppTests::templateDesignerWindowKeyboardSelectsTableColumnAndMerges()
 
     addLayerButton->click();
     addTableButton->click();
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
 
     const auto table = changedSettings.templateDocuments.value(QStringLiteral("default")).layers.last().tables.first();
     const auto pointAtMm = [previewLabel](double xMm, double yMm) {
@@ -2998,7 +3012,7 @@ void AppTests::templateDesignerWindowKeyboardSplitsSelectedTableMerge()
 
     addLayerButton->click();
     addTableButton->click();
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
 
     const auto table = changedSettings.templateDocuments.value(QStringLiteral("default")).layers.last().tables.first();
     const auto pointAtMm = [previewLabel](double xMm, double yMm) {
@@ -3045,7 +3059,7 @@ void AppTests::templateDesignerWindowCanvasToolbarTogglesSelectedCellBold()
 
     addLayerButton->click();
     addTableButton->click();
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
 
     const auto tableAt = [](const PrintClientSettings& settings) -> TableElement {
         const auto document = settings.templateDocuments.value(QStringLiteral("default"));
@@ -3101,7 +3115,7 @@ void AppTests::templateDesignerWindowCanvasToolbarAddsSubtotalRowBand()
 
     addLayerButton->click();
     addTableButton->click();
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
 
     const auto tableAt = [](const PrintClientSettings& settings) -> TableElement {
         const auto document = settings.templateDocuments.value(QStringLiteral("default"));
@@ -3763,6 +3777,7 @@ void AppTests::templateDesignerWindowDragsCurrentTableWhenAnotherElementOverlaps
     QVERIFY(elementList->currentItem() != nullptr);
     QCOMPARE(elementList->currentItem()->data(Qt::UserRole + 1).toString(), QStringLiteral("table"));
     const auto tableBefore = changedSettings.templateDocuments.value(QStringLiteral("default")).layers.first().tables.first();
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
 
     const auto pointAtMm = [previewLabel](double xMm, double yMm) {
         const auto origin = previewLabel->printableImageOriginPx();
@@ -3822,7 +3837,7 @@ void AppTests::templateDesignerWindowClickingOverlappedElementClearsTableToolbar
     QVERIFY(previewLabel != nullptr);
 
     addTableButton->click();
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
     const auto table = changedSettings.templateDocuments.value(QStringLiteral("default")).layers.first().tables.first();
 
     const auto pointAtMm = [previewLabel](double xMm, double yMm) {
@@ -3880,7 +3895,7 @@ void AppTests::templateDesignerWindowDraggingTableClearsPreviousRenderedPosition
     QVERIFY(previewLabel != nullptr);
 
     addTableButton->click();
-    QVERIFY(!previewLabel->pixmap().isNull());
+    QVERIFY(showAndWaitForPreview(window, previewLabel));
 
     addColumnButton->click();
     QTRY_COMPARE_WITH_TIMEOUT(
@@ -5111,6 +5126,7 @@ void AppTests::appThemeDefinesWorkbenchStyle()
 int main(int argc, char* argv[])
 {
     QApplication app(argc, argv);
+    sleekpr::infrastructure::PreviewExecutor executor;
     AppTests tests;
     return QTest::qExec(&tests, argc, argv);
 }

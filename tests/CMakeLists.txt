@@ -12,6 +12,10 @@ add_test(NAME sleekpr_core_tests COMMAND sleekpr_core_tests)
 
 if(WIN32)
     function(configure_qt_test_runtime target_name)
+        if(TARGET ${target_name})
+            add_dependencies(${target_name} sleekpr_build_metadata)
+            target_include_directories(${target_name} PRIVATE "${SLEEKPR_GENERATED_INCLUDE_DIR}")
+        endif()
         # CTest 独立启动测试进程时不会自动继承 Qt bin 路径，所有 Qt 测试都需要补齐 DLL 搜索路径。
         set_tests_properties(${target_name} PROPERTIES
             ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"
@@ -19,11 +23,83 @@ if(WIN32)
     endfunction()
 else()
     function(configure_qt_test_runtime target_name)
+        if(TARGET ${target_name})
+            add_dependencies(${target_name} sleekpr_build_metadata)
+            target_include_directories(${target_name} PRIVATE "${SLEEKPR_GENERATED_INCLUDE_DIR}")
+        endif()
         # 非 Windows 平台不需要额外设置 PATH，保留同名函数让每个测试目标的配置方式一致。
     endfunction()
 endif()
 
 configure_qt_test_runtime(sleekpr_core_tests)
+
+foreach(case_name IN ITEMS reportsBuildModeAndRevision diagnosticDoesNotTouchUserSettings marksMissingGitUnknown distinguishesDocsFromSourceDirty updatesWithoutManualReconfigure)
+    add_test(NAME sleekpr_build_info_${case_name} COMMAND "${CMAKE_COMMAND}"
+        "-DCASE=${case_name}" "-DAPP_EXE=$<TARGET_FILE:sleekpr>" "-DEXPECTED_CONFIG=$<CONFIG>"
+        "-DEXPECTED_VERSION=${PROJECT_VERSION}" "-DSOURCE_ROOT=${CMAKE_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_BINARY_DIR}/build-info-tests" "-DGENERATOR_SCRIPT=${CMAKE_SOURCE_DIR}/cmake/GenerateBuildInfo.cmake"
+        "-DBUILD_TEMPLATE=${CMAKE_SOURCE_DIR}/packaging/BuildVersion.h.in" "-DNINJA_PROGRAM=${CMAKE_MAKE_PROGRAM}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/check_build_info.cmake")
+    configure_qt_test_runtime(sleekpr_build_info_${case_name})
+endforeach()
+
+if(WIN32)
+    find_program(SLEEKPR_POWERSHELL NAMES powershell.exe powershell pwsh.exe pwsh REQUIRED)
+    add_test(NAME sleekpr_build_identity_test COMMAND "${SLEEKPR_POWERSHELL}" -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/check_build_identity.ps1" -RepoRoot "${CMAKE_SOURCE_DIR}"
+        -TestRoot "${CMAKE_BINARY_DIR}/build-identity-tests" -ExecutablePath "$<TARGET_FILE:sleekpr>")
+    configure_qt_test_runtime(sleekpr_build_identity_test)
+    add_test(NAME sleekpr_portable_package_test COMMAND "${SLEEKPR_POWERSHELL}" -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/check_portable_package.ps1" -RepoRoot "${CMAKE_SOURCE_DIR}"
+        -TestRoot "${CMAKE_BINARY_DIR}/portable-package-tests")
+endif()
+
+add_executable(sleekpr_settings_change_set_tests tst_settings_change_set.cpp)
+target_link_libraries(sleekpr_settings_change_set_tests PRIVATE sleekpr_core Qt6::Test)
+add_test(NAME sleekpr_settings_change_set_tests COMMAND sleekpr_settings_change_set_tests)
+configure_qt_test_runtime(sleekpr_settings_change_set_tests)
+
+add_executable(sleekpr_client_performance_tests tst_client_performance_metrics.cpp)
+target_link_libraries(sleekpr_client_performance_tests PRIVATE sleekpr_core Qt6::Test)
+add_test(NAME sleekpr_client_performance_tests COMMAND sleekpr_client_performance_tests)
+configure_qt_test_runtime(sleekpr_client_performance_tests)
+
+add_executable(sleekpr_preview_budget_tests tst_preview_resource_budget.cpp)
+target_link_libraries(sleekpr_preview_budget_tests PRIVATE sleekpr_core Qt6::Test)
+add_test(NAME sleekpr_preview_budget_tests COMMAND sleekpr_preview_budget_tests)
+configure_qt_test_runtime(sleekpr_preview_budget_tests)
+
+add_executable(sleekpr_preview_image_tests tst_preview_image_renderer.cpp)
+target_link_libraries(sleekpr_preview_image_tests PRIVATE sleekpr_core Qt6::Test)
+add_test(NAME sleekpr_preview_image_tests COMMAND sleekpr_preview_image_tests)
+configure_qt_test_runtime(sleekpr_preview_image_tests)
+
+add_executable(sleekpr_preview_planning_tests tst_preview_planning_budget.cpp)
+target_link_libraries(sleekpr_preview_planning_tests PRIVATE sleekpr_core Qt6::Test)
+add_test(NAME sleekpr_preview_planning_tests COMMAND sleekpr_preview_planning_tests)
+configure_qt_test_runtime(sleekpr_preview_planning_tests)
+
+add_executable(sleekpr_settings_repository_tests tst_settings_repository.cpp)
+target_link_libraries(sleekpr_settings_repository_tests PRIVATE sleekpr_core Qt6::Test)
+add_test(NAME sleekpr_settings_repository_tests COMMAND sleekpr_settings_repository_tests)
+configure_qt_test_runtime(sleekpr_settings_repository_tests)
+
+add_executable(sleekpr_settings_edit_session_tests tst_settings_edit_session.cpp ../src/app/SettingsEditSession.cpp)
+target_link_libraries(sleekpr_settings_edit_session_tests PRIVATE sleekpr_core Qt6::Test)
+add_test(NAME sleekpr_settings_edit_session_tests COMMAND sleekpr_settings_edit_session_tests)
+configure_qt_test_runtime(sleekpr_settings_edit_session_tests)
+
+add_executable(sleekpr_preview_queue_tests tst_latest_preview_queue.cpp
+    ../src/app/LatestPreviewQueue.cpp ../include/sleekpr/app/LatestPreviewQueue.h)
+target_link_libraries(sleekpr_preview_queue_tests PRIVATE sleekpr_core Qt6::Test)
+add_test(NAME sleekpr_preview_queue_tests COMMAND sleekpr_preview_queue_tests)
+configure_qt_test_runtime(sleekpr_preview_queue_tests)
+
+add_executable(sleekpr_template_preview_job_tests tst_template_preview_job.cpp
+    ../src/app/LatestPreviewQueue.cpp ../include/sleekpr/app/LatestPreviewQueue.h)
+target_link_libraries(sleekpr_template_preview_job_tests PRIVATE sleekpr_core Qt6::Test)
+add_test(NAME sleekpr_template_preview_job_tests COMMAND sleekpr_template_preview_job_tests)
+configure_qt_test_runtime(sleekpr_template_preview_job_tests)
 
 add_executable(sleekpr_app_tests
     tst_app.cpp
@@ -46,6 +122,16 @@ add_executable(sleekpr_app_tests
     ../include/sleekpr/app/FieldBindingSelector.h
     ../src/app/PaperSpecManagerWindow.cpp
     ../src/app/SettingsWindow.cpp
+    ../src/app/BuildInfo.cpp
+    ../src/app/BuildInfoDialog.cpp
+    ../src/app/SettingsWindowRefresh.cpp
+    ../src/app/SettingsWindowPreview.cpp
+    ../src/app/LatestPreviewQueue.cpp
+    ../include/sleekpr/app/LatestPreviewQueue.h
+    ../src/app/SettingsEditSession.cpp
+    ../src/app/SettingsPersistenceNotice.cpp
+    ../src/app/TemplateDesignerPersistence.cpp
+    ../src/app/TemplateDesignerPreview.cpp
     ../src/app/TemplateDesignerFactory.cpp
     ../src/app/TemplateInspectorPanel.cpp
     ../include/sleekpr/app/TemplateInspectorPanel.h
@@ -84,10 +170,17 @@ configure_qt_test_runtime(sleekpr_app_tests)
 # 标签版本单独验证实际发布界面，表格编辑器的既有测试继续保留供后续恢复使用。
 get_target_property(SLEEKPR_LABEL_APP_SOURCES sleekpr SOURCES)
 list(REMOVE_ITEM SLEEKPR_LABEL_APP_SOURCES src/app/main.cpp)
-list(TRANSFORM SLEEKPR_LABEL_APP_SOURCES PREPEND "../")
+set(SLEEKPR_LABEL_APP_TEST_SOURCES)
+foreach(source IN LISTS SLEEKPR_LABEL_APP_SOURCES)
+    if(IS_ABSOLUTE "${source}")
+        list(APPEND SLEEKPR_LABEL_APP_TEST_SOURCES "${source}")
+    else()
+        list(APPEND SLEEKPR_LABEL_APP_TEST_SOURCES "../${source}")
+    endif()
+endforeach()
 add_executable(sleekpr_label_app_tests
     tst_label_designer.cpp
-    ${SLEEKPR_LABEL_APP_SOURCES}
+    ${SLEEKPR_LABEL_APP_TEST_SOURCES}
 )
 set_target_properties(sleekpr_label_app_tests PROPERTIES AUTORCC ON)
 target_link_libraries(sleekpr_label_app_tests PRIVATE
@@ -133,6 +226,11 @@ configure_qt_test_runtime(sleekpr_field_editor_tests)
 add_executable(sleekpr_workbench_tests
     tst_print_workbench.cpp
     ../src/app/PrintWorkbenchWindow.cpp
+    ../src/app/BuildInfo.cpp
+    ../src/app/BuildInfoDialog.cpp
+    ../src/app/PrintWorkbenchPreview.cpp
+    ../src/app/LatestPreviewQueue.cpp
+    ../include/sleekpr/app/LatestPreviewQueue.h
     ../src/app/PrintPreviewPanel.cpp
     ../src/app/PrintFieldEditorPanel.cpp
     ../src/app/TemplateFieldNames.cpp
@@ -161,6 +259,8 @@ configure_qt_test_runtime(sleekpr_preflight_panel_tests)
 
 add_executable(sleekpr_print_preview_tests
     tst_print_preview.cpp
+    ../src/app/LatestPreviewQueue.cpp
+    ../include/sleekpr/app/LatestPreviewQueue.h
     ../src/app/PrintPreviewPanel.cpp
     ../src/app/AppTheme.cpp
     ../resources/sleekpr-ui.qrc

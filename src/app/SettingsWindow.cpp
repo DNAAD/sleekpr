@@ -1,4 +1,6 @@
 #include "sleekpr/app/SettingsWindow.h"
+#include "sleekpr/app/BuildInfoDialog.h"
+#include "sleekpr/app/SettingsPersistenceNotice.h"
 
 #include "sleekpr/app/AppTheme.h"
 #include "sleekpr/core/labels/LabelRenderPlanner.h"
@@ -165,29 +167,6 @@ static QString templateDocumentComboText(const sleekpr::core::TemplateDocument& 
     return name;
 }
 
-static QImage renderTemplateDocumentPreviewImage(
-    const sleekpr::core::TemplateDocument& document,
-    const sleekpr::core::PrintClientSettings& settings,
-    const QString& fallbackTemplateKey)
-{
-    const auto rawTemplateKey = document.templateKey.trimmed().isEmpty() ? fallbackTemplateKey : document.templateKey.trimmed();
-    const auto labelPlan = sleekpr::core::LabelRenderPlanner().createPlan(
-        sleekpr::infrastructure::PreviewLabelFactory::createDemoLabel(
-            sleekpr::core::labelTemplateKeyFromOverrideKey(rawTemplateKey)));
-
-    sleekpr::core::TemplateRenderContext previewContext;
-    // 设置页只做正式预览：模板绑定的 sampleData 用于模拟接口数据，真实打印仍由接口传入值覆盖。
-    previewContext.values = document.sampleData;
-    const auto profile = sleekpr::core::DeviceProfileResolver::resolve(document.deviceProfiles, settings.defaultPrinter);
-    const auto drawingPlan = sleekpr::core::TemplateDocumentRenderer().render(
-        document,
-        labelPlan,
-        settings.labelOffset,
-        profile,
-        previewContext);
-    return sleekpr::infrastructure::LabelPreviewImageRenderer().renderImage(drawingPlan, drawingPlan.renderDpi);
-}
-
 SettingsWindow::SettingsWindow(QString settingsPath, SettingsAppliedCallback onSettingsApplied, QWidget* parent)
     : SettingsWindow(std::move(settingsPath), std::move(onSettingsApplied), QString(), parent)
 {
@@ -199,13 +178,15 @@ SettingsWindow::SettingsWindow(
     QString templateLibraryDirectoryPath,
     QWidget* parent)
     : QWidget(parent)
-    , m_settingsStore(std::move(settingsPath))
+    , m_settingsPath(settingsPath)
+    , m_editSession(settingsPath)
     , m_onSettingsApplied(std::move(onSettingsApplied))
     , m_templateLibraryDirectoryPath(std::move(templateLibraryDirectoryPath))
 {
     setWindowTitle(QString::fromUtf8("sleekpr 设置"));
     resize(1100, 740);
     buildUi();
+    setupPreviewQueue();
     reloadFromDisk();
 }
 
@@ -231,11 +212,22 @@ void SettingsWindow::setOpenFieldPresetManagerCallback(OpenFieldPresetManagerCal
 
 void SettingsWindow::reloadFromDisk()
 {
+    reloadSettings(true);
+}
+
+void SettingsWindow::reloadSettings(bool refreshDevices)
+{
     const auto selectedTemplateKey = currentTemplateOverrideKey();
-    m_settings = m_settingsStore.load();
+    const auto snapshot = m_editSession.reload();
+    if (snapshot.status == core::SettingsReadStatus::InvalidJson || snapshot.status == core::SettingsReadStatus::IoError) {
+        m_persistenceNotice->showFailure({core::SettingsWriteStatus::ReadFailed, snapshot, {}, snapshot.message});
+        return;
+    }
+    m_persistenceNotice->clear();
+    m_settings = snapshot.settings;
     populateTemplateCombo(selectedTemplateKey);
     m_currentElementKey.clear();
-    populatePrinters();
+    if (refreshDevices || m_printerCombo->count() == 0) populatePrinters();
 
     m_offsetXSpin->setValue(m_settings.labelOffset.x);
     m_offsetYSpin->setValue(m_settings.labelOffset.y);
@@ -246,6 +238,7 @@ void SettingsWindow::reloadFromDisk()
     m_httpMaxPreviewBatchItemsSpin->setValue(httpLimits.maxPreviewBatchItems);
     m_httpMaxPreviewPagesSpin->setValue(httpLimits.maxPreviewPages);
     m_httpMaxPreviewResponseMbSpin->setValue(bytesToWholeUnit(httpLimits.maxPreviewResponseBytes, 1024 * 1024));
+    m_formBaseline = readGeneralSettingsForm();
 
     renderPreview(m_settings);
     refreshOverview();
@@ -303,11 +296,25 @@ void SettingsWindow::buildUi()
     buttonLayout->addWidget(applyButton);
     buttonLayout->addWidget(refreshButton);
     buttonLayout->addStretch();
+    auto* versionButton = new QPushButton(footer);
+    versionButton->setObjectName(QStringLiteral("settingsBuildInfoButton"));
+    configureIconButton(versionButton, QStyle::SP_MessageBoxInformation, QString::fromUtf8("版本与诊断"));
+    buttonLayout->addWidget(versionButton);
+    connect(versionButton, &QPushButton::clicked, this, [this] { BuildInfoDialog(m_settingsPath, this).exec(); });
     buttonLayout->addWidget(closeButton);
     contentLayout->addWidget(footer);
 
     shellLayout->addWidget(contentPanel, 1);
     rootLayout->addWidget(shell, 1);
+    m_persistenceNotice = new SettingsPersistenceNotice(this);
+    rootLayout->addWidget(m_persistenceNotice);
+    m_persistenceNotice->setActions([this] { confirmPersistenceReload(); }, [this] { saveSettings(); }, {}, [this] {
+        if (QMessageBox::question(this, QString::fromUtf8("恢复备份"), QString::fromUtf8("确认恢复最近有效备份并放弃当前草稿？"),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
+        const auto result = m_editSession.restoreBackup(m_persistenceNotice->observedFailureDigest());
+        if (result.ok()) reloadFromDisk();
+        else m_persistenceNotice->showFailure(result);
+    });
 
     connect(saveButton, &QPushButton::clicked, this, [this] { saveSettings(); });
     connect(applyButton, &QPushButton::clicked, this, [this] { applyWithoutSaving(); });
@@ -1008,8 +1015,29 @@ void SettingsWindow::loadCurrentElementForm()
 
 void SettingsWindow::collectGeneralSettings()
 {
-    m_settings.defaultPrinter = m_printerCombo->currentData().toString();
-    m_settings.labelOffset = sleekpr::core::LabelOffset{
+    const auto form = readGeneralSettingsForm();
+    const auto& saved = m_editSession.baseline().settings;
+    // 显示的默认上限不等于用户显式修改，恢复原值也必须恢复到保存基线。
+    const auto edited = [](const auto& value, const auto& shown, const auto& stored) { return value == shown ? stored : value; };
+    m_settings.defaultPrinter = edited(form.defaultPrinter, m_formBaseline.defaultPrinter, saved.defaultPrinter);
+    m_settings.labelOffset.x = edited(form.labelOffset.x, m_formBaseline.labelOffset.x, saved.labelOffset.x);
+    m_settings.labelOffset.y = edited(form.labelOffset.y, m_formBaseline.labelOffset.y, saved.labelOffset.y);
+    m_settings.allowedOrigins = edited(form.allowedOrigins, m_formBaseline.allowedOrigins, saved.allowedOrigins);
+    const auto& value = form.localHttpLimits;
+    const auto& shown = m_formBaseline.localHttpLimits;
+    const auto& stored = saved.localHttpLimits;
+    m_settings.localHttpLimits.maxHeaderBytes = edited(value.maxHeaderBytes, shown.maxHeaderBytes, stored.maxHeaderBytes);
+    m_settings.localHttpLimits.maxContentLengthBytes = edited(value.maxContentLengthBytes, shown.maxContentLengthBytes, stored.maxContentLengthBytes);
+    m_settings.localHttpLimits.maxPreviewBatchItems = edited(value.maxPreviewBatchItems, shown.maxPreviewBatchItems, stored.maxPreviewBatchItems);
+    m_settings.localHttpLimits.maxPreviewPages = edited(value.maxPreviewPages, shown.maxPreviewPages, stored.maxPreviewPages);
+    m_settings.localHttpLimits.maxPreviewResponseBytes = edited(value.maxPreviewResponseBytes, shown.maxPreviewResponseBytes, stored.maxPreviewResponseBytes);
+}
+
+core::PrintClientSettings SettingsWindow::readGeneralSettingsForm() const
+{
+    core::PrintClientSettings form;
+    form.defaultPrinter = m_printerCombo->currentData().toString();
+    form.labelOffset = sleekpr::core::LabelOffset{
         m_offsetXSpin->value(),
         m_offsetYSpin->value(),
     };
@@ -1022,12 +1050,13 @@ void SettingsWindow::collectGeneralSettings()
             allowedOrigins.append(origin);
         }
     }
-    m_settings.allowedOrigins = allowedOrigins;
-    m_settings.localHttpLimits.maxHeaderBytes = kibibytesToBytes(m_httpMaxHeaderKbSpin->value());
-    m_settings.localHttpLimits.maxContentLengthBytes = mebibytesToBytes(m_httpMaxBodyMbSpin->value());
-    m_settings.localHttpLimits.maxPreviewBatchItems = m_httpMaxPreviewBatchItemsSpin->value();
-    m_settings.localHttpLimits.maxPreviewPages = m_httpMaxPreviewPagesSpin->value();
-    m_settings.localHttpLimits.maxPreviewResponseBytes = mebibytesToBytes(m_httpMaxPreviewResponseMbSpin->value());
+    form.allowedOrigins = allowedOrigins;
+    form.localHttpLimits.maxHeaderBytes = kibibytesToBytes(m_httpMaxHeaderKbSpin->value());
+    form.localHttpLimits.maxContentLengthBytes = mebibytesToBytes(m_httpMaxBodyMbSpin->value());
+    form.localHttpLimits.maxPreviewBatchItems = m_httpMaxPreviewBatchItemsSpin->value();
+    form.localHttpLimits.maxPreviewPages = m_httpMaxPreviewPagesSpin->value();
+    form.localHttpLimits.maxPreviewResponseBytes = mebibytesToBytes(m_httpMaxPreviewResponseMbSpin->value());
+    return form;
 }
 
 sleekpr::core::LabelTemplateKey SettingsWindow::currentLabelTemplateKey() const
@@ -1054,17 +1083,24 @@ void SettingsWindow::applyWithoutSaving()
 void SettingsWindow::saveSettings()
 {
     collectGeneralSettings();
-    if (!m_settingsStore.save(m_settings)) {
-        QMessageBox::warning(this, QString::fromUtf8("保存失败"), QString::fromUtf8("无法写入设置文件"));
+    const auto result = m_editSession.saveEdited(m_settings, core::SettingsEditScope::AllChangedFields);
+    setProperty("settingsSaveStatus", int(result.status));
+    if (!result.ok()) {
+        m_persistenceNotice->showFailure(result);
+        m_statusLabel->setText(QString::fromUtf8("未保存，当前草稿已保留"));
         return;
     }
-
-    renderPreview(m_settings);
-    refreshOverview();
+    reloadFromDisk();
     if (m_onSettingsApplied) {
         m_onSettingsApplied(m_settings);
     }
     m_statusLabel->setText(QString::fromUtf8("已保存"));
+}
+
+void SettingsWindow::confirmPersistenceReload()
+{
+    if (QMessageBox::question(this, QString::fromUtf8("重新读取配置"), QString::fromUtf8("确认放弃当前未保存草稿并重新读取？"),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes) reloadFromDisk();
 }
 
 void SettingsWindow::resetCurrentElement()
@@ -1387,38 +1423,6 @@ void SettingsWindow::drawSelectionOverlay(QImage& image) const
     painter.setPen(pen);
     painter.setBrush(Qt::NoBrush);
     painter.drawRect(rect.adjusted(1, 1, -1, -1));
-}
-
-void SettingsWindow::renderPreview(const sleekpr::core::PrintClientSettings& settings)
-{
-    const auto image = createPreviewImage(settings);
-    if (image.isNull()) {
-        m_previewImageSize = QSize();
-        m_previewLabel->setText(QString::fromUtf8("预览图生成失败"));
-        updatePreviewDraggingState();
-        return;
-    }
-
-    m_previewImageSize = image.size();
-    m_previewLabel->setPixmap(QPixmap::fromImage(image));
-    m_previewLabel->setFixedSize(image.size());
-    updatePreviewDraggingState();
-}
-
-QImage SettingsWindow::createPreviewImage(const sleekpr::core::PrintClientSettings& settings) const
-{
-    const auto selectedTemplateKey = currentTemplateOverrideKey();
-    const auto settingsDocumentIt = settings.templateDocuments.constFind(selectedTemplateKey);
-    if (settingsDocumentIt != settings.templateDocuments.constEnd()) {
-        return renderTemplateDocumentPreviewImage(settingsDocumentIt.value(), settings, selectedTemplateKey);
-    }
-
-    const auto libraryDocumentIt = m_libraryTemplateDocuments.constFind(selectedTemplateKey);
-    if (libraryDocumentIt != m_libraryTemplateDocuments.constEnd()) {
-        return renderTemplateDocumentPreviewImage(libraryDocumentIt.value(), settings, selectedTemplateKey);
-    }
-
-    return sleekpr::infrastructure::LabelPreviewService().renderDemoPreview(settings, currentLabelTemplateKey());
 }
 
 bool SettingsWindow::isCurrentCustomElement() const

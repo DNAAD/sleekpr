@@ -1,4 +1,7 @@
 #include "sleekpr/app/PrintPreviewPanel.h"
+#include "sleekpr/app/LatestPreviewQueue.h"
+#include "sleekpr/infrastructure/preview/TemplatePreviewJob.h"
+#include "sleekpr/infrastructure/diagnostics/ClientPerformanceMetrics.h"
 #include "sleekpr/app/AppTheme.h"
 #include "sleekpr/infrastructure/preview/LabelPreviewImageRenderer.h"
 
@@ -306,11 +309,61 @@ PrintPreviewPanel::PrintPreviewPanel(QWidget* parent) : QWidget(parent)
     connect(m_previous, &QPushButton::clicked, this, [this] { --m_page; renderPage(); });
     connect(m_next, &QPushButton::clicked, this, [this] { ++m_page; renderPage(); });
     connect(m_zoom, &QComboBox::currentIndexChanged, this, [this] { renderPage(); });
+    m_rasterQueue = new LatestPreviewQueue(infrastructure::PreviewExecutor::applicationInstance(), this);
+    connect(m_rasterQueue, &LatestPreviewQueue::resultReady, this, [this](quint64, const auto& result) {
+        infrastructure::PerformanceScope timing(infrastructure::PerformanceStage::Publication);
+        m_rasterPending = false;
+        if (!result.errorCode.isEmpty() || result.image.isNull()) {
+            m_ready = false;
+            m_renderedPage = -1;
+            m_previewErrorCode = result.errorCode.isEmpty() ? QStringLiteral("PREVIEW_RENDER_FAILED") : result.errorCode;
+            m_previewError = result.errorMessage.isEmpty() ? QString::fromUtf8("预览生成失败") : result.errorMessage;
+            m_image->clear();
+            m_image->setText(m_previewError);
+        } else {
+            const auto pixmap = QPixmap::fromImage(result.image);
+            m_image->setPixmap(pixmap);
+            m_image->setFixedSize(pixmap.deviceIndependentSize().toSize());
+            m_renderedPage = m_requestedPage;
+            m_renderedPixelsPerMm = m_requestedPixelsPerMm;
+            m_renderedDpr = m_requestedDpr;
+            m_renderedPlanVersion = m_requestedPlanVersion;
+            m_previewError.clear();
+            m_previewErrorCode.clear();
+            m_ready = true;
+            revealHighlight();
+        }
+        notifyReadyChanged();
+    });
     clear();
+}
+
+PrintPreviewPanel::~PrintPreviewPanel()
+{
+    m_readyChanged = {};
+    m_rasterQueue->invalidate();
+    QObject::disconnect(m_rasterQueue, nullptr, this, nullptr);
+}
+
+bool PrintPreviewPanel::hasCurrentImage() const { return m_ready && !m_diagnostic && m_plan.has_value(); }
+QString PrintPreviewPanel::previewError() const { return m_previewError; }
+QString PrintPreviewPanel::previewErrorCode() const { return m_previewErrorCode; }
+void PrintPreviewPanel::setReadyChangedHandler(std::function<void()> handler) { m_readyChanged = std::move(handler); }
+
+void PrintPreviewPanel::notifyReadyChanged()
+{
+    setProperty("printPreviewCurrent", hasCurrentImage());
+    if (m_readyChanged) m_readyChanged();
 }
 
 void PrintPreviewPanel::setPlan(const sleekpr::core::NativePrintDrawingPlan& plan)
 {
+    ++m_planVersion;
+    m_rasterQueue->invalidate();
+    m_rasterPending = false;
+    m_ready = false;
+    m_previewError.clear();
+    m_previewErrorCode.clear();
     clearElementHighlight();
     m_diagnostic = false;
     m_diagnosticPaperSizeMm = {};
@@ -321,6 +374,7 @@ void PrintPreviewPanel::setPlan(const sleekpr::core::NativePrintDrawingPlan& pla
     m_plan = plan;
     if (plan.pages.isEmpty()) { clear(); return; }
     m_page = std::clamp(m_page, 0, std::max(0, int(plan.pages.size()) - 1));
+    notifyReadyChanged();
     renderPage();
 }
 
@@ -390,6 +444,12 @@ void PrintPreviewPanel::clearElementHighlight()
 
 void PrintPreviewPanel::clear()
 {
+    ++m_planVersion;
+    if (m_rasterQueue) m_rasterQueue->invalidate();
+    m_ready = false;
+    m_rasterPending = false;
+    m_previewError.clear();
+    m_previewErrorCode.clear();
     m_plan.reset();
     m_diagnostic = false;
     m_diagnosticPaperSizeMm = {};
@@ -406,10 +466,18 @@ void PrintPreviewPanel::clear()
     m_pageLabel->setText(QStringLiteral("0 / 0"));
     m_title->setText(QString::fromUtf8("标签预览"));
     setProperty("printPreflightDiagnostic", false);
+    notifyReadyChanged();
 }
 
 bool PrintPreviewPanel::eventFilter(QObject* watched, QEvent* event)
 {
+    if (watched == this && event->type() == QEvent::Hide && m_rasterQueue) {
+        m_rasterQueue->invalidate();
+        m_rasterPending = false;
+        m_renderedPage = -1;
+        m_ready = false;
+        notifyReadyChanged();
+    }
     if ((watched == m_scroll->viewport() && event->type() == QEvent::Resize)
         || (watched == this && (event->type() == QEvent::Show || event->type() == QEvent::DevicePixelRatioChange))) {
         scheduleRender();
@@ -427,6 +495,7 @@ void PrintPreviewPanel::scheduleRender()
 void PrintPreviewPanel::renderPage()
 {
     if (!m_diagnostic && (!m_plan.has_value() || m_plan->pages.isEmpty())) return;
+    if (!isVisible()) { m_ready = false; notifyReadyChanged(); return; }
     const auto paperSize = m_diagnostic ? m_diagnosticPaperSizeMm
         : QSizeF(m_plan->paperSize.widthMm(), m_plan->paperSize.heightMm());
     if (!usablePaperSize(paperSize)) {
@@ -441,34 +510,47 @@ void PrintPreviewPanel::renderPage()
     const auto viewport = m_scroll->viewport()->size();
     const auto fit = std::max(0.01, std::min((viewport.width() - 40.0) / widthMm, (viewport.height() - 40.0) / heightMm));
     const auto ratio = std::max(1.0, devicePixelRatioF());
-    // 隐藏窗口的视口尚未完成布局，使用正常屏幕 DPI 预热，避免极小字体触发系统字体引擎告警。
-    auto pixelsPerMm = zoom == 0.0 ? (isVisible() ? fit : 96.0 / 25.4) : 96.0 / 25.4 * zoom;
-    // 按显示倍率直接走 Qt 原生栅格化；高 DPI 不放大已有低清位图，并限制异常纸张的预览内存。
-    const auto maximumScale = 4096.0 / (std::max(widthMm, heightMm) * ratio);
+    // 仅可见窗口提交任务；适配模式使用当前视口，固定倍率沿用屏幕毫米换算。
+    auto pixelsPerMm = zoom == 0.0 ? fit : 96.0 / 25.4 * zoom;
     const auto minimumScale = 1.0 / (std::min(widthMm, heightMm) * ratio);
-    if (minimumScale > maximumScale) { clear(); return; }
-    // 尚未展示窗口时视口可能接近零，栅格化后两个方向也必须至少各有一个设备像素。
-    pixelsPerMm = std::clamp(pixelsPerMm, minimumScale, maximumScale);
-    if (m_renderedPage != m_page || m_renderedPixelsPerMm != pixelsPerMm || m_renderedDpr != ratio) {
-        QImage image;
+    // 窗口布局切换时视口可能接近零，栅格化后两个方向也必须至少各有一个设备像素。
+    // 用户倍率不因资源上限而悄悄降低；后台预算在分配前返回明确失败。
+    pixelsPerMm = std::max(pixelsPerMm, minimumScale);
+    const bool cached = m_renderedPlanVersion == m_planVersion && m_renderedPage == m_page
+        && m_renderedPixelsPerMm == pixelsPerMm && m_renderedDpr == ratio;
+    const bool pending = m_rasterPending && m_requestedPlanVersion == m_planVersion && m_requestedPage == m_page
+        && m_requestedPixelsPerMm == pixelsPerMm && m_requestedDpr == ratio;
+    if (cached && m_rasterPending) {
+        // 回到已有缓存的倍率时也要废弃另一倍率的在途结果，不能让它稍后覆盖缓存图。
+        m_rasterQueue->invalidate();
+        m_rasterPending = false;
+    }
+    if (!cached && !pending) {
+        infrastructure::TemplatePreviewSnapshot snapshot;
         if (m_diagnostic) {
-            // 诊断底图只能新建白纸；实际元素外框由 paintEvent 绘制，绝不调用数据渲染器。
-            image = QImage(std::max(1, qRound(widthMm * pixelsPerMm * ratio)),
-                std::max(1, qRound(heightMm * pixelsPerMm * ratio)), QImage::Format_ARGB32_Premultiplied);
-            image.fill(Qt::white);
-        } else {
-            auto page = m_plan->firstPageAsLabelPlan();
-            page.commands = m_plan->pages[m_page].commands;
-            image = sleekpr::infrastructure::LabelPreviewImageRenderer().renderImage(page, pixelsPerMm * 25.4 * ratio);
-        }
-        if (image.isNull()) { clear(); return; }
-        auto pixmap = QPixmap::fromImage(image);
-        pixmap.setDevicePixelRatio(ratio);
-        m_image->setPixmap(pixmap);
-        m_image->setFixedSize(pixmap.deviceIndependentSize().toSize());
-        m_renderedPage = m_page;
-        m_renderedPixelsPerMm = pixelsPerMm;
-        m_renderedDpr = ratio;
+            // 诊断只生成空白纸张，轮廓仍在 GUI 叠加，绝不把真实数据或高亮写进底图。
+            core::NativePrintDrawingPlan blank;
+            blank.paperSize = core::LabelPaperSize(widthMm, heightMm);
+            blank.renderDpi = 96;
+            blank.pages = {{1, {}}};
+            snapshot.preparedPlan = blank;
+        } else snapshot.preparedPlan = m_plan;
+        snapshot.pageIndex = m_page;
+        snapshot.zoom = pixelsPerMm * 25.4 / snapshot.preparedPlan->renderDpi;
+        snapshot.devicePixelRatio = ratio;
+        m_requestedPlanVersion = m_planVersion;
+        m_requestedPage = m_page;
+        m_requestedPixelsPerMm = pixelsPerMm;
+        m_requestedDpr = ratio;
+        m_rasterPending = true;
+        m_ready = false;
+        m_previewError.clear();
+        m_previewErrorCode.clear();
+        notifyReadyChanged();
+        m_rasterQueue->submit([snapshot] { return infrastructure::TemplatePreviewJob::run(snapshot); });
+    } else if (cached && !m_ready) {
+        m_ready = true;
+        notifyReadyChanged();
     }
     m_image->setPaperSizeMm(paperSize);
     m_pageLabel->setText(QStringLiteral("%1 / %2").arg(m_page + 1).arg(pageCount));

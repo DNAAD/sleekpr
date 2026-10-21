@@ -214,17 +214,6 @@ QString templateValidationMessage(const sleekpr::core::TemplateValidationResult&
         : messages.join(QString::fromUtf8("；"));
 }
 
-QSizeF paperSizeForTemplateValidation(const QString& settingsPath, const TemplateDocument& document)
-{
-    const auto paperSpec = paperSpecForTemplate(settingsPath, document);
-    if (paperSpec.has_value() && paperSpec->widthMm > 0.0 && paperSpec->heightMm > 0.0) {
-        return QSizeF(paperSpec->widthMm, paperSpec->heightMm);
-    }
-
-    const auto fallbackPlan = templateLabelPlan(document);
-    return QSizeF(fallbackPlan.paperSize.widthMm(), fallbackPlan.paperSize.heightMm());
-}
-
 QString responseTemplateKey(const TemplateDocument& document, const QString& requestedTemplate)
 {
     auto key = document.templateKey.trimmed();
@@ -241,6 +230,37 @@ QString responseTemplateKey(const TemplateDocument& document, const QString& req
 TemplatePrintService::TemplatePrintService(QString settingsPath)
     : m_settingsPath(std::move(settingsPath))
 {
+}
+
+std::optional<TemplatePrintSnapshot> TemplatePrintService::resolveSnapshot(const PrintClientSettings& settings,
+    const TemplatePrintInput& input, QString* errorCode, QString* errorMessage) const
+{
+    if (errorCode) errorCode->clear();
+    if (errorMessage) errorMessage->clear();
+    const auto fail = [errorCode, errorMessage](const QString& code, const QString& message) -> std::optional<TemplatePrintSnapshot> {
+        if (errorCode) *errorCode = code;
+        if (errorMessage) *errorMessage = message;
+        return std::nullopt;
+    };
+    const auto document = findTemplate(settings, input.templateId);
+    if (!document) return fail(QStringLiteral("TEMPLATE_NOT_FOUND"), QString::fromUtf8("未找到指定模板。"));
+    QString presetError;
+    std::optional<FieldPreset> preset;
+    if (!input.fieldPresetId.trimmed().isEmpty()) {
+        preset = fieldPresetStoreForSettings(m_settingsPath).loadPreset(input.fieldPresetId.trimmed(), &presetError);
+        if (!preset) return fail(QStringLiteral("FIELD_PRESET_NOT_FOUND"), presetError);
+    }
+    const auto paper = paperSpecForTemplate(m_settingsPath, *document);
+    TemplatePrintSnapshot result;
+    result.templateKey = responseTemplateKey(*document, input.templateId);
+    result.document = *document;
+    result.labelPlan = labelPlanWithPaperSpec(templateLabelPlan(*document), paper);
+    result.labelOffset = labelOffsetWithPaperMargins(settings.labelOffset, paper);
+    result.deviceProfile = deviceProfileWithPaperDpi(DeviceProfileResolver::resolve(document->deviceProfiles, input.printerName), *document, paper);
+    // 只在此处合并一次真实输入与预设，后台阶段不能重新读盘或注入设计期样例。
+    result.context = TemplateRenderContextBuilder::build(document->fieldSchema, preset ? preset->values : QJsonObject{}, input.values);
+    result.requireCompleteValues = input.requireCompleteValues;
+    return result;
 }
 
 QList<TemplatePrintChoice> TemplatePrintService::templates(
@@ -341,8 +361,26 @@ std::optional<PreparedTemplatePrint> TemplatePrintService::prepare(
     const TemplatePrintInput& input,
     QString* errorCode,
     QString* errorMessage,
-    core::PrintPreflightReport* preflight) const
+    core::PrintPreflightReport* preflight,
+    core::PreviewPlanningBudget* budget) const
 {
+    if (preflight) *preflight = {};
+    QString code, message;
+    const auto snapshot = resolveSnapshot(settings, input, &code, &message);
+    if (!snapshot) {
+        if (errorCode) *errorCode = code;
+        if (errorMessage) *errorMessage = message;
+        if (preflight) preflight->issues.append({core::PrintPreflightSeverity::Error, code, message});
+        return std::nullopt;
+    }
+    return prepareSnapshot(*snapshot, preflight, errorCode, errorMessage, budget);
+}
+
+std::optional<PreparedTemplatePrint> TemplatePrintService::prepareSnapshot(const TemplatePrintSnapshot& snapshot,
+    core::PrintPreflightReport* preflight, QString* errorCode, QString* errorMessage, core::PreviewPlanningBudget* budget)
+{
+    if (errorCode) errorCode->clear();
+    if (errorMessage) errorMessage->clear();
     if (preflight != nullptr) *preflight = {};
     const auto fail = [errorCode, errorMessage, preflight](const QString& code, const QString& message) {
         if (errorCode != nullptr) {
@@ -359,43 +397,25 @@ std::optional<PreparedTemplatePrint> TemplatePrintService::prepare(
         return std::optional<PreparedTemplatePrint>{};
     };
 
-    const auto templateDocument = findTemplate(settings, input.templateId);
-    if (!templateDocument.has_value()) {
-        return fail("TEMPLATE_NOT_FOUND", QString::fromUtf8("未找到指定模板。"));
-    }
-
+    if (budget && !budget->ensurePages(1)) return fail(QStringLiteral("REQUEST_TOO_LARGE"), budget->message);
+    const auto& document = snapshot.document;
+    const auto& context = snapshot.context;
+    const auto paperSize = QSizeF(snapshot.labelPlan.paperSize.widthMm(), snapshot.labelPlan.paperSize.heightMm());
     if (preflight != nullptr) {
-        preflight->document = *templateDocument;
-        const auto spec = paperSpecForTemplate(m_settingsPath, *templateDocument);
-        const auto offset = labelOffsetWithPaperMargins(settings.labelOffset, spec);
-        const auto profile = DeviceProfileResolver::resolve(templateDocument->deviceProfiles, input.printerName);
-        preflight->paperSizeMm = paperSizeForTemplateValidation(m_settingsPath, *templateDocument);
-        preflight->offsetXmm = offset.x + profile.offsetX;
-        preflight->offsetYmm = offset.y + profile.offsetY;
+        preflight->document = document;
+        const auto& profile = snapshot.deviceProfile;
+        preflight->paperSizeMm = paperSize;
+        preflight->offsetXmm = snapshot.labelOffset.x + profile.offsetX;
+        preflight->offsetYmm = snapshot.labelOffset.y + profile.offsetY;
         preflight->scaleX = profile.scaleX > 0 ? profile.scaleX : 1;
         preflight->scaleY = profile.scaleY > 0 ? profile.scaleY : 1;
     }
 
-    QString presetErrorMessage;
-    std::optional<FieldPreset> fieldPreset;
-    const auto presetId = input.fieldPresetId.trimmed();
-    if (!presetId.isEmpty()) {
-        fieldPreset = fieldPresetStoreForSettings(m_settingsPath).loadPreset(presetId, &presetErrorMessage);
-    }
-    if (!presetErrorMessage.isEmpty() && !fieldPreset.has_value()) {
-        return fail("FIELD_PRESET_NOT_FOUND", presetErrorMessage);
-    }
-
-    // 正式打印不注入 sampleData 或 sampleValue，字段优先级统一复用领域上下文构建器。
-    const auto context = TemplateRenderContextBuilder::build(
-        templateDocument->fieldSchema,
-        fieldPreset.has_value() ? fieldPreset->values : QJsonObject{},
-        input.values);
-    auto validationDocument = templateDocument.value();
+    auto validationDocument = document;
     QList<core::TemplateInputIssue> inputIssues;
-    if (input.requireCompleteValues) {
+    if (snapshot.requireCompleteValues) {
         // 先用原 schema 合并后的真实值校验，绝不让推断字段被 Builder 自动补成空值。
-        inputIssues = core::TemplateInputSchema::validate(templateDocument.value(), context.values);
+        inputIssues = core::TemplateInputSchema::validate(document, context.values);
         if (preflight != nullptr) {
             for (const auto& issue : inputIssues) {
                 preflight->issues.append({core::PrintPreflightSeverity::Error, QStringLiteral("TEMPLATE_INPUT_INVALID"),
@@ -403,7 +423,7 @@ std::optional<PreparedTemplatePrint> TemplatePrintService::prepare(
             }
         }
         // 只给结构校验的副本补充声明；返回结果和 Renderer 继续接收原始文档。
-        for (const auto& field : core::TemplateInputSchema::fields(templateDocument.value())) {
+        for (const auto& field : core::TemplateInputSchema::fields(document)) {
             if (field.inferred) {
                 validationDocument.fieldSchema.append(field.definition);
             }
@@ -416,7 +436,7 @@ std::optional<PreparedTemplatePrint> TemplatePrintService::prepare(
 
     const auto templateValidation = TemplateDocumentValidator().validate(
         validationDocument,
-        paperSizeForTemplateValidation(m_settingsPath, templateDocument.value()),
+        paperSize,
         context.values);
     if (preflight != nullptr) {
         for (const auto& issue : templateValidation.issues) {
@@ -437,8 +457,8 @@ std::optional<PreparedTemplatePrint> TemplatePrintService::prepare(
         return fail("TEMPLATE_VALIDATION_FAILED", templateValidationMessage(templateValidation));
     }
 
-    if (preflight != nullptr && input.requireCompleteValues) {
-        for (const auto& field : core::TemplateInputSchema::fields(*templateDocument)) {
+    if (preflight != nullptr && snapshot.requireCompleteValues) {
+        for (const auto& field : core::TemplateInputSchema::fields(document)) {
             const auto value = context.values.value(field.definition.key);
             const bool empty = (value.isString() && value.toString().trimmed().isEmpty())
                 || (value.isArray() && value.toArray().isEmpty()) || (value.isObject() && value.toObject().isEmpty());
@@ -450,23 +470,17 @@ std::optional<PreparedTemplatePrint> TemplatePrintService::prepare(
         }
     }
 
-    QString renderErrorMessage;
-    const auto printPlan = renderTemplatePrintPlan(
-        templateDocument.value(),
-        templateLabelPlan(templateDocument.value()),
-        settings,
-        m_settingsPath,
-        input.printerName,
-        context,
-        &renderErrorMessage);
-    if (!printPlan.has_value()) {
-        return fail("TEMPLATE_RENDER_FAILED", renderErrorMessage);
+    const auto rendered = TemplateDocumentRenderer().tryRenderPrint(document, snapshot.labelPlan,
+        snapshot.labelOffset, snapshot.deviceProfile, context, budget);
+    if (!rendered.success()) {
+        return fail(budget && !budget->ok() ? QStringLiteral("REQUEST_TOO_LARGE") : QStringLiteral("TEMPLATE_RENDER_FAILED"),
+            rendered.errorMessage.isEmpty() ? QString::fromUtf8("表格渲染失败") : rendered.errorMessage);
     }
 
     PreparedTemplatePrint result;
-    result.templateKey = responseTemplateKey(templateDocument.value(), input.templateId);
-    result.document = templateDocument.value();
-    result.printPlan = printPlan.value();
+    result.templateKey = snapshot.templateKey;
+    result.document = document;
+    result.printPlan = rendered.plan;
     result.context = context;
     return result;
 }

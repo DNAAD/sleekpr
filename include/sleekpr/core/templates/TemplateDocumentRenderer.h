@@ -6,6 +6,7 @@
 #include "sleekpr/core/settings/LabelOffset.h"
 #include "sleekpr/core/templates/TemplateDocument.h"
 #include "sleekpr/core/templates/TemplateRenderContext.h"
+#include "sleekpr/core/printing/PreviewResourceBudget.h"
 
 #include <QString>
 
@@ -51,7 +52,8 @@ public:
         const LabelRenderPlan& labelPlan,
         const LabelOffset& labelOffset,
         const DeviceProfile& profile,
-        const TemplateRenderContext& context) const;
+        const TemplateRenderContext& context,
+        PreviewPlanningBudget* budget = nullptr) const;
 };
 
 } // 命名空间 sleekpr::core

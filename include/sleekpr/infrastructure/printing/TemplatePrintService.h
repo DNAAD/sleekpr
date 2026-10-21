@@ -3,6 +3,7 @@
 #include "sleekpr/core/labels/LabelRenderPlan.h"
 #include "sleekpr/core/native/NativePrintDrawingPlan.h"
 #include "sleekpr/core/printing/PrintPreflightReport.h"
+#include "sleekpr/core/printing/PreviewResourceBudget.h"
 #include "sleekpr/core/settings/PrintClientSettings.h"
 #include "sleekpr/core/templates/FieldPreset.h"
 #include "sleekpr/core/templates/TemplateDocument.h"
@@ -42,6 +43,17 @@ struct PreparedTemplatePrint
     sleekpr::core::TemplateRenderContext context;
 };
 
+struct TemplatePrintSnapshot
+{
+    QString templateKey;
+    core::TemplateDocument document;
+    core::LabelRenderPlan labelPlan;
+    core::LabelOffset labelOffset;
+    core::DeviceProfile deviceProfile;
+    core::TemplateRenderContext context;
+    bool requireCompleteValues = false;
+};
+
 class TemplatePrintService
 {
 public:
@@ -58,7 +70,13 @@ public:
         const TemplatePrintInput& input,
         QString* errorCode = nullptr,
         QString* errorMessage = nullptr,
-        core::PrintPreflightReport* preflight = nullptr) const;
+        core::PrintPreflightReport* preflight = nullptr,
+        core::PreviewPlanningBudget* budget = nullptr) const;
+    std::optional<TemplatePrintSnapshot> resolveSnapshot(const core::PrintClientSettings& settings,
+        const TemplatePrintInput& input, QString* errorCode = nullptr, QString* errorMessage = nullptr) const;
+    static std::optional<PreparedTemplatePrint> prepareSnapshot(const TemplatePrintSnapshot& snapshot,
+        core::PrintPreflightReport* preflight = nullptr, QString* errorCode = nullptr, QString* errorMessage = nullptr,
+        core::PreviewPlanningBudget* budget = nullptr);
     core::NativePrintDrawingPlan createLegacyPlan(
         const core::LabelRenderPlan& labelPlan,
         const core::PrintClientSettings& settings,

@@ -1,17 +1,36 @@
 #pragma once
 
 #include "sleekpr/core/native/NativeLabelDrawingPlan.h"
+#include "sleekpr/core/printing/PreviewResourceBudget.h"
 
 #include <QByteArray>
 #include <QImage>
+#include <functional>
 
 class QPainter;
+class QIODevice;
 
 namespace sleekpr::infrastructure {
+
+struct PreviewRenderResult
+{
+    core::PreviewImageError error = core::PreviewImageError::None;
+    QString errorMessage;
+    QImage image;
+    QByteArray png;
+    bool ok() const { return error == core::PreviewImageError::None; }
+};
 
 class LabelPreviewImageRenderer
 {
 public:
+    using PngEncoder = std::function<bool(const QImage&, QIODevice*)>;
+    using ImageAllocator = std::function<QImage(const QSize&)>;
+    explicit LabelPreviewImageRenderer(PngEncoder encoder = {}, ImageAllocator allocator = {});
+    PreviewRenderResult tryRenderImage(const core::NativeLabelDrawingPlan& plan, const core::PreviewImageRequest& request,
+        const core::PreviewResourceBudget& budget = {}) const;
+    PreviewRenderResult tryRenderPng(const core::NativeLabelDrawingPlan& plan, const core::PreviewImageRequest& request,
+        const core::PreviewResourceBudget& budget, qsizetype maxEncodedBytes) const;
     // 使用 Qt 绘制原生图像；预览窗口和 PNG 调试输出都必须复用同一份毫米坐标计划。
     QImage renderImage(const sleekpr::core::NativeLabelDrawingPlan& plan, double dpi = 300.0) const;
 
@@ -19,6 +38,10 @@ public:
     QByteArray renderPng(const sleekpr::core::NativeLabelDrawingPlan& plan, double dpi = 300.0) const;
 
 private:
+    PreviewRenderResult renderCheckedImage(const core::NativeLabelDrawingPlan& plan,
+        const core::PreviewImageCheck& checked, double devicePixelRatio) const;
+    PngEncoder m_encoder;
+    ImageAllocator m_allocator;
     static void drawQrCode(QPainter& painter, const sleekpr::core::NativeDrawCommand& command, double scale);
 };
 

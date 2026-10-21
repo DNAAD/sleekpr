@@ -1,6 +1,6 @@
 #pragma once
 
-#include "sleekpr/core/settings/FileSettingsStore.h"
+#include "sleekpr/app/SettingsEditSession.h"
 #include "sleekpr/core/settings/PrintClientSettings.h"
 #include "sleekpr/core/settings/TemplateElementCatalog.h"
 #include "sleekpr/core/labels/LabelTemplateKey.h"
@@ -30,9 +30,13 @@ class QPushButton;
 class QScrollArea;
 class QSpinBox;
 class QStackedWidget;
+class QShowEvent;
+class QHideEvent;
 
 namespace sleekpr::app {
 class TemplatePreviewLabel;
+class SettingsPersistenceNotice;
+class LatestPreviewQueue;
 }
 
 namespace sleekpr::app {
@@ -52,9 +56,11 @@ public:
         SettingsAppliedCallback onSettingsApplied,
         QString templateLibraryDirectoryPath,
         QWidget* parent = nullptr);
+    ~SettingsWindow() override;
 
     // 每次从托盘打开设置窗口时重新读取本地文件，确保界面展示最新配置。
     void reloadFromDisk();
+    void requestExternalRefresh(bool includeDevices = false);
     void setOpenTemplateDesignerCallback(OpenTemplateDesignerCallback callback);
     void setOpenPrintWorkbenchCallback(OpenPrintWorkbenchCallback callback);
     void setOpenPaperSpecManagerCallback(OpenPaperSpecManagerCallback callback);
@@ -62,6 +68,8 @@ public:
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
+    void showEvent(QShowEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
 
 private:
     void buildUi();
@@ -79,6 +87,10 @@ private:
     void storeCurrentElementForm();
     void loadCurrentElementForm();
     void collectGeneralSettings();
+    core::PrintClientSettings readGeneralSettingsForm() const;
+    void confirmPersistenceReload();
+    void reloadSettings(bool refreshDevices);
+    bool hasLocalSettingsDraft() const;
     sleekpr::core::LabelTemplateKey currentLabelTemplateKey() const;
     QString currentTemplateOverrideKey() const;
     void applyWithoutSaving();
@@ -99,7 +111,7 @@ private:
     QPointF snappedElementTopLeftMm(QPointF topLeftMm, QSizeF elementSizeMm) const;
     void drawSelectionOverlay(QImage& image) const;
     void renderPreview(const sleekpr::core::PrintClientSettings& settings);
-    QImage createPreviewImage(const sleekpr::core::PrintClientSettings& settings) const;
+    void setupPreviewQueue();
     bool isCurrentCustomElement() const;
     sleekpr::core::TemplateElement* mutableCustomElement(const QString& elementKey);
     const sleekpr::core::TemplateElement* customElement(const QString& elementKey) const;
@@ -110,7 +122,12 @@ private:
     sleekpr::core::TemplateElementOverride displayedOverrideForElement(const sleekpr::core::TemplateElementDefinition& element) const;
     bool formMatchesDefault(const sleekpr::core::TemplateElementOverride& formValue, const sleekpr::core::TemplateElementDefinition& element) const;
 
-    sleekpr::core::FileSettingsStore m_settingsStore;
+    QString m_settingsPath;
+    SettingsEditSession m_editSession;
+    LatestPreviewQueue* m_previewQueue = nullptr;
+    bool m_previewNeedsRender = true;
+    core::PrintClientSettings m_formBaseline;
+    SettingsPersistenceNotice* m_persistenceNotice = nullptr;
     SettingsAppliedCallback m_onSettingsApplied;
     OpenTemplateDesignerCallback m_openTemplateDesigner;
     OpenPrintWorkbenchCallback m_openPrintWorkbench;
@@ -123,6 +140,8 @@ private:
     QString m_templateLibraryDirectoryPath;
     QHash<QString, sleekpr::core::TemplateDocument> m_libraryTemplateDocuments;
     bool m_loadingForm = false;
+    bool m_externalRefreshPending = false;
+    bool m_externalDevicesPending = false;
 
     QStackedWidget* m_settingsPages = nullptr;
     QPushButton* m_printNavButton = nullptr;

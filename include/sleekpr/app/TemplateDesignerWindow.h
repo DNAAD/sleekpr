@@ -5,6 +5,8 @@
 #include "sleekpr/app/TemplateTableCanvasEditor.h"
 #include "sleekpr/app/TemplateTablePaginationOverlay.h"
 #include "sleekpr/core/settings/PrintClientSettings.h"
+#include "sleekpr/core/settings/SettingsChangeSet.h"
+#include "sleekpr/core/settings/SettingsPersistenceResult.h"
 #include "sleekpr/core/native/NativeDrawCommand.h"
 #include "sleekpr/core/native/NativePrintDrawingPlan.h"
 #include "sleekpr/core/templates/PaperSpec.h"
@@ -36,6 +38,8 @@ class QPushButton;
 class QTimer;
 class QShowEvent;
 class QResizeEvent;
+class QCloseEvent;
+class QHideEvent;
 
 namespace sleekpr::core {
 struct TemplateElement;
@@ -43,9 +47,13 @@ struct TemplateLayer;
 struct TableElement;
 }
 
+namespace sleekpr::infrastructure { struct PreviewWorkResult; }
+
 namespace sleekpr::app {
 
 class TemplateCanvasEditor;
+class LatestPreviewQueue;
+class SettingsPersistenceNotice;
 
 class TemplatePreviewLabel;
 class TemplateInspectorPanel;
@@ -55,6 +63,14 @@ class TemplateDesignerWindow final : public QWidget
 {
 public:
     using SettingsChangedCallback = std::function<void(const sleekpr::core::PrintClientSettings&)>;
+    using SettingsSaveHandler = std::function<core::SettingsWriteResult(const core::SettingsChangeSet&)>;
+    using SettingsReloadHandler = std::function<core::SettingsReadResult()>;
+    using SettingsRestoreHandler = std::function<core::SettingsWriteResult(const QByteArray&)>;
+    void setSettingsSaveHandler(SettingsSaveHandler handler);
+    void setSettingsReloadHandler(SettingsReloadHandler handler);
+    void setPersistenceSnapshot(const core::SettingsReadResult& snapshot);
+    void setSettingsRestoreHandler(SettingsRestoreHandler handler);
+    bool hasUnsavedPersistenceChanges() const;
     using OpenPaperSpecManagerCallback = std::function<void()>;
     using OpenFieldPresetManagerCallback = std::function<void()>;
     using PrePrintCallback = std::function<bool(const sleekpr::core::NativePrintDrawingPlan&, const QString&)>;
@@ -82,6 +98,8 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
     void showEvent(QShowEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
+    void closeEvent(QCloseEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
 
 private:
     struct TableColumnResizeDrag
@@ -91,6 +109,11 @@ private:
     };
 
     void buildUi();
+    void setupPersistenceNotice();
+    bool persistDraft();
+    void reloadPersistedSettings();
+    void applyPersistenceReload(const core::SettingsReadResult& snapshot);
+    void showPersistenceFailure(const core::SettingsWriteResult& result);
     void setupCanvasEditor();
     void applyCanvasSelection(const QStringList& ids);
     void syncCanvasSelectionFromList();
@@ -136,7 +159,9 @@ private:
     void refreshElementList();
     void refreshElementPropertyEditor();
     void refreshTablePropertyEditor();
-    void refreshPreview();
+    void refreshPreview(bool reusePlan = false);
+    void setupPreviewQueue();
+    void publishPreview(const infrastructure::PreviewWorkResult& result);
     void fitPreviewToCanvas();
     void scheduleCanvasFit();
     void flushPendingPropertyEdits();
@@ -225,6 +250,18 @@ private:
 
     sleekpr::core::PrintClientSettings m_settings;
     SettingsChangedCallback m_onSettingsChanged;
+    SettingsSaveHandler m_settingsSaveHandler;
+    SettingsReloadHandler m_settingsReloadHandler;
+    SettingsRestoreHandler m_settingsRestoreHandler;
+    core::SettingsReadResult m_persistenceBaseline;
+    std::optional<core::SettingsWriteResult> m_persistenceConflict;
+    SettingsPersistenceNotice* m_persistenceNotice = nullptr;
+    bool m_persistenceDirty = false;
+    LatestPreviewQueue* m_previewQueue = nullptr;
+    std::optional<core::NativePrintDrawingPlan> m_cachedPreviewPlan;
+    bool m_previewDirty = true;
+    bool m_previewPlanDirty = true;
+    static constexpr double kDesignerInteractivePreviewDpi = 152.4;
     OpenPaperSpecManagerCallback m_openPaperSpecManager;
     OpenFieldPresetManagerCallback m_openFieldPresetManager;
     PrePrintCallback m_prePrintCallback;
@@ -249,6 +286,8 @@ private:
     QLabel* m_statusLabel = nullptr;
     QLabel* m_sampleDataErrorLabel = nullptr;
     QPlainTextEdit* m_sampleDataEdit = nullptr;
+    bool m_sampleDataDraftDirty = false;
+    QString m_sampleDataDraftTemplateKey;
     QLineEdit* m_deviceProfilePrinterEdit = nullptr;
     QDoubleSpinBox* m_deviceProfileDpiSpin = nullptr;
     QDoubleSpinBox* m_deviceProfileScaleXSpin = nullptr;

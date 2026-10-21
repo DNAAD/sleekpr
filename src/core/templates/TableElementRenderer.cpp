@@ -18,6 +18,11 @@ namespace {
 constexpr double textPaddingX = 0.6;
 constexpr double textPaddingY = 0.4;
 
+TableRenderResult budgetFailure(const PreviewPlanningBudget& budget)
+{
+    return {{}, {}, budget.message};
+}
+
 NativeDrawCommand rectangleCommand(double x, double y, double width, double height, const QString& key)
 {
     NativeDrawCommand command;
@@ -104,7 +109,8 @@ NativeDrawCommand cellTextCommand(const TableLayoutCell& cell, double originX, d
 QList<NativeDrawCommand> layoutPageCommands(const TableElement& table,
                                             const TableLayoutPage& page,
                                             double offsetX,
-                                            double offsetY)
+                                            double offsetY,
+                                            PreviewPlanningBudget* budget)
 {
     QList<NativeDrawCommand> commands;
     const auto originX = table.x + offsetX;
@@ -117,6 +123,9 @@ QList<NativeDrawCommand> layoutPageCommands(const TableElement& table,
 
         // 背景和边框先生成矩形命令，文本命令只负责排版和字形绘制。
         const auto hasBackground = !cell.style.backgroundColor.trimmed().isEmpty();
+        const qsizetype count = (((table.drawBorders && cell.style.drawBorder) || hasBackground) ? 1 : 0)
+            + (!cell.text.isEmpty() ? 1 : 0);
+        if (budget && !budget->consumeCommands(count)) return {};
         if ((table.drawBorders && cell.style.drawBorder) || hasBackground) {
             commands.append(cellBorderCommand(table, cell, originX, originY));
         }
@@ -131,10 +140,11 @@ QList<NativeDrawCommand> layoutPageCommands(const TableElement& table,
 TableRenderResult complexLayoutResult(const TableElement& table,
                                       const TemplateRenderContext& context,
                                       double offsetX,
-                                      double offsetY)
+                                      double offsetY,
+                                      PreviewPlanningBudget* budget)
 {
     TableRenderResult result;
-    const auto layout = TableElementLayout::layout(table, context);
+    const auto layout = TableElementLayout::layout(table, context, budget);
     if (!layout.success()) {
         result.errorMessage = layout.errorMessage;
         return result;
@@ -145,7 +155,8 @@ TableRenderResult complexLayoutResult(const TableElement& table,
         page.pageNumber = layoutPage.pageNumber;
         page.firstRowIndex = layoutPage.firstRowIndex;
         page.rowCount = layoutPage.rowCount;
-        page.commands = layoutPageCommands(table, layoutPage, offsetX, offsetY);
+        page.commands = layoutPageCommands(table, layoutPage, offsetX, offsetY, budget);
+        if (budget && !budget->ok()) return budgetFailure(*budget);
         result.pages.append(page);
     }
     if (!result.pages.isEmpty()) {
@@ -234,8 +245,10 @@ void appendCellCommands(QList<NativeDrawCommand>& commands,
                         double y,
                         double height,
                         const QString& text,
-                        bool drawBorders)
+                        bool drawBorders,
+                        PreviewPlanningBudget* budget)
 {
+    if (budget && (!budget->consumeCells(1) || !budget->consumeCommands(drawBorders ? 2 : 1))) return;
     const auto cellKey = QStringLiteral("%1.%2.%3").arg(tableId, rowKey, column.id);
     if (drawBorders) {
         commands.append(rectangleCommand(x, y, width, height, cellKey + QStringLiteral(".border")));
@@ -257,8 +270,10 @@ void appendHeaderCommands(QList<NativeDrawCommand>& commands,
                           const QString& tableId,
                           const QString& rowKey,
                           double originX,
-                          double originY)
+                          double originY,
+                          PreviewPlanningBudget* budget)
 {
+    if (budget && !budget->ensureCells(table.columns.size())) return;
     double currentX = originX;
     const auto columnWidths = resolvedColumnWidths(table);
     for (qsizetype columnIndex = 0; columnIndex < table.columns.size(); ++columnIndex) {
@@ -274,7 +289,9 @@ void appendHeaderCommands(QList<NativeDrawCommand>& commands,
             originY,
             table.headerRowHeightMm,
             column.title,
-            table.drawBorders);
+            table.drawBorders,
+            budget);
+        if (budget && !budget->ok()) return;
         currentX += columnWidth;
     }
 }
@@ -287,8 +304,10 @@ void appendDetailRowCommands(QList<NativeDrawCommand>& commands,
                              int pageRowIndex,
                              double originX,
                              double originY,
-                             bool drawHeader)
+                             bool drawHeader,
+                             PreviewPlanningBudget* budget)
 {
+    if (budget && !budget->ensureCells(table.columns.size())) return;
     const auto rowY =
         originY + (drawHeader ? table.headerRowHeightMm : 0.0) + pageRowIndex * table.detailRowHeightMm;
     double currentX = originX;
@@ -306,7 +325,9 @@ void appendDetailRowCommands(QList<NativeDrawCommand>& commands,
             rowY,
             table.detailRowHeightMm,
             valueToText(valueAtPath(row, column.fieldKey)),
-            table.drawBorders);
+            table.drawBorders,
+            budget);
+        if (budget && !budget->ok()) return;
         currentX += columnWidth;
     }
 }
@@ -321,10 +342,12 @@ bool TableRenderResult::success() const
 TableRenderResult TableElementRenderer::renderSinglePage(const TableElement& table,
                                                          const TemplateRenderContext& context,
                                                          double offsetX,
-                                                         double offsetY)
+                                                         double offsetY,
+                                                         PreviewPlanningBudget* budget)
 {
+    if (budget && !budget->ensurePages(1)) return budgetFailure(*budget);
     if (usesComplexLayout(table)) {
-        return complexLayoutResult(table, context, offsetX, offsetY);
+        return complexLayoutResult(table, context, offsetX, offsetY, budget);
     }
 
     TableRenderResult result;
@@ -352,7 +375,8 @@ TableRenderResult TableElementRenderer::renderSinglePage(const TableElement& tab
     const auto originX = table.x + offsetX;
     const auto originY = table.y + offsetY;
 
-    appendHeaderCommands(result.commands, table, tableId, QStringLiteral("header"), originX, originY);
+    appendHeaderCommands(result.commands, table, tableId, QStringLiteral("header"), originX, originY, budget);
+    if (budget && !budget->ok()) return budgetFailure(*budget);
 
     for (int rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
         if (!rows[rowIndex].isObject()) {
@@ -362,7 +386,8 @@ TableRenderResult TableElementRenderer::renderSinglePage(const TableElement& tab
         }
 
         const auto row = rows[rowIndex].toObject();
-        appendDetailRowCommands(result.commands, table, tableId, row, rowIndex, rowIndex, originX, originY, true);
+        appendDetailRowCommands(result.commands, table, tableId, row, rowIndex, rowIndex, originX, originY, true, budget);
+        if (budget && !budget->ok()) return budgetFailure(*budget);
     }
 
     TableRenderPage page;
@@ -377,10 +402,12 @@ TableRenderResult TableElementRenderer::renderSinglePage(const TableElement& tab
 TableRenderResult TableElementRenderer::renderPages(const TableElement& table,
                                                     const TemplateRenderContext& context,
                                                     double offsetX,
-                                                    double offsetY)
+                                                    double offsetY,
+                                                    PreviewPlanningBudget* budget)
 {
+    if (budget && !budget->ensurePages(1)) return budgetFailure(*budget);
     if (usesComplexLayout(table)) {
-        return complexLayoutResult(table, context, offsetX, offsetY);
+        return complexLayoutResult(table, context, offsetX, offsetY, budget);
     }
 
     TableRenderResult result;
@@ -404,7 +431,8 @@ TableRenderResult TableElementRenderer::renderPages(const TableElement& table,
     if (rows.isEmpty()) {
         TableRenderPage page;
         page.pageNumber = 1;
-        appendHeaderCommands(page.commands, table, tableId, QStringLiteral("header"), originX, originY);
+        appendHeaderCommands(page.commands, table, tableId, QStringLiteral("header"), originX, originY, budget);
+        if (budget && !budget->ok()) return budgetFailure(*budget);
         result.pages.append(page);
         result.commands = page.commands;
         return result;
@@ -413,6 +441,8 @@ TableRenderResult TableElementRenderer::renderPages(const TableElement& table,
     int rowIndex = 0;
     int pageNumber = 1;
     while (rowIndex < rows.size()) {
+        // 表格仅检查文档剩余页数，最终输出页数由文档协调器统一扣减，避免叠放表格重复计页。
+        if (budget && !budget->ensurePages(pageNumber)) return budgetFailure(*budget);
         const auto drawHeader = pageNumber == 1 || table.repeatHeaderOnPage;
         const auto capacity = detailCapacity(table, drawHeader);
         if (capacity <= 0) {
@@ -428,7 +458,8 @@ TableRenderResult TableElementRenderer::renderPages(const TableElement& table,
         if (drawHeader) {
             const auto headerKey =
                 pageNumber == 1 ? QStringLiteral("header") : QStringLiteral("page%1.header").arg(pageNumber);
-            appendHeaderCommands(page.commands, table, tableId, headerKey, originX, originY);
+            appendHeaderCommands(page.commands, table, tableId, headerKey, originX, originY, budget);
+            if (budget && !budget->ok()) return budgetFailure(*budget);
         }
 
         const auto remainingRows = static_cast<int>(rows.size()) - rowIndex;
@@ -452,7 +483,9 @@ TableRenderResult TableElementRenderer::renderPages(const TableElement& table,
                 pageRowIndex,
                 originX,
                 originY,
-                drawHeader);
+                drawHeader,
+                budget);
+            if (budget && !budget->ok()) return budgetFailure(*budget);
         }
 
         page.rowCount = rowsOnPage;

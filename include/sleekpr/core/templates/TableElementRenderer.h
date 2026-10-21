@@ -3,6 +3,7 @@
 #include "sleekpr/core/native/NativeDrawCommand.h"
 #include "sleekpr/core/templates/TableElement.h"
 #include "sleekpr/core/templates/TemplateRenderContext.h"
+#include "sleekpr/core/printing/PreviewResourceBudget.h"
 
 #include <QList>
 #include <QString>
@@ -33,11 +34,13 @@ public:
     static TableRenderResult renderSinglePage(const TableElement& table,
                                               const TemplateRenderContext& context,
                                               double offsetX = 0.0,
-                                              double offsetY = 0.0);
+                                              double offsetY = 0.0,
+                                              PreviewPlanningBudget* budget = nullptr);
     static TableRenderResult renderPages(const TableElement& table,
                                          const TemplateRenderContext& context,
                                          double offsetX = 0.0,
-                                         double offsetY = 0.0);
+                                         double offsetY = 0.0,
+                                         PreviewPlanningBudget* budget = nullptr);
 };
 
 } // 命名空间 sleekpr::core

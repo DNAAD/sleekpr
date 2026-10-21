@@ -21,6 +21,10 @@
 #include "sleekpr/http/LocalHttpLimits.h"
 #include "sleekpr/http/LocalHttpRouter.h"
 #include "sleekpr/http/LocalHttpServer.h"
+#include "sleekpr/http/PreviewRoutes.h"
+#include "sleekpr/http/PreviewResponseBudget.h"
+#include "sleekpr/http/LocalHttpRouteSupport.h"
+#include <limits>
 #include "sleekpr/infrastructure/printing/LabelPrintEngine.h"
 
 using namespace sleekpr::core;
@@ -198,6 +202,10 @@ private slots:
     void postPreviewTemplateRejectsTooManyBatchItems();
     void postPreviewTemplateRejectsTooManyPages();
     void postPreviewTemplateRejectsOversizedResponse();
+    void previewRejectsPixelsBeforePng();
+    void previewBudgetFailureNeverReturnsEmptySuccess();
+    void previewResponseCountsEscapesAndPageDigits();
+    void previewResponseHonorsExactByteBoundary();
     void postPrintTemplateRejectsMissingRequiredFields();
     void postPrintTemplateRejectsInvalidTemplateStructure();
     void localServerWaitsForFullPostBody();
@@ -1458,6 +1466,96 @@ void HttpTests::localServerRefreshesLimitsAtRuntime()
     QVERIFY(requestOk);
     QVERIFY(rejectedResponse.startsWith("HTTP/1.1 413 Payload Too Large"));
     QCOMPARE(FileSettingsStore(settingsPath).load().defaultPrinter, QStringLiteral("Runtime Limit Printer"));
+}
+
+void HttpTests::previewRejectsPixelsBeforePng()
+{
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("settings.json"));
+    auto document = createSchemaFreeHttpTemplateDocument();
+    document.paperSpecId = QStringLiteral("wide");
+    PaperSpec paper;
+    paper.id = document.paperSpecId;
+    paper.name = QString::fromUtf8("预算宽纸");
+    paper.widthMm = 5000;
+    paper.heightMm = 30;
+    paper.defaultDpi = 203;
+    QVERIFY(PaperSpecStore(directory.filePath(QStringLiteral("paper-specs.json"))).savePaperSpec(paper));
+    PrintClientSettings settings;
+    settings.templateDocuments[QStringLiteral("default")] = document;
+    int encodes = 0;
+    PreviewRoutes routes(path, {}, [&](const QImage&, QIODevice*) { ++encodes; return false; });
+    LocalHttpRequest request;
+    request.method = "POST";
+    request.path = "/preview/template";
+    request.body = R"({"requestId":"pixels","templateKey":"default","values":{"productName":"A"}})";
+    const auto response = routes.route(request, settings, {});
+    QVERIFY(response.has_value());
+    QCOMPARE(response->statusCode, 413);
+    QCOMPARE(encodes, 0);
+    const auto envelope = QJsonDocument::fromJson(response->body).object();
+    QVERIFY(!envelope.value(QStringLiteral("success")).toBool());
+    QCOMPARE(envelope.value(QStringLiteral("code")).toString(), QStringLiteral("REQUEST_TOO_LARGE"));
+}
+
+void HttpTests::previewBudgetFailureNeverReturnsEmptySuccess()
+{
+    QTemporaryDir directory;
+    PrintClientSettings settings;
+    settings.templateDocuments[QStringLiteral("default")] = createSchemaFreeHttpTemplateDocument();
+    PreviewRoutes routes(directory.filePath(QStringLiteral("settings.json")), {}, [](const QImage&, QIODevice*) { return false; });
+    LocalHttpRequest request;
+    request.method = "POST";
+    request.path = "/preview/template";
+    request.body = R"({"requestId":"encoder","templateKey":"default","values":{"productName":"A"}})";
+    const auto response = routes.route(request, settings, {});
+    QVERIFY(response.has_value());
+    QCOMPARE(response->statusCode, 500);
+    const auto envelope = QJsonDocument::fromJson(response->body).object();
+    QVERIFY(!envelope.value(QStringLiteral("success")).toBool());
+    QCOMPARE(envelope.value(QStringLiteral("code")).toString(), QStringLiteral("PREVIEW_RENDER_FAILED"));
+}
+
+void HttpTests::previewResponseCountsEscapesAndPageDigits()
+{
+    PreviewResponseBudget budget(std::numeric_limits<qsizetype>::max());
+    const auto id = QString::fromUtf8("中文\"\\\nrequest");
+    const QJsonObject paper{{QStringLiteral("widthMm"), 80}, {QStringLiteral("heightMm"), 30}, {QStringLiteral("dpi"), 203}};
+    QJsonArray pages;
+    for (int i = 1; i <= 10; ++i) {
+        const QJsonObject page{{QStringLiteral("pageNumber"), i}, {QStringLiteral("requestId"), id},
+            {QStringLiteral("imageBase64"), QStringLiteral("abc\"\\\n")}};
+        QVERIFY(budget.appendPage(page));
+        pages.append(page);
+        const auto actual = QJsonDocument(okEnvelope({{QStringLiteral("requestId"), id}, {QStringLiteral("totalItems"), 10},
+            {QStringLiteral("totalPages"), i}, {QStringLiteral("paper"), paper}, {QStringLiteral("pages"), pages}})).toJson(QJsonDocument::Compact).size();
+        QCOMPARE(budget.bodyBytes(id, 10, i, paper), actual);
+    }
+}
+
+void HttpTests::previewResponseHonorsExactByteBoundary()
+{
+    QTemporaryDir directory;
+    const auto path = directory.filePath(QStringLiteral("settings.json"));
+    PrintClientSettings settings;
+    settings.templateDocuments[QStringLiteral("default")] = createSchemaFreeHttpTemplateDocument();
+    LocalHttpRequest request;
+    request.method = "POST";
+    request.path = "/preview/template";
+    request.body = R"({"requestId":"boundary","templateKey":"default","values":{"productName":"A"}})";
+    const auto initial = PreviewRoutes(path).route(request, settings, {});
+    QVERIFY(initial.has_value());
+    QCOMPARE(initial->statusCode, 200);
+    LocalHttpLimits exact;
+    exact.maxPreviewResponseBytes = initial->body.size();
+    const auto accepted = PreviewRoutes(path, exact).route(request, settings, {});
+    QVERIFY(accepted.has_value());
+    QCOMPARE(accepted->statusCode, 200);
+    QCOMPARE(accepted->body.size(), exact.maxPreviewResponseBytes);
+    exact.maxPreviewResponseBytes -= 1;
+    const auto rejected = PreviewRoutes(path, exact).route(request, settings, {});
+    QVERIFY(rejected.has_value());
+    QCOMPARE(rejected->statusCode, 413);
 }
 
 QTEST_MAIN(HttpTests)

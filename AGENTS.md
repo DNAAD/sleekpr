@@ -23,6 +23,13 @@
 - 真实打印输出属于兼容性接口。任何纸张尺寸、旋转、边距、DPI 或字体渲染变化，发布前都必须通过预览测试和真实设备冒烟验证。
 - 禁止硬编码密钥、令牌、客户凭证或机器专属绝对路径。
 - 优先使用 Qt 标准能力。新增第三方依赖前必须说明依赖负责人和引入原因。
+- 禁止使用 CodeRabbit。
+
+## Harness 入口
+
+- 项目知识、补充规则和可复用流程见 [.harness/README.md](.harness/README.md)，按任务相关性读取，不必一次加载全部内容。
+- 涉及标签属性编辑、数据绑定或自动应用时，先读 [Qt 属性编辑规则](.harness/rules/qt-property-editing.md) 和 [绑定修改技能](.harness/skills/qt-binding-change/SKILL.md)。
+- 构建、测试或交付前使用 [验证技能](.harness/skills/verification/SKILL.md)。知识文档不能替代本文的强制约束，也不授予真实打印、关闭进程或提交推送权限。
 
 ## 迁移优先级
 
